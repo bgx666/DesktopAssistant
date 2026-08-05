@@ -142,9 +142,4 @@
   }
   pollBallState();
   setInterval(pollBallState, 3000);
-
-  // ── Esc 收起面板 ────────────────────────────────────────
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') window.planner.hidePanel();
-  });
 })();

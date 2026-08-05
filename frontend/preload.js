@@ -15,4 +15,5 @@ contextBridge.exposeInMainWorld('planner', {
   onMorphForceFinish: (cb) => ipcRenderer.on('morph-force-finish', (e, kind) => cb(kind)),
   morphDone: (kind) => ipcRenderer.send(kind === 'in' ? 'morph-in-done' : 'morph-out-done'),
   hidePanel: () => ipcRenderer.send('hide-panel'),
+  quitApp: () => ipcRenderer.send('quit-app'),
 });

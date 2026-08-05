@@ -21,8 +21,6 @@ let tray = null;
 let trayImage = null;   // 保持 nativeImage 引用，防止被 GC 导致 Tray 底层对象销毁
 let backendProc = null;
 let quitting = false;
-let clickHook = null;   // 全局鼠标钩子（koffi）
-
 
 // 面板状态机：hidden → morphing_in → shown → morphing_out → hidden
 // 动画帧由 renderer 的 rAF 驱动（60fps），主进程只执行 setBounds
@@ -30,71 +28,8 @@ let panelState = 'hidden';
 let panelLoaded = false;   // 面板页面是否加载完成（listener 就绪）
 let pendingMorph = null;   // 页面加载完成前暂存的变形请求 {kind, from, to, showFirst}
 let ignoreBlurUntil = 0;   // morph-in 完成后短暂忽略 blur（focus 延迟失败的兜底）
-let blurTimer = null;      // blur 延迟收起（让 click toggle 有机会先执行，解决点球关不掉）
 
 const BUBBLE_STATE_FILE = () => path.join(app.getPath('userData'), 'bubble-pos.json');
-
-// ── 全局鼠标点击监听（koffi / WH_MOUSE_LL）────────────────
-// 不依赖窗口焦点：点击面板以外的任何地方 → 收起面板（用户实测 blur 在
-// 面板未获得焦点时不可靠，面板会"点外部不缩小"）。
-const WH_MOUSE_LL = 14;
-const WM_LBUTTONDOWN = 0x0201;
-
-function installClickHook() {
-  if (clickHook) return;
-  let koffi;
-  try {
-    koffi = require('koffi');
-  } catch {
-    console.error('[planner] koffi 不可用，全局点击收起降级为 blur 方案');
-    return;
-  }
-  try {
-    const user32 = koffi.load('user32.dll');
-    // koffi 3.x：func() 返回可调用函数
-    const SetWindowsHookExW = user32.func('int64 SetWindowsHookExW(int32 idHook, void *lpfn, void *hMod, uint32 dwThreadId)');
-    const CallNextHookEx = user32.func('int64 CallNextHookEx(int64 hhk, int32 nCode, uint64 wParam, int64 lParam)');
-    const UnhookWindowsHookEx = user32.func('int32 UnhookWindowsHookEx(int64 hhk)');
-    const HOOKPROC = koffi.proto('int64 LowLevelMouseProc(int32 nCode, uint64 wParam, int64 lParam)');
-    const hookProc = koffi.register((nCode, wParam, lParam) => {
-      try {
-        if (Number(nCode) >= 0 && Number(wParam) === WM_LBUTTONDOWN) {
-          setTimeout(() => handleGlobalClick(), 0);   // 转发到主线程
-        }
-      } catch { /* 忽略 */ }
-      return CallNextHookEx(clickHook || 0, nCode, wParam, lParam);
-    }, koffi.pointer(HOOKPROC));
-    clickHook = SetWindowsHookExW(WH_MOUSE_LL, hookProc, null, 0);
-    if (!clickHook) {
-      console.error('[planner] 全局鼠标钩子安装失败');
-      return;
-    }
-    console.log('[planner] 全局鼠标钩子已安装');
-  } catch (e) {
-    console.error('[planner] 全局鼠标钩子初始化失败:', e);
-    clickHook = null;
-  }
-}
-
-function handleGlobalClick() {
-  // 用户点击面板外 = 明确收起意图，立即响应（不等待 ignoreBlurUntil——
-  // 那是 blur 路径防焦点闪回的，钩子路径不受焦点抖动影响）
-  if (panelState !== 'shown') return;
-  if (!panelWin || panelWin.isDestroyed()) return;
-  const cursor = screen.getCursorScreenPoint();
-  const pb = panelWin.getBounds();
-  const inPanel = cursor.x >= pb.x && cursor.x <= pb.x + pb.width &&
-                  cursor.y >= pb.y && cursor.y <= pb.y + pb.height;
-  // 点击悬浮球：让 click 的 toggle 决定收/展，钩子不插手
-  if (!inPanel) {
-    if (bubbleWin && !bubbleWin.isDestroyed() && bubbleWin.isVisible()) {
-      const bb = bubbleWin.getBounds();
-      if (cursor.x >= bb.x && cursor.x <= bb.x + bb.width &&
-          cursor.y >= bb.y && cursor.y <= bb.y + bb.height) return;
-    }
-    morphOut();
-  }
-}
 
 // ── 全局异常兜底：不弹错误框打扰用户，能恢复就恢复 ────────────
 process.on('uncaughtException', (err) => {
@@ -223,22 +158,8 @@ function createPanel() {
       panelWin.webContents.send(m.kind === 'in' ? 'morph-in' : 'morph-out', { from: m.from, to: m.to });
     }
   });
-  // 点击面板以外的任何地方 → 面板失焦 → 变形收回。
-  // 注意：blur 延迟 250ms 再收起——点击悬浮球时 blur 先于 click 到达主进程，
-  // 若 blur 立即收起，随后的 click toggle 会立刻重新展开（实测关不掉）。
-  // 延迟后：点球 = blur(延迟) → click(toggle 正常收起) → 延迟到点 state 已变，不重复。
-  panelWin.on('blur', () => {
-    if (panelState !== 'shown' || Date.now() < ignoreBlurUntil) return;
-    clearTimeout(blurTimer);
-    blurTimer = setTimeout(() => {
-      blurTimer = null;
-      if (panelState === 'shown') morphOut();
-    }, 250);
-  });
-  panelWin.on('focus', () => {
-    clearTimeout(blurTimer);
-    blurTimer = null;
-  });
+  // 收起面板只通过界面上的「—」按钮（hide-panel IPC）→ 变形收回。
+  // 不监听 blur/点击外部（用户明确：点击其他位置不缩小）。
   panelWin.on('close', (e) => {
     if (!quitting) {
       e.preventDefault();
@@ -274,10 +195,6 @@ function createPanel() {
 // 面板窗口不复存在/状态残留时：完整重置状态机（防"托盘无反应"卡死）
 function resetPanelState() {
   clearMorphTimeout();
-  if (blurTimer) {
-    clearTimeout(blurTimer);
-    blurTimer = null;
-  }
   pendingMorph = null;
   panelLoaded = false;
   panelState = 'hidden';
@@ -424,6 +341,20 @@ function togglePanel() {
   }
 }
 
+// ── 退出：最暴力可靠的方式 ─────────────────────────────────
+// app.quit() 会被 panelWin 的 close 拦截（面板展开时第一次退出"闪一下又出来"）；
+// app.exit(0) 实测展开时也不生效（close 事件不触发但进程不退）。
+// process.exit() 直接终止进程，100% 可靠。先销毁窗口/托盘清理资源。
+function doQuit() {
+  quitting = true;
+  try {
+    if (tray && !tray.isDestroyed()) tray.destroy();
+    if (panelWin && !panelWin.isDestroyed()) panelWin.destroy();
+    if (bubbleWin && !bubbleWin.isDestroyed()) bubbleWin.destroy();
+  } catch { /* 忽略 */ }
+  setTimeout(() => process.exit(0), 50);
+}
+
 // ── 托盘 ────────────────────────────────────────────────────
 function createTray() {
   if (tray && !tray.isDestroyed()) return;   // 幂等：避免重复创建
@@ -439,7 +370,7 @@ function createTray() {
     { label: '打开小助', click: () => { showBubble(); togglePanel(); } },
     { label: '切换免打扰', click: () => toggleDndFromMain() },
     { type: 'separator' },
-    { label: '退出', click: () => { quitting = true; app.quit(); } },
+    { label: '退出', click: () => doQuit() },
   ]);
   tray.setContextMenu(menu);
   tray.on('click', () => { showBubble(); togglePanel(); });
@@ -506,13 +437,13 @@ ipcMain.on('move-bubble', (e, x, y) => {
     bubbleWin.setPosition(Math.round(x), Math.round(y));
   }
 });
-ipcMain.on('quit-app', () => { quitting = true; app.quit(); });
+ipcMain.on('quit-app', () => doQuit());
 ipcMain.on('bubble-menu', (e) => {
   const menu = Menu.buildFromTemplate([
     { label: '打开小助', click: () => togglePanel() },
     { label: '切换免打扰', click: () => toggleDndFromMain() },
     { type: 'separator' },
-    { label: '退出', click: () => { quitting = true; app.quit(); } },
+    { label: '退出', click: () => doQuit() },
   ]);
   menu.popup({ window: bubbleWin });
 });
@@ -530,7 +461,6 @@ if (!gotSingleLock) {
     createBubble();
     createTray();
     ensureBackend(); // 后端不在线则自动拉起
-    installClickHook(); // 全局鼠标点击监听（点击面板外 → 收起）
   });
 }
 
@@ -540,14 +470,12 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   quitting = true;
-  try {
-    if (clickHook) {
-      const koffi = require('koffi');
-      const user32 = koffi.load('user32.dll');
-      const UnhookWindowsHookEx = user32.func('int32 UnhookWindowsHookEx(int64 hhk)');
-      UnhookWindowsHookEx(clickHook);
-      clickHook = null;
-    }
-  } catch { /* 忽略 */ }
 });
+
+app.on('will-quit', () => {
+  });
+
+
+
+
 
