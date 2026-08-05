@@ -132,6 +132,9 @@
     state.heartbeat = s.heartbeat;
     state.dnd = s.dnd;
     $('#btn-dnd').classList.toggle('on', !!(s.dnd && s.dnd.enabled && s.dnd.in_dnd));
+    // 思考状态：以 /state 为准兜底纠正（thinking 事件可能在面板隐藏时被悬浮球消费）
+    $('#thinking').classList.toggle('hidden', !s.thinking);
+    $('.dot').classList.toggle('thinking', !!s.thinking);
     // 上下文 token 估算（字符数近似）
     const ctx = s.context;
     if (ctx) {

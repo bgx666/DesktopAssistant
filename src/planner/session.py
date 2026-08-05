@@ -592,7 +592,7 @@ class PlannerSession:
         heartbeat_called = False
         current_msg_id = None
         current_chunks = []
-        seen_count = 0      # 已处理的消息数（增量检测工具调用/结果）
+        seen_count = len(input_msgs)   # 输入消息视为已见，只推送本轮新增的工具调用
         try:
             stream = self._agent.stream(
                 {"messages": input_msgs, "model_call_count": 0, "set_heartbeat_called": False},

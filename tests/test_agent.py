@@ -47,6 +47,37 @@ def test_player_message_creates_task(data_root):
         s.close()
 
 
+def test_history_tool_calls_not_replayed(data_root):
+    """历史 buffer 里的工具调用不应在后续每轮重新推送 tool_call 卡片。"""
+    s = PlannerSession(data_root, mock=True)
+    try:
+        # 第一轮：创建任务（产生 create_task 工具卡片）
+        _drive_generation(s, "帮我安排一下学习计划")
+        first = s.drain_events()
+        assert any(e["type"] == "tool_call" for e in first)
+        # 第二轮：历史 buffer 含 create_task 工具调用，不应重放
+        _drive_generation(s, "（心跳）继续看看", "heartbeat")
+        second = s.drain_events()
+        second_calls = [e for e in second if e["type"] == "tool_call"]
+        # 心跳轮 mock 会勾选/拆解任务（可能有新工具），但绝不能出现
+        # 第一轮 create_task 的历史工具调用（按参数识别）
+        assert not any(
+            e["name"] == "create_task" and e["args"].get("title") == "复习线性代数第三章"
+            for e in second_calls
+        ), "历史 create_task 被重放为卡片"
+        # 第三轮同验
+        _drive_generation(s, "（心跳）继续", "heartbeat")
+        third = s.drain_events()
+        assert not any(
+            e["type"] == "tool_call"
+            and e["name"] == "create_task"
+            and e["args"].get("title") == "复习线性代数第三章"
+            for e in third
+        ), "历史 create_task 被重放为卡片"
+    finally:
+        s.close()
+
+
 def test_heartbeat_cycle_breaks_down_and_marks_done(data_root):
     s = PlannerSession(data_root, mock=True)
     try:
