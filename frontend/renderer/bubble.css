@@ -1,0 +1,90 @@
+/* 悬浮球样式：圆形渐变球 + 状态点 + 逾期徽标 */
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  overflow: hidden;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* 整个窗口都是可交互区（纯 JS 拖拽，不用 app-region——透明窗口上它会吞点击） */
+#ball {
+  width: 56px;
+  height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* 中心圆：点击弹出面板（JS 判定点击/拖拽） */
+#core {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 32% 28%, #6f8df9, #4a6cf7 55%, #3a55d8);
+  box-shadow: 0 2px 8px rgba(74, 108, 247, 0.45), inset 0 1px 2px rgba(255, 255, 255, 0.35);
+  position: relative;
+  cursor: pointer;
+  transition: transform 0.15s ease;
+}
+#core:hover { transform: scale(1.06); }
+#core:active { transform: scale(0.96); }
+
+/* 球心小光点 */
+#core::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 14px;
+  height: 14px;
+  margin: -7px 0 0 -7px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+}
+
+/* 状态点（右下角）：在线绿 / 思考中蓝脉冲 */
+#status-dot {
+  position: absolute;
+  right: -1px;
+  bottom: -1px;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: #30a46c;
+  border: 2px solid #fff;
+  box-sizing: border-box;
+}
+#status-dot.thinking {
+  background: #4a6cf7;
+  animation: pulse 0.9s infinite;
+}
+#status-dot.offline {
+  background: #e5484d;
+}
+@keyframes pulse {
+  50% { opacity: 0.25; transform: scale(1.35); }
+}
+
+/* 逾期徽标（左上角红点） */
+#badge {
+  position: absolute;
+  left: -3px;
+  top: -3px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 3px;
+  border-radius: 8px;
+  background: #e5484d;
+  border: 2px solid #fff;
+  color: #fff;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 11px;
+  text-align: center;
+  box-sizing: border-box;
+}
+.hidden { display: none !important; }

@@ -1,0 +1,100 @@
+# 小助（planner）—— 学习工作助手 Agent
+
+「小助」是驻留在桌面悬浮窗里的学习/工作助理 Agent。它不只是记录待办：你告诉它目标，它帮你**拆解成阶段和逐日计划**、**安排每天做什么**、**主动回访进度**并**动态调整排期**。所有对话会被压缩进**分层摘要记忆树**长期保存，它能翻出几周前你随口说的决定。
+
+- 后端：Python + LangChain（`create_agent` + 中间件链），深度借鉴同机项目「小b」（`D:\xiaob`）的记忆树与「丫丫」（`D:\xiaob\unity\yaya\backend`）的 LangGraph 化 ReAct 模式
+- 前端：Electron 悬浮球（桌面常驻小球，点击弹出对话面板、点击其他位置自动收起；可拖拽、右键菜单、自动拉起后端）
+- 记忆：独立实现的 SQLite 分层摘要记忆树（`src/planner/memory/`，与 xiaob 同构，不 import xiaob）
+
+## 运行
+
+```bash
+# 后端（真实 LLM 模式，从 D:\xiaob\.env 读 LLM_API_KEY，默认 DeepSeek）
+cd D:\xiaob\planner
+D:\Miniconda3\python.exe -m pip install -e .          # 首次
+D:\Miniconda3\python.exe -m planner                   # http://127.0.0.1:18771
+
+# Mock 模式（脚本化假 LLM，不调真实 API，可完整演示建任务→拆解→勾选链路）
+set PLANNER_MOCK_LLM=1
+D:\Miniconda3\python.exe -m planner
+
+# 前端悬浮窗（自动拉起后端；后端已跑会直接复用）
+cd frontend
+npm install
+npm start
+```
+
+## 核心能力
+
+| 能力 | 说明 |
+|---|---|
+| 任务录入 | 对话（`create_task`）或 HTTP `POST /task` 结构化录入 |
+| 任务拆解 | `break_down_task`：LLM 产出阶段 + 逐日计划 JSON，直接落库（从今天起排期） |
+| 每日计划 | 今日计划自动从任务拆解生成；前端可勾选完成（`POST /plan/done`） |
+| 主动回访 | 后端调度线程：LLM 自主 `heartbeat(minutes)` 决定下次醒来（clamp 10~720 分钟） |
+| 定时触发点 | 早晨 8:00 计划播报 / 晚间 21:00 回顾 / 逾期提醒（每 10 分钟查一次） |
+| 免打扰 | 默认 22:00-08:00 静默（玩家消息不受限），可 `set_do_not_disturb` 或前端开关 |
+| 长期记忆 | 对话超阈值自动压缩成记忆树（叶子落树 + 向上递归压缩），`explore_memory_tree` 翻阅 |
+| 状态持久化 | planner.db（任务/阶段/计划）+ memory_tree.db（记忆树 + buffer），重启恢复 |
+
+## 目录结构
+
+```
+src/planner/
+  config.py        环境配置（PLANNER_PORT/MOCK/DND 窗口/心跳护栏；.env 本地优先，其次 D:\xiaob\.env）
+  server.py        ThreadingHTTPServer + 契约端点（HTTP/1.0，规避 Windows 10053）
+  session.py       PlannerSession：并发（chat_lock/buffer_lock/_inbox）、调度线程、事件队列、DND
+  agent.py         create_agent 构建（LangGraph，无 checkpointer——DeepSeek 400 坑）
+  middleware.py    DndGuard / PlanSnapshot / PlayerPriority / Nudge / HeartbeatTrack /
+                   StreamText / Logging / Summarization（压缩+记忆树一体）
+  tools.py         @tool 工厂：create_task / break_down_task / mark_plan_done /
+                   reschedule / heartbeat / set_do_not_disturb / explore_memory_tree …
+  llm.py           build_chat_model（DeepSeek v4 extra_body）+ MockChatModel（脚本化假 LLM）
+  store/tasks_db.py  任务库（RLock 串行化，避免 close 竞态）
+  memory/          独立移植的 SQLiteMemoryTree（LEAF_SIZE=20 / BRANCHING=3 / 阈值 6）
+  prompts/system.md  助理人格与工作准则
+frontend/         Electron 悬浮球（bubble 窗口 + 面板窗口；renderer 轮询 /dequeue 600ms）
+tests/            pytest（全部 mock LLM + tmp_path 隔离）
+```
+
+## 环境变量
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `PLANNER_PORT` | `18771` | 监听端口 |
+| `PLANNER_MOCK_LLM` | 关 | `=1` 脚本化假 LLM |
+| `PLANNER_DATA_ROOT` | `planner/data` | 运行时数据目录 |
+| `PLANNER_HEARTBEAT_MIN_MINUTES` / `MAX` | `10` / `720` | LLM 自主心跳护栏（分钟） |
+| `PLANNER_DND_START_HOUR` / `END_HOUR` | `22` / `8` | 默认免打扰窗口 |
+| `PLANNER_MORNING_HOUR` / `EVENING_HOUR` | `8` / `21` | 定时触发点 |
+| `PLANNER_FALLBACK_MINUTES` | `60` | LLM 忘调 heartbeat 的兜底间隔 |
+| `LLM_*` | DeepSeek | 复用 D:\xiaob\.env 的 LLM 配置 |
+
+## 数据落盘（git 忽略）
+
+```
+data/
+  planner.db        任务/阶段/日计划/回访（WAL）
+  memory_tree.db    记忆树节点 + buffer_state（WAL）
+  assistant/YYYY-MM-DD.jsonl  对话日志
+  logs/planner.log  运行日志（RotatingFileHandler）
+```
+
+## 测试
+
+```bash
+cd D:\xiaob\planner
+D:\Miniconda3\python.exe -m pytest tests -v
+```
+
+覆盖：记忆树存储、任务库 CRUD、agent 生成管线（mock 驱动建任务→拆解→勾选闭环）、
+heartbeat 护栏、DND 窗口、buffer 重启恢复、HTTP 全端点集成、事件 drain。
+
+## 已知限制 / 踩坑记录
+
+- **DeepSeek 严格校验 tool_calls 配对**：不使用 LangGraph checkpointer（yaya 实测 400），
+  buffer 持久化走 messages_to_dict → JSON 落 SQLite；
+- **close 竞态**（实测 2026-08-05）：连接被 `close()` 与在途语句交错时 `fetchone()` 返回
+  None——任务库所有访问与 close 走同一把 RLock 串行化，会话 close 先等 `chat_lock` 释放；
+- **Windows WinError 10053**：HTTP/1.0 规避 keep-alive 拆除竞态；前端轮询带重试；
+- 真实 LLM 联调脚本：`tests/live_check.py`（消耗少量 API 额度，可选）。

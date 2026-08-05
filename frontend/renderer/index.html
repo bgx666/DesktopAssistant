@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; connect-src http://127.0.0.1:18771; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:;" />
+  <title>小助</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <!-- 球形态层：变形动画期间显示（圆 → 椭圆 → 矩形） -->
+  <div id="morph-ball">
+    <div class="morph-inner">
+      <span id="morph-status-dot"></span>
+    </div>
+  </div>
+
+  <!-- 面板 UI 层：窗口尺寸超过阈值后淡入 -->
+  <div id="panel-ui">
+    <!-- 标题栏（可拖拽） -->
+    <header id="titlebar">
+      <div id="logo"><span class="dot"></span><span id="title">小助</span></div>
+      <div id="status">
+        <span id="thinking" class="hidden">思考中…</span>
+        <span id="heartbeat" title="下次主动找你"></span>
+      </div>
+      <div id="titlebar-btns">
+        <button id="btn-dnd" title="免打扰">勿扰</button>
+        <button id="btn-fold" title="收起（变回悬浮球）">—</button>
+      </div>
+    </header>
+
+    <!-- Tab 导航 -->
+    <nav id="tabs">
+      <button class="tab active" data-tab="chat">聊天</button>
+      <button class="tab" data-tab="plan">今日计划<span id="plan-badge" class="badge hidden"></span></button>
+      <button class="tab" data-tab="tasks">任务</button>
+    </nav>
+
+    <!-- 聊天 -->
+    <section id="chat" class="view active">
+      <div id="messages"></div>
+      <form id="input-bar">
+        <input id="input" type="text" placeholder="告诉小助你要做什么…" autocomplete="off" />
+        <button id="send" type="submit">发送</button>
+      </form>
+    </section>
+
+    <!-- 今日计划 -->
+    <section id="plan" class="view">
+      <div id="plan-header">
+        <span id="plan-date"></span>
+        <span id="plan-progress"></span>
+      </div>
+      <div id="plan-list"></div>
+    </section>
+
+    <!-- 任务 -->
+    <section id="tasks" class="view">
+      <div id="task-list"></div>
+    </section>
+  </div>
+
+  <script src="morph.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,15 @@
+{
+  "name": "planner-frontend",
+  "version": "0.1.0",
+  "description": "小助 —— 学习工作助手悬浮窗（Electron）",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^37.0.0"
+  },
+  "dependencies": {
+    "koffi": "^3.1.4"
+  }
+}

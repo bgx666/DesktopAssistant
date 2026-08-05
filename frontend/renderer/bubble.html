@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; connect-src http://127.0.0.1:18771; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:;" />
+  <title>小助</title>
+  <link rel="stylesheet" href="bubble.css" />
+</head>
+<body>
+  <!-- 悬浮球：整窗可拖拽（drag 区域），中心圆点击弹出面板 -->
+  <div id="ball">
+    <div id="core" title="小助">
+      <span id="status-dot"></span>
+      <span id="badge" class="hidden"></span>
+    </div>
+  </div>
+  <script src="bubble.js"></script>
+</body>
+</html>
