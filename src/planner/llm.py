@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import random
@@ -79,7 +80,17 @@ class MockChatModel(BaseChatModel):
         last_user = self._last_user_content(messages)
         has_tools = bool(getattr(self, "_bound_tools", None) or kwargs.get("tools"))
         if not has_tools:
-            return self._make_result("（摘要）助手和用户讨论了任务安排，并按计划推进。")
+            # 压缩等独立调用：输出结构化 JSON（summary + profile + future_notes）
+            return self._make_result(json.dumps({
+                "summary": "（摘要）助手和用户讨论了任务安排，并按计划推进。",
+                "profile": {
+                    "preferences": ["喜欢晚上学习"],
+                    "personality": ["做事有计划"],
+                    "habits": [],
+                    "goals": ["按时完成学习计划"],
+                },
+                "future_notes": [],
+            }, ensure_ascii=False))
         if last_user.startswith(("（", "[", "【")):
             return self._heartbeat_reply()
         return self._player_reply()
@@ -129,11 +140,11 @@ class MockChatModel(BaseChatModel):
                         "priority": "high",
                     }))
                 else:
-                    undone = [t for t in db.get_today_plan(self._today()) if t["status"] != "done"]
+                    pending = db.list_pending()
                     todo = [t for t in tasks if t["status"] in ("todo", "in_progress")]
-                    if undone:
-                        text = "（今天的计划有条目还没完成，我先勾掉最早的一项。）"
-                        calls.append(self._tc("mark_plan_done", {"plan_id": undone[0]["id"]}))
+                    if pending:
+                        text = "（待办队列里还有没做的，我先勾掉最早的一项。）"
+                        calls.append(self._tc("mark_plan_done", {"plan_id": pending[0]["id"]}))
                     elif any(t["status"] == "todo" for t in todo):
                         text = "（有条任务还没有拆解，我来安排一下。）"
                         t = next(t for t in todo if t["status"] == "todo")

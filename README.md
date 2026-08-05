@@ -74,11 +74,31 @@ tests/            pytest（全部 mock LLM + tmp_path 隔离）
 
 ```
 data/
-  planner.db        任务/阶段/日计划/回访（WAL）
+  planner.db        任务/阶段/待办/回访（WAL）
   memory_tree.db    记忆树节点 + buffer_state（WAL）
   assistant/YYYY-MM-DD.jsonl  对话日志
   logs/planner.log  运行日志（RotatingFileHandler）
 ```
+
+**重置数据**：停掉进程后删除整个 `data/` 目录即可（任务、记忆、日志全部清空，重新开始）。
+
+## 记忆树节点字段与演进约定
+
+节点内容分两层：**结构字段留列，内容字段进 JSON**。加/删字段只改
+`planner/middleware.py` 的 pydantic model 与压缩提示词，存储零迁移。
+
+| 列 | 内容 |
+|---|---|
+| `summary` | 内容摘要（高频查询，独立列） |
+| `details` | 叶子原文；有 future_notes 时为 `{"messages": [...], "future_notes": [...]}` |
+| `profile` | 用户画像 JSON：`preferences / personality / habits / goals` |
+| `meta` | `{"schema_version": 1, ...}` 与未来扩展字段 |
+
+演进约定：
+- **加字段**：ProfileInfo / MemoryNodeOutput 加 Field + 提示词加说明（`meta` 为自由扩展位）
+- **删字段**：pydantic / 提示词去掉（旧数据中该字段保留但被忽略，`extra="ignore"`）
+- **破坏性变更**：`meta.schema_version` + 1，读取按版本分流
+- 读取一律容错：JSON 解析失败 → 默认值；前端/工具用 `.get()` 不直接索引
 
 ## 测试
 

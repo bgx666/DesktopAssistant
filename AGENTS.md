@@ -1,0 +1,44 @@
+# 小助 (planner) — 学习工作助手 Agent
+
+## 项目身份
+
+独立仓库（`D:\xiaob\planner`，不随 xiaob 主仓库提交）。Python 后端（LangChain create_agent + 中间件链）+ Electron 悬浮球前端。单机运行，SQLite 存储，无外部服务依赖。数据在 `data/`（git 忽略）。
+
+## 命令
+
+| 操作 | 命令 |
+|------|------|
+| 可编辑安装 | `D:\Miniconda3\python.exe -m pip install -e .` |
+| 启动后端 | `D:\Miniconda3\python.exe -m planner` → http://127.0.0.1:18771 |
+| Mock 模式 | `set PLANNER_MOCK_LLM=1` 后再启动 |
+| 前端 | `cd frontend && npm start`（自动拉起后端） |
+| 运行测试 | `D:\Miniconda3\python.exe -m pytest tests/ -v`（pytest，mock LLM，tmp_path 隔离） |
+
+LLM 配置走 `.env` / `D:\xiaob\.env`：`LLM_API_KEY` 必填，默认 DeepSeek。
+
+## 关键约定（容易猜错/踩过坑的）
+
+### ⚠️ 测试数据隔离（最高优先级）
+- **pytest**：已用 `tmp_path` + `PLANNER_DATA_ROOT` 隔离，不写真实 `data/` ✓
+- **端到端验证 / 手动联调脚本**：**必须**设置隔离数据目录，**绝不**让脚本直连默认 18771 的真实后端：
+  ```powershell
+  $env:PLANNER_DATA_ROOT = "$env:TEMP\opencode\planner_e2e"   # 每次测试前删掉重建
+  $env:PLANNER_MOCK_LLM = "1"
+  Remove-Item $env:PLANNER_DATA_ROOT -Recurse -Force -ErrorAction SilentlyContinue
+  ```
+  启动后端/Electron 时继承该环境变量；测试完杀进程。**真实用户对话、记忆树、任务只存在于默认 `data/`，验证脚本一律不许触碰。**
+- 深夜晚间（22:00-08:00）默认 DND 窗口会拦截心跳/自主生成——测试 nudge/心跳前先 `POST /dnd {"enabled": false}`。
+- Windows 端口复用坑：残留旧后端进程可能占着 18771（含真实模式），测试前 `Get-Process python | Stop-Process -Force` 清理。
+
+### 架构要点
+- 记忆树：`memory/sqlite_memory_tree.py`（分层摘要树：叶子压缩 + 向上递归，阈值 60/20/6/3）；压缩输出 `MemoryNodeOutput`（summary + profile 画像四维度 + future_notes + meta.schema_version），pydantic 结构化 + 降级解析
+- 节点字段演进：结构字段留列、内容字段进 JSON（profile/details/meta），加/删字段改 pydantic + 提示词即可，存储零迁移
+- 对话 buffer：内存 → 每次生成结束持久化到 memory_tree.db 的 buffer_state（重启恢复）
+- 全局状态用访问器：`game_state` 模式（session 状态机 `hidden → morphing_in → shown → morphing_out`）
+- 退出用 `doQuit()`（process.exit，app.quit 会被窗口 close 拦截）
+- 日志 `logging.getLogger("planner.*")` + RotatingFileHandler，不要 print
+
+## 文档地图
+
+- `README.md`：架构/运行/环境变量/字段演进约定
+- `docs/api-contract.md`：前后端契约

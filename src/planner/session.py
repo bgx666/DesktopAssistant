@@ -41,6 +41,13 @@ FALLBACK_HEARTBEAT_MINUTES = _config.PLANNER_FALLBACK_MINUTES
 MAX_WORKER_ROUNDS = 3            # 生成期间到达的新消息最多再补 N 轮
 DEFAULT_WAKE_MINUTES = 30        # 首次启动/未调度时的默认唤醒间隔
 
+# 心跳节奏自适应：
+# - 对话中（用户刚说话/在聊）→ 短心跳，随时跟进
+# - 用户沉默（自主唤醒多次没人理）→ 每次心跳逐渐加长，避免烦人
+DIALOG_HEARTBEAT_MINUTES = 10    # 对话默认心跳（用户刚说话后）
+SILENT_ESCALATE_STEP = 10        # 沉默时每次心跳加长的分钟数
+SILENT_ESCALATE_MAX = 120        # 沉默加长上限
+
 
 def _now() -> datetime:
     return datetime.now(_TZ)
@@ -83,6 +90,7 @@ class PlannerSession:
         self._next_heartbeat_at: float = 0.0
         self._heartbeat_minutes: int = 0
         self._heartbeat_note: str = ""
+        self._heartbeat_silent_count: int = 0   # 连续自主唤醒用户没说话的次数（沉默递进）
         self._activity: str = ""
         self._heartbeat_thread: threading.Thread | None = None
         self._stop_event = threading.Event()
@@ -243,6 +251,19 @@ class PlannerSession:
     def schedule_heartbeat(self, minutes: int, note: str = "") -> None:
         self.set_heartbeat_state(minutes, note)
 
+    def _cancel_heartbeat(self) -> None:
+        """取消挂起的心跳（玩家说话时重置旧的长时间心跳用）。"""
+        with self.buffer_lock:
+            self._next_heartbeat_at = 0.0
+        self._wake_event.set()
+
+    def _next_silent_minutes(self) -> int:
+        """按沉默次数计算下次心跳分钟数：对话 10 → 沉默逐步加长 → 上限 120。"""
+        if self._heartbeat_silent_count <= 0:
+            return DIALOG_HEARTBEAT_MINUTES
+        return min(SILENT_ESCALATE_MAX,
+                   DIALOG_HEARTBEAT_MINUTES + self._heartbeat_silent_count * SILENT_ESCALATE_STEP)
+
     def heartbeat_dict(self) -> dict:
         with self.buffer_lock:
             if self._next_heartbeat_at <= 0:
@@ -250,34 +271,43 @@ class PlannerSession:
             in_minutes = max(0, int((self._next_heartbeat_at - time.time()) / 60) + 1)
             return {"in_minutes": in_minutes, "note": self._heartbeat_note}
 
-    # ── 计划快照 ──────────────────────────────────────────────
+    # ── 待办队列快照 ──────────────────────────────────────────
 
     def _plan_snapshot_text(self) -> str | None:
-        """计划快照指纹变化时生成注入文本（None = 无变化）。"""
+        """动态待办队列指纹变化时生成注入文本（None = 无变化）。"""
         try:
             s = self.db.summary()
             fingerprint = json.dumps({
-                "t": s["tasks"], "d": s["today_plan_done"], "n": s["today_plan_total"],
-                "overdue": [p["id"] for p in s["overdue"]],
+                "t": s["tasks"],
+                "q": [(p["id"], p["status"], p["priority"]) for p in s["queue"]],
+                "overdue": [t["id"] for t in s["overdue_tasks"]],
             }, ensure_ascii=False, sort_keys=True)
             if fingerprint == self._last_plan_fingerprint:
                 return None
             self._last_plan_fingerprint = fingerprint
-            lines = [f"[当前计划]（{s['today']}，{_now().strftime('%H:%M')}）"]
-            tasks = [t for t in self.db.list_tasks() if t["status"] in ("todo", "in_progress")]
-            if tasks:
-                for t in tasks[:5]:
-                    lines.append(f"- #{t['id']}「{t['title']}」[{t['status']}] 截止 {t['due_date'] or '未定'}（{t['plan_done']}/{t['plan_total']}）")
-            if s["today_plan_undone"]:
-                lines.append(f"今日计划（{s['today_plan_done']}/{s['today_plan_total']}）待做：")
-                for p in s["today_plan_undone"][:8]:
-                    lines.append(f"  · #{p['id']} {p['content']}")
-            elif s["today_plan_total"]:
-                lines.append("今日计划已全部完成。")
-            if s["overdue"]:
-                lines.append("逾期未做：" + "；".join(f"#{p['id']} {p['content']}" for p in s["overdue"][:5]))
-            if not tasks and not s["today_plan_total"]:
+            lines = [f"[当前待办]（{s['today']}，{_now().strftime('%H:%M')}）"]
+            queue = s["queue"]
+            if queue:
+                lines.append(f"待办队列（{len(queue)} 项未完成，按紧急度排序）：")
+                for i, p in enumerate(queue[:8], 1):
+                    due = p.get("task_due") or ""
+                    due_txt = f"，截止 {due}" if due else ""
+                    lines.append(f"  {i}. #{p['id']} {p['content']}（{p['task_title']}{due_txt}）")
+            else:
+                lines.append("（目前没有待办条目。）")
+            # 未拆解的任务（提醒 agent 可以拆解或直接建议）
+            raw_tasks = [t for t in self.db.list_tasks()
+                         if t["status"] in ("todo", "in_progress") and t["plan_total"] == 0]
+            if raw_tasks:
+                lines.append("尚未拆解的任务：" + "；".join(
+                    f"#{t['id']}「{t['title']}」" for t in raw_tasks[:5]))
+            if not queue and not raw_tasks:
                 lines.append("（目前没有待办任务，可以问问用户最近想做什么。）")
+            if s["overdue_tasks"]:
+                lines.append("已逾期：" + "；".join(
+                    f"#{t['id']}「{t['title']}」" for t in s["overdue_tasks"][:5]))
+            if s["tasks"]["in_progress"] or s["tasks"]["todo"]:
+                lines.append(f"进行中任务 {s['tasks']['in_progress']} 个，待开始 {s['tasks']['todo']} 个。")
             return "\n".join(lines)
         except Exception:
             _logger.exception("[session] 计划快照生成失败")
@@ -395,10 +425,10 @@ class PlannerSession:
             today = now.strftime("%Y-%m-%d")
             if now.hour == _config.PLANNER_MORNING_HOUR and last_morning != today:
                 last_morning = today
-                self._fire_scheduled(f"[早晨] 早上好。现在是 {now.strftime('%H:%M')}，新的一天开始了。")
+                self._fire_scheduled(f"[早晨] 早上好。现在是 {now.strftime('%H:%M')}，新的一天开始了。看看待办队列，安排一下接下来做什么。")
             if now.hour == _config.PLANNER_EVENING_HOUR and last_evening != today:
                 last_evening = today
-                self._fire_scheduled(f"[晚间] 现在是 {now.strftime('%H:%M')}，今天快结束了。")
+                self._fire_scheduled(f"[晚间] 现在是 {now.strftime('%H:%M')}，回顾一下今天做了什么，没做的提醒用户，调整接下来的安排。")
             # 逾期检查（每 10 分钟一次，避免重复轰炸）
             if now.minute % 10 == 0:
                 self._check_overdue()
@@ -424,9 +454,12 @@ class PlannerSession:
                 self._heartbeat_note = ""
             if self.in_dnd():
                 # 免打扰：不打扰，顺延一个正常间隔
+                self._heartbeat_silent_count += 1
                 self.schedule_heartbeat(FALLBACK_HEARTBEAT_MINUTES, note)
                 _logger.info("[heartbeat] 免打扰时段，顺延")
                 return
+            # 自主唤醒 = 用户沉默一次 → 心跳逐步加长
+            self._heartbeat_silent_count += 1
             _logger.info("[heartbeat] 触发自主生成（距上次 %d 分钟：%s）", minutes, note)
             text = (f"（{minutes} 分钟过去了。你醒了过来。{note + '。' if note else ''}"
                     f"可以看看用户的任务进度，决定要不要提醒或调整安排。）")
@@ -445,28 +478,28 @@ class PlannerSession:
             self._spawn_worker("scheduled")
 
     def _check_overdue(self) -> None:
-        """计划到期未完成超过 1 小时的逾期检查（每天至多提醒一次，去重用集合）。"""
+        """逾期任务检查（每天至多提醒一次，去重用集合）。"""
         if self.in_dnd():
             return
         try:
-            overdue = self.db.list_pending_before(_now().strftime("%Y-%m-%d"))
+            overdue = self.db.list_overdue_tasks(_now().strftime("%Y-%m-%d"))
         except Exception:
             return
-        pending = [p for p in overdue if p["id"] not in getattr(self, "_reminded_overdue", set())]
+        pending = [t for t in overdue if t["id"] not in getattr(self, "_reminded_overdue", set())]
         if not pending:
             return
         if not hasattr(self, "_reminded_overdue"):
             self._reminded_overdue = set()
         if len(pending) > 3:
             pending = pending[:3]
-        for p in pending:
-            self._reminded_overdue.add(p["id"])
+        for t in pending:
+            self._reminded_overdue.add(t["id"])
         with self.chat_lock:
             with self.buffer_lock:
                 if self._generating:
                     return
-            text = ("[提醒] 你注意到有几条计划已经逾期还没做："
-                    + "；".join(f"#{p['id']} {p['date']}「{p['content']}」" for p in pending)
+            text = ("[提醒] 你注意到有几个任务已经逾期还没完成："
+                    + "；".join(f"#{t['id']}「{t['title']}」截止 {t['due_date']}" for t in pending)
                     + "。")
             self._receive(text, trigger=True)
             self._spawn_worker("scheduled")
@@ -474,8 +507,15 @@ class PlannerSession:
     # ── 玩家消息 ──────────────────────────────────────────────
 
     def enqueue_player_message(self, message: str) -> bool:
-        """注入玩家消息并立即触发回复生成。"""
+        """注入玩家消息并立即触发回复生成。
+
+        用户说话 = 活跃状态：重置挂起的旧心跳（避免"1 小时后才醒来"的残留），
+        设对话默认短心跳并清零沉默计数；生成中 LLM 会再调 heartbeat 覆盖。
+        """
         now = _now()
+        self._cancel_heartbeat()
+        self._heartbeat_silent_count = 0
+        self.schedule_heartbeat(DIALOG_HEARTBEAT_MINUTES)
         self._receive(f"[{now.strftime('%H:%M')}] {PLAYER_NAME}对你说：{message}", trigger=True)
         self._save_log("user", message)
         self._wake_event.set()
@@ -535,29 +575,119 @@ class PlannerSession:
             self._save_buffer_state()
 
     def _run_agent(self) -> None:
-        """agent.invoke：model ↔ tools 循环直到停止（无工具调用 / heartbeat / 玩家让位）。"""
+        """agent.stream：model ↔ tools 循环直到停止（无工具调用 / heartbeat / 玩家让位）。
+
+        流式输出：stream_mode=["messages", "values"]——
+        - messages：AIMessageChunk 逐 token → push text_stream（面板逐字渲染）；
+          非流式模型（mock）yield 完整 AIMessage → 整段作为一条 chunk
+        - values：完整 state（removes 已生效）→ 最终 messages 回写 buffer、
+          set_heartbeat_called 兜底判断；每轮模型文本收束时 push 完整 text（气泡 toast 用）
+        """
+        from langchain_core.messages import AIMessage, AIMessageChunk
+
         self._repair_buffer()
         with self.buffer_lock:
             input_msgs = list(self.recent_buffer)
+        final_messages = None
+        heartbeat_called = False
+        current_msg_id = None
+        current_chunks = []
+        seen_count = 0      # 已处理的消息数（增量检测工具调用/结果）
         try:
-            result = self._agent.invoke(
+            stream = self._agent.stream(
                 {"messages": input_msgs, "model_call_count": 0, "set_heartbeat_called": False},
+                stream_mode=["messages", "values"],
             )
+            for item in stream:
+                kind = item[0]
+                data = item[1]
+                if kind == "messages":
+                    chunk, metadata = data
+                    if (metadata or {}).get("langgraph_node") != "model":
+                        continue
+                    # 真实流式模型 → AIMessageChunk（逐 token）；非流式（mock）→ 完整 AIMessage
+                    if not isinstance(chunk, (AIMessage, AIMessageChunk)):
+                        continue
+                    content = chunk.content or ""
+                    if not content:
+                        continue
+                    if current_msg_id is None:
+                        current_msg_id = uuid.uuid4().hex[:12]
+                    current_chunks.append(content)
+                    self.push_event({
+                        "type": "text_stream",
+                        "content": content,
+                        "msg_id": current_msg_id,
+                    })
+                elif kind == "values":
+                    # 完整 state：最终消息列表（removes 已生效）+ heartbeat 标志
+                    msgs = data.get("messages")
+                    if msgs is not None:
+                        final_messages = msgs
+                    if data.get("set_heartbeat_called"):
+                        heartbeat_called = True
+                    # 增量检测工具调用与结果（工具卡片事件）
+                    if msgs is not None and len(msgs) > seen_count:
+                        for m in msgs[seen_count:]:
+                            self._emit_tool_events(m)
+                        seen_count = len(msgs)
+                    # 每轮模型文本收束 → 完整文本事件（气泡 toast 用）
+                    if current_chunks:
+                        full_text = "".join(current_chunks)
+                        self.push_text(full_text)
+                        self._save_log("assistant", full_text)
+                        current_chunks = []
+                        current_msg_id = None
         except Exception as exc:
-            _logger.exception("[agent] invoke 异常")
+            _logger.exception("[agent] stream 异常")
             self.push_log(f"小助走神了一下（生成出错：{exc}）")
-            self.schedule_heartbeat(FALLBACK_HEARTBEAT_MINUTES)
+            self.schedule_heartbeat(self._next_silent_minutes())
             return
-        with self.buffer_lock:
-            new_msgs = list(result.get("messages") or [])
-            self.recent_buffer = new_msgs
-        # 兜底心跳：LLM 没调 heartbeat
-        if not result.get("set_heartbeat_called"):
-            _logger.info("[agent] 未调用 heartbeat，兜底 %d 分钟", FALLBACK_HEARTBEAT_MINUTES)
-            self.schedule_heartbeat(FALLBACK_HEARTBEAT_MINUTES)
+        if final_messages:
+            with self.buffer_lock:
+                self.recent_buffer = list(final_messages)
+        # 兜底心跳：LLM 没调 heartbeat → 按对话/沉默节奏自适应
+        if not heartbeat_called:
+            minutes = self._next_silent_minutes()
+            _logger.info("[agent] 未调用 heartbeat，兜底 %d 分钟", minutes)
+            self.schedule_heartbeat(minutes)
         self.push_plan_update()
 
+    def _emit_tool_events(self, m) -> None:
+        """从新增消息中提取工具调用/结果，推送前端工具卡片事件。"""
+        mtype = getattr(m, "type", None)
+        if mtype == "ai" and getattr(m, "tool_calls", None):
+            for tc in m.tool_calls:
+                name = tc.get("name", "?")
+                if name == "heartbeat":
+                    continue   # 心跳收尾不算工具动作，不展示
+                try:
+                    args = tc.get("args", {})
+                except Exception:
+                    args = {}
+                self.push_event({"type": "tool_call", "id": tc.get("id", ""),
+                                 "name": name, "args": args})
+        elif mtype == "tool":
+            self.push_event({"type": "tool_result", "id": getattr(m, "tool_call_id", ""),
+                             "content": str(getattr(m, "content", "") or "")})
+
     # ── 对外状态 ──────────────────────────────────────────────
+
+    # ── 上下文统计（token 估算）────────────────────────────────
+
+    def context_stats(self) -> dict:
+        """当前上下文的长度估算（无 tokenizer，用字符数近似：≈字符数/2）。
+
+        范围：system prompt + 对话 buffer（含压缩节点消息）。
+        """
+        chars = len(self.system_prompt or "")
+        with self.buffer_lock:
+            for m in self.recent_buffer:
+                content = getattr(m, "content", "") or ""
+                if isinstance(content, str):
+                    chars += len(content)
+            msgs = len(self.recent_buffer)
+        return {"messages": msgs, "chars": chars, "tokens": chars // 2}
 
     def state_dict(self) -> dict:
         with self.buffer_lock:
@@ -571,9 +701,10 @@ class PlannerSession:
                 "plan": {
                     "today": s["today"],
                     "tasks": s["tasks"],
-                    "today_plan_total": s["today_plan_total"],
-                    "today_plan_done": s["today_plan_done"],
-                    "overdue_count": len(s["overdue"]),
+                    "pending_total": s["pending_total"],
+                    "pending_done": s["pending_done"],
+                    "overdue_count": len(s["overdue_tasks"]),
                 },
+                "context": self.context_stats(),
                 "activity": self._activity,
             }

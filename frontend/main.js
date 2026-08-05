@@ -349,10 +349,120 @@ function doQuit() {
   quitting = true;
   try {
     if (tray && !tray.isDestroyed()) tray.destroy();
+    if (toastWin && !toastWin.isDestroyed()) toastWin.destroy();
     if (panelWin && !panelWin.isDestroyed()) panelWin.destroy();
     if (bubbleWin && !bubbleWin.isDestroyed()) bubbleWin.destroy();
   } catch { /* 忽略 */ }
   setTimeout(() => process.exit(0), 50);
+}
+
+// ── 气泡窗（小助未展开时主动说话的提示）────────────────────
+// bubble 窗口轮询 /dequeue 拿到 text 事件 → 这里弹出独立透明气泡窗，
+// 显示在悬浮球旁，几秒后自动消失；点击气泡展开面板。
+const TOAST_W = 280;
+const TOAST_H = 110;
+const TOAST_MS = 6000;
+
+let toastWin = null;
+let toastTimer = null;
+let toastQueue = [];
+let toastShowing = false;
+let toastLoaded = false;    // toast 页面加载完成（listener 就绪）
+let pendingToast = null;    // 加载完成前暂存的 {text, above}
+
+function createToast() {
+  if (toastWin && !toastWin.isDestroyed()) return;
+  toastWin = new BrowserWindow({
+    width: TOAST_W,
+    height: TOAST_H,
+    frame: false,
+    transparent: true,
+    hasShadow: false,
+    resizable: false,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    show: false,
+    backgroundColor: '#00000000',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+  toastWin.loadFile(path.join(__dirname, 'renderer', 'toast.html'));
+  toastWin.setAlwaysOnTop(true, 'pop-up-menu');
+  toastWin.webContents.once('did-finish-load', () => {
+    toastLoaded = true;
+    if (pendingToast) {
+      const p = pendingToast;
+      pendingToast = null;
+      displayToast(p.text, p.above);
+    }
+  });
+  toastWin.on('closed', () => { toastWin = null; toastLoaded = false; });
+}
+
+function showToast(text) {
+  if (quitting || panelState !== 'hidden') return;   // 面板展开时不需要气泡
+  if (!text || !String(text).trim()) return;
+  toastQueue.push(String(text).trim());
+  if (!toastShowing) pumpToast();
+}
+
+function toastPos() {
+  const b = bubbleWin && !bubbleWin.isDestroyed() ? bubbleWin.getBounds() : null;
+  const disp = screen.getDisplayNearestPoint({
+    x: (b ? b.x + b.width / 2 : 0), y: (b ? b.y : 0),
+  }).workArea;
+  let x = b ? Math.round(b.x + b.width / 2 - TOAST_W / 2) : disp.x + 40;
+  let y = b ? b.y - TOAST_H - 10 : disp.y + 40;
+  let above = true;
+  if (y < disp.y + 4) {
+    y = b ? b.y + b.height + 10 : disp.y + 40;
+    above = false;
+  }
+  x = Math.max(disp.x + 4, Math.min(x, disp.x + disp.width - TOAST_W - 4));
+  return { x, y, above };
+}
+
+function displayToast(text, above) {
+  const pos = toastPos();
+  toastWin.setBounds({ x: pos.x, y: pos.y, width: TOAST_W, height: TOAST_H });
+  toastWin.webContents.send('toast-text', { text, above });
+  toastWin.showInactive();   // 不抢焦点
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => {
+    if (toastWin && !toastWin.isDestroyed()) toastWin.hide();
+    pumpToast();
+  }, TOAST_MS);
+}
+
+function pumpToast() {
+  if (quitting || panelState !== 'hidden') {        // 中途展开面板 → 停止队列
+    toastShowing = false;
+    toastQueue = [];
+    pendingToast = null;
+    return;
+  }
+  if (!toastQueue.length) {
+    toastShowing = false;
+    return;
+  }
+  toastShowing = true;
+  const text = toastQueue.shift();
+  if (!toastWin || toastWin.isDestroyed()) {
+    createToast();
+    toastLoaded = false;
+  }
+  if (!toastWin || toastWin.isDestroyed()) {
+    toastShowing = false;
+    return;
+  }
+  if (!toastLoaded) {
+    pendingToast = { text, above: true };   // 加载完成由 did-finish-load 补发
+    return;
+  }
+  displayToast(text, true);
 }
 
 // ── 托盘 ────────────────────────────────────────────────────
@@ -399,6 +509,16 @@ function toggleDndFromMain() {
 
 // ── IPC：渲染进程 ↔ 主进程 ──────────────────────────────────
 ipcMain.on('toggle-panel', () => togglePanel());
+ipcMain.handle('get-panel-state', () => panelState);
+ipcMain.on('toast-show', (e, text) => showToast(text));
+ipcMain.on('toast-click', () => {
+  // 点击气泡 → 收起气泡并展开面板
+  if (toastWin && !toastWin.isDestroyed()) toastWin.hide();
+  clearTimeout(toastTimer);
+  toastQueue = [];
+  toastShowing = false;
+  togglePanel();
+});
 ipcMain.on('show-panel', () => {
   if (panelState === 'hidden') morphIn();
 });
@@ -417,7 +537,11 @@ ipcMain.on('morph-in-done', () => {
   clearMorphTimeout();
   panelState = 'shown';
   ignoreBlurUntil = Date.now() + 500;   // 防 focus 延迟失败的闪回
-  if (panelWin && !panelWin.isDestroyed()) panelWin.focus();
+  if (panelWin && !panelWin.isDestroyed()) {
+    panelWin.focus();
+    // 通知 renderer 补渲染隐藏期间的气泡消息
+    panelWin.webContents.send('panel-shown');
+  }
 });
 ipcMain.on('morph-out-done', () => {
   clearMorphTimeout();
@@ -437,8 +561,7 @@ ipcMain.on('move-bubble', (e, x, y) => {
     bubbleWin.setPosition(Math.round(x), Math.round(y));
   }
 });
-ipcMain.on('quit-app', () => doQuit());
-ipcMain.on('bubble-menu', (e) => {
+ipcMain.on('quit-app', () => doQuit());ipcMain.on('bubble-menu', (e) => {
   const menu = Menu.buildFromTemplate([
     { label: '打开小助', click: () => togglePanel() },
     { label: '切换免打扰', click: () => toggleDndFromMain() },

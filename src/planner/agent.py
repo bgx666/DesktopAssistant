@@ -27,7 +27,6 @@ from .middleware import (
     PlanSnapshotMiddleware,
     PlannerState,
     PlayerPriorityMiddleware,
-    StreamTextMiddleware,
     SummarizationMiddleware,
 )
 from .tools import build_tools
@@ -36,7 +35,11 @@ _logger = logging.getLogger("planner.agent")
 
 
 def build_planner_agent(session):
-    """构建编译后的 agent 图（每次模式切换/模型注入时重建）。"""
+    """构建编译后的 agent 图（每次模式切换/模型注入时重建）。
+
+    流式输出由 session._run_agent 的 agent.stream（stream_mode=["messages","updates"]）
+    承担（text_stream 逐字推送 + text 完整文本），不再需要 StreamTextMiddleware。
+    """
     model = session._get_llm()  # mock=MockChatModel / 真实=ChatOpenAI
     middleware = [
         DndGuardMiddleware(session),
@@ -44,7 +47,6 @@ def build_planner_agent(session):
         PlayerPriorityMiddleware(session),
         NudgeMiddleware(),
         HeartbeatTrackMiddleware(),
-        StreamTextMiddleware(session),
         LoggingMiddleware(session),
         SummarizationMiddleware(session),
         ModelCallLimitMiddleware(run_limit=10, exit_behavior="end"),

@@ -110,7 +110,8 @@ def build_tools(session) -> list[BaseTool]:
 
     @tool(args_schema=BreakDownInput)
     def break_down_task(task_id: int, phases: list[PhaseInput]) -> str:
-        """把任务拆解成阶段 + 逐日计划（每天做什么）。拆解从今天开始排期，phase 的 days 决定阶段跨度。"""
+        """把任务拆解成阶段 + 待办条目（接下来要做什么）。拆解不排固定日期——
+        每天做什么由 get_next_actions 按紧急度动态安排。"""
         err = _require_db()
         if err:
             return err
@@ -119,8 +120,6 @@ def build_tools(session) -> list[BaseTool]:
             return f"找不到任务 #{task_id}。"
         if not phases:
             return "phases 不能为空。"
-        today = _today()
-        cursor = 0
         total_items = 0
         lines = [f"「{task['title']}」拆解完成："]
         for seq, ph in enumerate(phases):
@@ -129,25 +128,23 @@ def build_tools(session) -> list[BaseTool]:
             if not title:
                 return f"第 {seq + 1} 个阶段缺少 title。"
             pid = db.add_phase(task_id, seq, title, str(ph.description or ""), days)
-            lines.append(f"- 阶段{seq + 1}《{title}》（{days} 天）：")
+            lines.append(f"- 阶段{seq + 1}《{title}》（约{days} 天）：")
             for it in ph.items:
-                offset = max(0, int(it.date_offset or 0))
                 content = str(it.content or "").strip()
                 if not content:
                     continue
                 est = max(0, int(it.est_minutes or 0))
-                d = TasksDb.add_days(today, cursor + offset)
-                db.add_plan_item(task_id, pid, d, total_items, content, est)
-                lines.append(f"  · {d} {content}" + (f"（约{est}分钟）" if est else ""))
+                # 动态待办：不排固定日期，由优先级/截止时间决定先后
+                db.add_plan_item(task_id, pid, None, total_items, content, est, priority=0)
+                lines.append(f"  · {content}" + (f"（约{est}分钟）" if est else ""))
                 total_items += 1
-            cursor += days
         if total_items == 0:
-            return "拆解失败：没有任何逐日条目。"
-        db.update_task_status(task_id, "in_progress", f"拆解为 {len(phases)} 个阶段、{total_items} 条日计划")
+            return "拆解失败：没有任何待办条目。"
+        db.update_task_status(task_id, "in_progress", f"拆解为 {len(phases)} 个阶段、{total_items} 条待办")
         if db.get_phases(task_id) and len(db.get_phases(task_id)) >= 1:
             db.set_phase_status(db.get_phases(task_id)[0]["id"], "active")
-        session.push_log(f"任务 #{task_id} 已拆解：{len(phases)} 阶段 / {total_items} 条日计划")
-        session.push_event({"type": "plan_update", "date": today})
+        session.push_log(f"任务 #{task_id} 已拆解：{len(phases)} 阶段 / {total_items} 条待办")
+        session.push_event({"type": "plan_update", "date": _today()})
         return "\n".join(lines)
 
     @tool(parse_docstring=True)
@@ -193,10 +190,11 @@ def build_tools(session) -> list[BaseTool]:
         for ph in task["phases"]:
             lines.append(f"· 阶段{ph['seq'] + 1}《{ph['title']}》[{ph['status']}]（{ph['days']} 天）")
         if task["plan_items"]:
-            lines.append("日计划：")
+            lines.append("待办：")
             for p in task["plan_items"]:
                 mark = "✓" if p["status"] == "done" else "○"
-                lines.append(f"  {mark} {p['date']} #{p['id']} {p['content']}")
+                d = p["date"] or "（动态安排）"
+                lines.append(f"  {mark} {d} #{p['id']} {p['content']}")
         return "\n".join(lines)
 
     @tool(args_schema=HeartbeatInput)
@@ -207,18 +205,19 @@ def build_tools(session) -> list[BaseTool]:
 
     @tool(parse_docstring=True)
     def mark_plan_done(plan_id: int) -> str:
-        """勾选完成一条日计划。如果任务的所有条目都完成，任务会自动标记为 done。
+        """勾选完成一条待办（用户确认做完了才调用——不做就不推进进度）。
+        如果任务的所有待办都完成，任务自动标记为 done。
 
         Args:
-            plan_id: 日计划条目 id
+            plan_id: 待办条目 id
         """
         err = _require_db()
         if err:
             return err
-        items = db.get_plan()
+        items = db.list_pending()
         target = next((p for p in items if p["id"] == plan_id), None)
         if target is None:
-            return f"找不到日计划条目 #{plan_id}。"
+            return f"找不到待办 #{plan_id}。"
         if not db.set_plan_status(plan_id, "done"):
             return f"勾选 #{plan_id} 失败。"
         # 阶段/任务自动推进
@@ -230,10 +229,10 @@ def build_tools(session) -> list[BaseTool]:
                     if ph_items and all(p["status"] == "done" for p in ph_items):
                         db.set_phase_status(ph["id"], "done")
             if task["plan_items"] and all(p["status"] == "done" for p in task["plan_items"]):
-                db.update_task_status(target["task_id"], "done", "全部日计划完成")
+                db.update_task_status(target["task_id"], "done", "全部待办完成")
                 session.push_log(f"任务 #{task['id']}「{task['title']}」已完成！")
         session.push_event({"type": "plan_update", "date": _today()})
-        return f"已勾选完成：{target['date']}「{target['content']}」。"
+        return f"已勾选完成：「{target['content']}」。"
 
     @tool(args_schema=DndInput)
     def set_do_not_disturb(enabled: bool, until_hour: int | None = None) -> str:
@@ -279,26 +278,49 @@ def build_tools(session) -> list[BaseTool]:
         return f"任务 #{task_id} 状态已更新为 {status}。"
 
     @tool(parse_docstring=True)
-    def get_today_plan() -> str:
-        """查看今天的计划：今天该做什么、完成多少、有没有逾期未做的。"""
+    def get_next_actions() -> str:
+        """查看接下来该做什么：按 紧急度（新任务插队、deadline 临近）动态排序的待办队列。
+        这是你安排用户行动的依据——每次规划都先调它。"""
         err = _require_db()
         if err:
             return err
         s = db.summary(_today())
-        lines = [f"今天是 {s['today']}："]
-        if s["today_plan_undone"]:
-            lines.append(f"今日计划 {s['today_plan_done']}/{s['today_plan_total']} 完成，待做：")
-            for p in s["today_plan_undone"]:
-                lines.append(f"  ○ #{p['id']} {p['content']}")
-        else:
-            lines.append(f"今日计划 {s['today_plan_total']} 项，全部完成。")
-        if s["overdue"]:
-            lines.append("逾期未做：")
-            for p in s["overdue"][:5]:
-                lines.append(f"  ! #{p['id']} {p['date']} {p['content']}")
+        queue = s["queue"]
+        lines = [f"动态待办队列（共 {len(queue)} 项未完成）："]
+        if not queue:
+            lines.append("（目前没有待办，可以问问用户最近想做什么。）")
+        for i, p in enumerate(queue, 1):
+            due = p.get("task_due") or ""
+            due_txt = f"，截止 {due}" if due else ""
+            prio_txt = f"，权重 {p['priority']}" if p["priority"] else ""
+            lines.append(f"  {i}. #{p['id']} {p['content']}（{p['task_title']}{due_txt}{prio_txt}）")
+        if s["overdue_tasks"]:
+            lines.append("已逾期任务（优先处理）：")
+            for t in s["overdue_tasks"]:
+                lines.append(f"  ! #{t['id']}「{t['title']}」截止 {t['due_date']}")
         if s["tasks"]["in_progress"] or s["tasks"]["todo"]:
             lines.append(f"进行中任务 {s['tasks']['in_progress']} 个，待开始 {s['tasks']['todo']} 个。")
         return "\n".join(lines)
+
+    @tool(parse_docstring=True)
+    def prioritize(plan_id: int) -> str:
+        """把某条待办提到队列最前（突发要紧事插队用，如用户说「先做这个」）。
+
+        Args:
+            plan_id: 待办条目 id（get_next_actions 里的 #id）
+        """
+        err = _require_db()
+        if err:
+            return err
+        items = db.list_pending()
+        target = next((p for p in items if p["id"] == plan_id), None)
+        if target is None:
+            return f"找不到待办 #{plan_id}。"
+        db.bump_item_priority(plan_id)
+        db.add_review(task_id=target["task_id"], summary=f"优先处理：{target['content']}")
+        session.push_log(f"待办 #{plan_id} 已插队到最前")
+        session.push_event({"type": "plan_update", "date": _today()})
+        return f"「{target['content']}」已提到队列最前，接下来先做它。"
 
     @tool(parse_docstring=True)
     def explore_memory_tree(node_id: str) -> str:
@@ -313,9 +335,91 @@ def build_tools(session) -> list[BaseTool]:
             return f"找不到第 {node_id} 页的记录。"
         return json.dumps(info, ensure_ascii=False)
 
+    # ── 文件读取（只读；本工具集不存在任何写文件工具）──────────
+
+    FILE_READ_LIMIT = 4000        # 单次读取字符上限（约 2000 token）
+    FILE_MAX_BYTES = 50 * 1024 * 1024  # 超过该大小的文件拒绝读取
+
+    @tool(parse_docstring=True)
+    def list_dir(path: str) -> str:
+        """查看一个目录下有什么（文件和子目录），探索用户电脑上的文件用。
+        只读操作。
+
+        Args:
+            path: 目录绝对路径，如 D:\\project 或 C:\\Users\\用户名\\Documents
+        """
+        import os
+        try:
+            entries = os.listdir(path)
+        except (OSError, NotADirectoryError) as exc:
+            return f"无法列出目录：{exc}"
+        files, dirs = [], []
+        for name in sorted(entries):
+            try:
+                if os.path.isdir(os.path.join(path, name)):
+                    dirs.append(name + "/")
+                else:
+                    files.append(name)
+            except OSError:
+                continue
+        lines = [f"{path}（{len(dirs)} 个目录，{len(files)} 个文件）："]
+        if dirs:
+            lines.append("目录：" + "、".join(dirs[:50]))
+        if files:
+            lines.append("文件：" + "、".join(files[:50]))
+        return "\n".join(lines)
+
+    @tool(parse_docstring=True)
+    def read_file(path: str, start: int = 0, limit: int = 4000) -> str:
+        """读取电脑上的文本文件（只读，不能修改任何文件）。
+        大文件分段读：先用默认 start=0 读开头，再调大 start 继续读后面。
+
+        Args:
+            path: 文件绝对路径，如 D:\\project\\main.py
+            start: 从第几个字符开始读（分段用），默认 0
+            limit: 本次最多读取的字符数（1~8000），默认 4000
+        """
+        import os
+        try:
+            size = os.path.getsize(path)
+        except OSError as exc:
+            return f"无法访问文件：{exc}"
+        if size > FILE_MAX_BYTES:
+            return f"文件过大（{size / 1024 / 1024:.0f}MB），拒绝读取。"
+        # 先探测二进制（null 字节特征），再只读解码
+        try:
+            with open(path, "rb") as f:
+                head = f.read(2048)
+            if b"\x00" in head:
+                return "这是二进制文件，无法读取。"
+        except OSError as exc:
+            return f"无法读取文件：{exc}"
+        raw = None
+        for enc in ("utf-8", "gbk", "latin-1"):
+            try:
+                with open(path, "r", encoding=enc, errors="strict") as f:
+                    raw = f.read()
+                encoding = enc
+                break
+            except (UnicodeDecodeError, OSError):
+                continue
+        if raw is None:
+            return "无法解码为文本（可能是二进制或特殊编码）。"
+        limit = max(1, min(8000, int(limit or FILE_READ_LIMIT)))
+        start = max(0, int(start or 0))
+        total = len(raw)
+        if start >= total:
+            return f"（start={start} 超出文件长度 {total}，已到结尾）"
+        chunk = raw[start:start + limit]
+        head_info = f"{path}（共 {total} 字符，本次显示 {start}-{start + len(chunk)}）"
+        if start + len(chunk) < total:
+            head_info += "，如需继续可用 start 参数读取后续部分"
+        return f"{head_info}：\n{chunk}"
+
     return [create_task, break_down_task, list_tasks, get_task, heartbeat,
             mark_plan_done, set_do_not_disturb, reschedule, update_task_status,
-            get_today_plan, explore_memory_tree]
+            get_next_actions, prioritize, explore_memory_tree,
+            list_dir, read_file]
 
 
 def all_tool_schemas() -> list[dict]:

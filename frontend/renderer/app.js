@@ -51,10 +51,48 @@
   });
 
   // ── 事件处理（/dequeue）──────────────────────────────
+  // 流式：text_stream 逐字追加（msg_id 区分多轮）；text 完整文本已由
+  // 流式渲染过，面板忽略（气泡 toast 用）。
+  const streamMsgs = {};
+  const toolCards = {};
   function handleEvent(ev) {
-    if (ev.type === 'text') addMessage(ev.content, 'assistant');
-    else if (ev.type === 'log') addMessage(ev.content, 'log');
-    else if (ev.type === 'thinking') {
+    if (ev.type === 'text_stream') {
+      let el = streamMsgs[ev.msg_id];
+      if (!el) {
+        el = addMessage('', 'assistant');
+        streamMsgs[ev.msg_id] = el;
+      }
+      el.textContent += ev.content;
+      messages.scrollTop = messages.scrollHeight;
+    } else if (ev.type === 'tool_call') {
+      // 工具卡片：闪烁提示正在执行；点击展开参数与结果
+      const card = document.createElement('div');
+      card.className = 'tool-card running';
+      const argsText = ev.args ? JSON.stringify(ev.args, null, 1) : '';
+      card.innerHTML = `
+        <div class="tool-head"><span class="tool-spinner"></span>正在执行 ${escapeHtml(ev.name)}</div>
+        <div class="tool-detail">
+          ${argsText ? `<div class="tool-sec">参数</div><pre class="tool-pre">${escapeHtml(argsText)}</pre>` : ''}
+          <div class="tool-sec">结果</div><pre class="tool-pre tool-result">…</pre>
+        </div>`;
+      card.addEventListener('click', () => card.classList.toggle('expanded'));
+      toolCards[ev.id] = card;
+      messages.appendChild(card);
+      messages.scrollTop = messages.scrollHeight;
+    } else if (ev.type === 'tool_result') {
+      const card = toolCards[ev.id];
+      if (card) {
+        card.classList.remove('running');
+        card.classList.add('done');
+        card.querySelector('.tool-head').innerHTML =
+          `<span class="tool-check">✓</span>${escapeHtml(card.querySelector('.tool-head').textContent.replace(/正在执行/, '').trim())}`;
+        const pre = card.querySelector('.tool-result');
+        pre.textContent = ev.content;
+        card.setAttribute('title', '点击展开');
+      }
+    } else if (ev.type === 'log') {
+      if (ev.content) addMessage(ev.content, 'log');
+    } else if (ev.type === 'thinking') {
       $('#thinking').classList.toggle('hidden', !ev.value);
       $('.dot').classList.toggle('thinking', !!ev.value);
     } else if (ev.type === 'dnd' || ev.type === 'plan_update') {
@@ -63,8 +101,16 @@
   }
 
   // ── 轮询 ─────────────────────────────────────────────
+  // 面板隐藏时暂停 /dequeue 轮询（由悬浮球窗口消费事件并弹气泡），
+  // 避免两个窗口抢事件。panelState 提升到函数作用域（finally 里也要用）。
   async function poll() {
+    let panelState = null;
     try {
+      panelState = await window.planner.getPanelState();
+      if (panelState === 'hidden') {
+        setTimeout(poll, 600);
+        return;
+      }
       const data = await api('/dequeue');
       data.events.forEach(handleEvent);
       applyState(data.state);
@@ -76,7 +122,7 @@
     } catch {
       setOffline(true);
     } finally {
-      setTimeout(poll, 600);
+      if (panelState !== 'hidden') setTimeout(poll, 600);
     }
   }
 
@@ -86,6 +132,14 @@
     state.heartbeat = s.heartbeat;
     state.dnd = s.dnd;
     $('#btn-dnd').classList.toggle('on', !!(s.dnd && s.dnd.enabled && s.dnd.in_dnd));
+    // 上下文 token 估算（字符数近似）
+    const ctx = s.context;
+    if (ctx) {
+      $('#ctx-tokens').textContent = `约 ${ctx.tokens.toLocaleString()} token`;
+      $('#ctx-tokens').classList.toggle('warn', ctx.tokens > 60000);
+    } else {
+      $('#ctx-tokens').textContent = '';
+    }
     const hb = s.heartbeat;
     if (hb && hb.in_minutes > 0) {
       $('#heartbeat').textContent = hb.note
@@ -127,31 +181,32 @@
     return `${y}-${m}-${day}`;
   }
 
-  // ── 今日计划 ─────────────────────────────────────────
+  // ── 接下来（动态待办队列）──────────────────────────────
   async function refreshPlan() {
     const list = $('#plan-list');
     list.innerHTML = '<div class="empty-tip">加载中…</div>';
     try {
-      const dateStr = localDateStr(new Date());
-      const data = await api('/plan?date=' + dateStr);
-      const plan = data.plan || [];
-      const done = plan.filter((p) => p.status === 'done').length;
-      $('#plan-date').textContent = dateStr;
-      $('#plan-progress').textContent = `${done}/${plan.length} 完成`;
-      if (!plan.length) {
-        list.innerHTML = '<div class="empty-tip">今天还没有安排，告诉小助你想做什么</div>';
+      const data = await api('/next');
+      const queue = data.queue || [];
+      $('#plan-date').textContent = '待办队列（按紧急度排序）';
+      $('#plan-progress').textContent = `${queue.length} 项未完成`;
+      if (!queue.length) {
+        list.innerHTML = '<div class="empty-tip">没有待办，告诉小助你想做什么</div>';
         return;
       }
       list.innerHTML = '';
-      plan.forEach((p) => {
+      queue.forEach((p, idx) => {
         const card = document.createElement('div');
-        card.className = 'plan-card' + (p.status === 'done' ? ' done' : '');
+        card.className = 'plan-card';
+        const due = p.task_due ? `<span class="p-due">截止 ${escapeHtml(p.task_due)}</span>` : '';
         card.innerHTML = `
-          <input type="checkbox" ${p.status === 'done' ? 'checked' : ''} data-id="${p.id}" />
+          <span class="p-rank">${idx + 1}</span>
           <div class="p-content">
-            ${p.phase_title ? `<div class="p-task">${escapeHtml(p.task_title)} · ${escapeHtml(p.phase_title)}</div>` : ''}
+            <div class="p-task">${escapeHtml(p.task_title)}${p.phase_title ? ' · ' + escapeHtml(p.phase_title) : ''}</div>
             <div>${escapeHtml(p.content)}</div>
-          </div>`;
+            ${due}
+          </div>
+          <input type="checkbox" data-id="${p.id}" title="做完了勾选" />`;
         card.querySelector('input').addEventListener('change', async (e) => {
           try {
             await post('/plan/done', { plan_id: p.id });
@@ -231,6 +286,21 @@
     window.planner.hidePanel(); // 走 IPC 变形收回（不依赖 window.close 链路）
   });
 
+  // ── 历史消息（重启恢复 / 面板重新可见时补渲染）────────────
+  // 面板隐藏期间小助说的话只冒了气泡，展开面板时要补进对话框。
+  async function loadHistory(clear = true) {
+    try {
+      const data = await api('/history');
+      if (clear) messages.innerHTML = '';
+      (data.messages || []).forEach((m) => {
+        addMessage(m.content, m.role === 'assistant' ? 'assistant' : 'user');
+      });
+    } catch { /* 后端未连接则跳过 */ }
+  }
+
+  // 主进程通知：面板变形展开完成 → 重新加载历史（含隐藏期间的气泡消息）
+  window.planner.onPanelShown(() => loadHistory(true));
+
   // ── 启动 ─────────────────────────────────────────────
   (async () => {
     try {
@@ -242,6 +312,7 @@
     } catch {
       setOffline(true);
     }
+    loadHistory();
     poll();
   })();
 })();

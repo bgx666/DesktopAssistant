@@ -43,13 +43,14 @@ def test_summary_and_overdue(data_root):
     db = TasksDb(data_root / "planner.db")
     tid = db.create_task("过期任务", due_date="2026-08-01")
     db.add_plan_item(tid, None, "2026-08-01", 0, "早该做完的事")
-    db.add_plan_item(tid, None, "2026-08-05", 0, "今天的任务")
+    db.add_plan_item(tid, None, None, 1, "动态待办")
     today = "2026-08-05"
     s = db.summary(today)
-    assert s["today_plan_total"] == 1
-    assert s["today_plan_done"] == 0
-    assert len(s["overdue"]) == 1
-    assert s["overdue"][0]["content"] == "早该做完的事"
+    assert s["pending_total"] == 2
+    assert s["pending_done"] == 0
+    assert len(s["overdue_tasks"]) == 1
+    assert s["overdue_tasks"][0]["title"] == "过期任务"
+    assert s["queue"][0]["content"] == "早该做完的事" or s["queue"][1]["content"] == "早该做完的事"
     db.close()
 
 
@@ -68,3 +69,41 @@ def test_update_task_status_adds_review(data_root):
 def test_add_days(data_root):
     assert TasksDb.add_days("2026-08-05", 2) == "2026-08-07"
     assert TasksDb.add_days("2026-12-31", 1) == "2027-01-01"
+
+
+def test_pending_queue_sorted_by_priority_and_due(data_root):
+    db = TasksDb(data_root / "planner.db")
+    t1 = db.create_task("远期任务", due_date="2026-12-01")
+    t2 = db.create_task("紧急任务", due_date="2026-08-06")
+    t3 = db.create_task("无截止任务", due_date=None)
+    i1 = db.add_plan_item(t1, None, None, 0, "远期待办")
+    i2 = db.add_plan_item(t2, None, None, 0, "紧急待办")
+    i3 = db.add_plan_item(t3, None, None, 0, "普通待办")
+    # 默认：截止日期近的在前
+    q = db.list_pending()
+    assert [p["id"] for p in q] == [i2, i1, i3]
+    # 插队：优先级权重最大的在最前
+    db.bump_item_priority(i3)
+    q = db.list_pending()
+    assert q[0]["id"] == i3
+    assert q[0]["priority"] > 0
+    db.close()
+
+
+def test_break_down_items_have_no_fixed_date(data_root):
+    from planner.session import PlannerSession
+    from planner.tools import build_tools
+    s = PlannerSession(data_root, mock=True)
+    try:
+        tid = s.db.create_task("学 Python")
+        tools = {t.name: t for t in build_tools(s)}
+        tools["break_down_task"].invoke({
+            "task_id": tid,
+            "phases": [{"title": "语法", "days": 2,
+                        "items": [{"date_offset": 0, "content": "读第一章"}]}],
+        })
+        items = s.db.get_plan(task_id=tid)
+        assert len(items) == 1
+        assert items[0]["date"] is None, "动态待办不应有固定日期"
+    finally:
+        s.close()

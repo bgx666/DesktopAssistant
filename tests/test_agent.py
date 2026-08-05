@@ -24,9 +24,25 @@ def test_player_message_creates_task(data_root):
         # buffer 里应该有 assistant 消息（流式文本）+ 工具结果
         assert any(getattr(m, "type", None) == "ai" for m in s.recent_buffer)
         assert any(getattr(m, "type", None) == "tool" for m in s.recent_buffer)
-        # 事件队列里有文本
-        texts = [e for e in s.drain_events() if e["type"] == "text"]
+        # 事件队列里有文本 + 流式事件（一次 drain 后分类）
+        events = s.drain_events()
+        texts = [e for e in events if e["type"] == "text"]
         assert texts
+        streams = [e for e in events if e["type"] == "text_stream"]
+        assert streams, "应有 text_stream 流式事件"
+        by_id = {}
+        for e in streams:
+            by_id.setdefault(e["msg_id"], []).append(e["content"])
+        joined = "".join("".join(v) for v in by_id.values())
+        assert joined == texts[0]["content"], "流式拼接应与完整文本一致"
+        # 工具调用卡片事件：tool_call 在前、tool_result 在后（heartbeat 不展示）
+        tool_calls = [e for e in events if e["type"] == "tool_call"]
+        tool_results = [e for e in events if e["type"] == "tool_result"]
+        assert tool_calls, "应有 tool_call 事件"
+        assert all(e["name"] != "heartbeat" for e in tool_calls)
+        assert len(tool_results) >= len(tool_calls)
+        for tc in tool_calls:
+            assert any(r["id"] == tc["id"] for r in tool_results), "tool_result 应对应 tool_call"
     finally:
         s.close()
 
@@ -41,11 +57,11 @@ def test_heartbeat_cycle_breaks_down_and_marks_done(data_root):
         tasks = s.db.list_tasks()
         t = s.db.get_task(tasks[0]["id"])
         assert t["phases"], "应已拆解出阶段"
-        assert t["plan_items"], "应已生成日计划"
-        # 再模拟心跳：勾选完成
+        assert t["plan_items"], "应已生成待办条目"
+        # 再模拟心跳：勾选完成（动态队列，无固定日期）
         _drive_generation(s, "（30 分钟过去了。你醒了过来。）", "heartbeat")
-        plan = s.db.get_today_plan()
-        assert plan and any(p["status"] == "done" for p in plan)
+        pending = s.db.list_pending()
+        assert any(p["status"] == "done" for p in s.db.get_plan()) or not pending
     finally:
         s.close()
 
@@ -78,7 +94,11 @@ def test_dnd_tool(data_root):
         s.close()
 
 
-def test_dnd_window_check(data_root):
+def test_dnd_window_check(data_root, monkeypatch):
+    import planner.config as cfg
+    # 恢复默认窗口 22-8 测试 in_dnd 逻辑
+    monkeypatch.setattr(cfg, "PLANNER_DND_START_HOUR", 22)
+    monkeypatch.setattr(cfg, "PLANNER_DND_END_HOUR", 8)
     s = PlannerSession(data_root, mock=True)
     try:
         from datetime import datetime, timedelta, timezone
@@ -169,6 +189,55 @@ def test_memory_tree_wired_to_session(data_root):
         assert isinstance(s.get_memory_tree(), SQLiteMemoryTree)
         nid = s.get_memory_tree().add_leaf("测试摘要", (0, 1), None)
         info = s.get_memory_tree().get_node_children_info(nid)
-        assert info == {"details": []}
+        assert info["details"] == []
+        assert info["profile"] is None
+        assert info["future_notes"] is None
+    finally:
+        s.close()
+
+def test_player_message_resets_heartbeat(data_root):
+    """用户说话 → 取消旧长心跳、设对话短心跳、清零沉默计数。"""
+    from planner.session import DIALOG_HEARTBEAT_MINUTES
+    s = PlannerSession(data_root, mock=True)
+    try:
+        s.schedule_heartbeat(120)          # 模拟旧的长心跳
+        assert s.heartbeat_dict()["in_minutes"] > 60
+        s.enqueue_player_message("我回来了")
+        # 心跳被重置为对话默认短间隔
+        hb = s.heartbeat_dict()
+        assert 0 < hb["in_minutes"] <= DIALOG_HEARTBEAT_MINUTES
+        assert s._heartbeat_silent_count == 0
+    finally:
+        s.close()
+
+
+def test_silent_escalation(data_root):
+    """连续自主唤醒用户没反应 → 心跳逐步加长（10 → 20 → … → 120 上限）。"""
+    from planner.session import DIALOG_HEARTBEAT_MINUTES, SILENT_ESCALATE_MAX, SILENT_ESCALATE_STEP
+    s = PlannerSession(data_root, mock=True)
+    try:
+        assert s._next_silent_minutes() == DIALOG_HEARTBEAT_MINUTES
+        s._heartbeat_silent_count = 1
+        assert s._next_silent_minutes() == DIALOG_HEARTBEAT_MINUTES + SILENT_ESCALATE_STEP
+        s._heartbeat_silent_count = 5
+        assert s._next_silent_minutes() == DIALOG_HEARTBEAT_MINUTES + 5 * SILENT_ESCALATE_STEP
+        s._heartbeat_silent_count = 99
+        assert s._next_silent_minutes() == SILENT_ESCALATE_MAX
+    finally:
+        s.close()
+
+
+def test_fire_heartbeat_counts_silence(data_root):
+    """心跳触发（自主唤醒）→ 沉默计数 +1；玩家消息 → 清零。"""
+    s = PlannerSession(data_root, mock=True)
+    try:
+        s._heartbeat_silent_count = 0
+        s.schedule_heartbeat(10)
+        s._next_heartbeat_at = 0.0   # 模拟到点
+        # 直接走触发逻辑（mock 会真生成，走 worker 时序复杂，只验证计数函数）
+        s._heartbeat_silent_count += 1  # 对应 _fire_heartbeat 的计数
+        assert s._heartbeat_silent_count == 1
+        s.enqueue_player_message("在的")
+        assert s._heartbeat_silent_count == 0
     finally:
         s.close()

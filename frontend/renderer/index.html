@@ -22,6 +22,7 @@
       <div id="logo"><span class="dot"></span><span id="title">小助</span></div>
       <div id="status">
         <span id="thinking" class="hidden">思考中…</span>
+        <span id="ctx-tokens" title="当前上下文 token 估算">…</span>
         <span id="heartbeat" title="下次主动找你"></span>
       </div>
       <div id="titlebar-btns">
@@ -33,7 +34,7 @@
     <!-- Tab 导航 -->
     <nav id="tabs">
       <button class="tab active" data-tab="chat">聊天</button>
-      <button class="tab" data-tab="plan">今日计划<span id="plan-badge" class="badge hidden"></span></button>
+      <button class="tab" data-tab="plan">接下来<span id="plan-badge" class="badge hidden"></span></button>
       <button class="tab" data-tab="tasks">任务</button>
     </nav>
 
@@ -46,10 +47,10 @@
       </form>
     </section>
 
-    <!-- 今日计划 -->
+    <!-- 接下来（动态待办队列） -->
     <section id="plan" class="view">
       <div id="plan-header">
-        <span id="plan-date"></span>
+        <span id="plan-date">待办队列</span>
         <span id="plan-progress"></span>
       </div>
       <div id="plan-list"></div>

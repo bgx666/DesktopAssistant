@@ -90,6 +90,33 @@ class _Handler(BaseHTTPRequestHandler):
             query = parse_qs(parsed.query)
             date_ = query.get("date", [None])[0]
             self._send_json({"ok": True, "plan": self.session.db.get_plan(date_=date_)})
+        elif path == "/next":
+            # 动态待办队列（按紧急度排序）
+            self._send_json({"ok": True, "queue": self.session.db.list_pending()})
+        elif path == "/history":
+            # 对话历史（渲染聊天区用）：过滤系统注入的触发消息与压缩摘要节点
+            msgs = []
+            for m in self.session.recent_buffer:
+                meta = getattr(m, "metadata", None) or {}
+                if "node_id" in meta:
+                    continue
+                role = getattr(m, "type", "")
+                content = str(getattr(m, "content", "") or "")
+                if not content:
+                    continue
+                if role == "human":
+                    # 内部注入（[当前待办]/[早晨]/[提醒]/（心跳…））
+                    if content.startswith("（") or content.startswith("[当前"):
+                        continue
+                    if content.startswith("["):
+                        if "对你说：" in content:
+                            content = content.split("对你说：", 1)[1]
+                        else:
+                            continue
+                    msgs.append({"role": "user", "content": content})
+                elif role == "ai":
+                    msgs.append({"role": "assistant", "content": content})
+            self._send_json({"ok": True, "messages": msgs})
         else:
             self._send_json({"ok": False, "error": f"unknown endpoint: {path}"}, status=404)
 

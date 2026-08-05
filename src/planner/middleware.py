@@ -137,36 +137,6 @@ class HeartbeatTrackMiddleware(AgentMiddleware):
         return None
 
 
-# ── 流式文本推送 ─────────────────────────────────────────────
-
-class StreamTextMiddleware(AgentMiddleware):
-    """after_model：每轮 LLM 返回后立刻 push_text（流式推送，不等 invoke 结束）。
-
-    用 after_model（而非 wrap_model_call）——后者访问 response.result 可能消费
-    一次性响应对象，导致框架检测不到 tool_calls → 工具不执行。
-    """
-
-    def __init__(self, session) -> None:
-        super().__init__()
-        self.session = session
-
-    def after_model(self, state: PlannerState, runtime: Runtime) -> dict | None:
-        try:
-            msgs = state.get("messages") or []
-            if not msgs:
-                return None
-            last = msgs[-1]
-            if getattr(last, "type", None) != "ai":
-                return None
-            text = (getattr(last, "content", None) or "").strip()
-            if text:
-                self.session.push_text(text)
-                self.session._save_log("assistant", text)
-        except Exception:
-            _logger.exception("[middleware] 流式文本推送失败")
-        return None
-
-
 # ── 日志 ─────────────────────────────────────────────────────
 
 class LoggingMiddleware(AgentMiddleware):
@@ -218,25 +188,71 @@ SUMMARIZE_KEEP_MESSAGES = 20
 LEVEL_COMPACT_THRESHOLD = 6
 BRANCHING_FACTOR = 3
 
+from pydantic import BaseModel, Field  # noqa: E402
+
+
+class ProfileInfo(BaseModel):
+    """节点中提炼的用户画像（无画像信息则为空数组）。"""
+    preferences: list[str] = Field(default_factory=list, description="喜好与偏好：用户喜欢/偏爱什么")
+    personality: list[str] = Field(default_factory=list, description="性格特点：行为模式、处事风格")
+    habits: list[str] = Field(default_factory=list, description="习惯与作息：规律性行为")
+    goals: list[str] = Field(default_factory=list, description="目标与动机：为什么做、想达成什么")
+
+
+class MemoryNodeOutput(BaseModel):
+    """压缩节点的 LLM 结构化输出（叶子与父节点共用）。
+
+    字段演进约定：新增字段改本 model + 提示词即可，存储零迁移
+    （meta 为 JSON 扩展位；extra=ignore 丢弃未知字段）。
+    """
+
+    model_config = {"extra": "ignore"}
+
+    summary: str = Field(description="内容摘要：只总结事件/决定/对话进程，不要包含用户画像信息")
+    profile: ProfileInfo = Field(default_factory=ProfileInfo)
+    future_notes: list[str] = Field(
+        default_factory=list,
+        description="后续说明：参考待压缩区域之后的原始消息，对摘要/画像中的内容做出的"
+                    "澄清/修正/补全；仅当后续消息直接相关时填写，否则留空")
+    meta: dict = Field(default_factory=dict,
+                       description="节点元信息：schema_version 与未来扩展字段")
+
+
 _LEAF_INSTRUCTION = (
-    "请把以下内容压缩提取关键信息。\n"
-    "1. 关键信息要具体（任务、计划、决定、用户原话）\n"
-    "2. 不要继续对话\n\n"
+    "请把以下内容压缩为结构化 JSON（只输出 JSON，不要输出其他文字）。\n"
+    "**各字段按实际内容填写：没有相关信息的字段保持空（profile 各维度留空数组、"
+    "future_notes 留空数组），不要为了填充而编造、猜测或重复已有内容。**\n"
+    "字段说明：\n"
+    "1. summary：内容摘要——只总结事件、决定、对话进程；不要包含用户画像信息\n"
+    "2. profile：用户画像——从这段对话中提炼用户特征，没有相关信息则对应维度留空数组：\n"
+    "   preferences 喜好偏好 / personality 性格特点 / habits 习惯作息 / goals 目标动机\n"
+    "   可参考上下文里已有节点的画像：延续已有认知、补充新观察，不重复不矛盾\n"
+    "3. future_notes：后续说明——查看待压缩区域之后的原始消息，仅当后续消息直接解释/"
+    "澄清/修正/补全了本段内容时填写（注明对应本段的哪个点 + 后续消息怎么说）；"
+    "无关的未来消息不填；本段之后没有原始消息则留空\n\n"
+    "待压缩内容：\n"
     "{original_text}\n"
     "请给出压缩结果："
 )
 
 _PARENT_INSTRUCTION = (
-    "请把以下 {n} 段对话摘要的总体内容压缩提取关键信息。\n"
-    "1. 关键信息要具体\n"
-    "2. 不要继续对话\n\n"
+    "请把以下 {n} 个节点压缩为结构化 JSON（只输出 JSON，不要输出其他文字）。\n"
+    "**各字段按实际内容填写：没有相关信息的字段保持空（profile 各维度留空数组、"
+    "future_notes 留空数组），不要为了填充而编造、猜测或重复已有内容。**\n"
+    "字段说明：\n"
+    "1. summary：对子节点摘要的提炼\n"
+    "2. profile：对子节点画像的提炼上卷（同维度合并归纳，没有相关信息则对应维度留空数组）：\n"
+    "   preferences 喜好偏好 / personality 性格特点 / habits 习惯作息 / goals 目标动机\n"
+    "3. future_notes：子节点的后续说明若已被父级摘要/画像吸收则不必重复；"
+    "若有新的、未被吸收的澄清再填写\n\n"
+    "节点信息：\n"
     "{child_summaries}\n"
     "请给出压缩结果："
 )
 
 
 class SummarizationMiddleware(AgentMiddleware):
-    """压缩 + 记忆树一体化（移植自 yaya YayaSummarizationMiddleware）。
+    """压缩 + 记忆树一体化（移植自 yaya YayaSummarizationMiddleware，扩展画像字段）。
 
     触发（before_model，每轮模型调用前，一次 invoke 最多一个压缩周期）：
       1) 原始消息数 ≥ SUMMARIZE_TRIGGER_MESSAGES → 叶子压缩（对话 → level0 节点）
@@ -244,10 +260,15 @@ class SummarizationMiddleware(AgentMiddleware):
 
     压缩请求（独立压缩模型执行，不污染主会话上下文）：
       [SystemMessage(角色卡)] + [主会话 buffer 快照原样] + [压缩提示 + 待压缩内容]
+      ——前缀与主对话一致 → 服务端 prompt caching 命中；快照含"未来"原始消息，
+      future_notes 字段据此对摘要/画像做澄清。
 
-    落树：叶子 add_leaf（details 存原文，explore_memory_tree 可查）/ 父节点
-    compact（子节点 is_active=0）；buffer：RemoveMessage 删被压缩消息 + 追加
-    摘要消息（metadata["node_id"]，随 buffer 持久化）。
+    输出：MemoryNodeOutput（summary + profile + future_notes），经
+    with_structured_output(json_mode) 主通道 / model_validate_json 降级解析。
+
+    落树：叶子 add_leaf（details 存原文 + future_notes；profile 存画像）/ 父节点
+    compact（profile 上卷；子节点 is_active=0）；buffer：RemoveMessage 删被压缩
+    消息 + 追加全字段节点消息（metadata["node_id"]，随 buffer 持久化）。
     """
 
     def __init__(self, session) -> None:
@@ -283,6 +304,38 @@ class SummarizationMiddleware(AgentMiddleware):
             return {"messages": removes + adds}
         return None
 
+    # ── 节点消息渲染（全字段，供模型上下文与 explore 使用）──────
+
+    @staticmethod
+    def _render_node_text(node_id: str, start, end, out: MemoryNodeOutput) -> str:
+        lines = [f"[{node_id}] 第{start}-{end}条", f"[摘要] {out.summary}"]
+        p = out.profile
+        for label, items in (("喜好", p.preferences), ("性格", p.personality),
+                             ("习惯", p.habits), ("目标", p.goals)):
+            if items:
+                lines.append(f"[{label}] " + "、".join(items))
+        if out.future_notes:
+            lines.append("[后续说明] " + "；".join(out.future_notes))
+        return "\n".join(lines)
+
+    @staticmethod
+    def _node_full_text(n: dict) -> str:
+        """把树节点 dict（get_nodes_at_level 返回）渲染为全字段文本。"""
+        rr = n.get("round_range") or ["?", "?"]
+        lines = [f"节点 {n['id']}（第{rr[0]}-{rr[1]}轮）", f"摘要：{n.get('summary', '')}"]
+        p = n.get("profile") or {}
+        for label, key in (("喜好", "preferences"), ("性格", "personality"),
+                           ("习惯", "habits"), ("目标", "goals")):
+            items = p.get(key) or []
+            if items:
+                lines.append(f"{label}：{'、'.join(items)}")
+        details = n.get("details")
+        if isinstance(details, dict) and details.get("future_notes"):
+            lines.append("后续说明：" + "；".join(details["future_notes"]))
+        return "\n".join(lines)
+
+    # ── 叶子压缩（对话 → level0 节点）────────────────────────
+
     def _summarize_leaf(self, msgs, batch, removes, adds) -> None:
         tree = self.session.get_memory_tree()
         pos = {id(m): i for i, m in enumerate(msgs)}
@@ -292,26 +345,30 @@ class SummarizationMiddleware(AgentMiddleware):
         original_text = "\n".join(self._speaker_text(m) for m in batch)
         instruction = HumanMessage(
             content=_LEAF_INSTRUCTION.format(original_text=original_text))
-        summary = self._call_compress(msgs, instruction)
-        if not summary or not summary.strip():
+        out = self._call_compress(msgs, instruction)
+        if not out or not out.summary or not out.summary.strip():
             _logger.warning("[compress] 叶子摘要为空，跳过")
             return
 
         from langchain_core.messages import messages_to_dict
         node_id = tree.add_leaf(
-            summary,
+            out.summary,
             (start_pos, end_pos),
             None,
             details=messages_to_dict(batch),
+            profile=self._profile_or_none(out),
+            future_notes=out.future_notes or None,
+            meta={"schema_version": 1, **out.meta},
         )
-        summary_msg = HumanMessage(
-            content=f"[{node_id}] 第{start_pos}-{end_pos}条: {summary}",
-            metadata={"node_id": node_id},
-        )
+        node_text = self._render_node_text(node_id, start_pos, end_pos, out)
+        summary_msg = HumanMessage(content=node_text, metadata={"node_id": node_id})
         removes.extend(RemoveMessage(id=m.id) for m in batch)
         adds.append(summary_msg)
-        _logger.info("[compress] 叶子 %s 第%d-%d条（%d 条消息落树）",
-                     node_id, start_pos, end_pos, len(batch))
+        _logger.info("[compress] 叶子 %s 第%d-%d条（%d 条消息落树，画像维度=%s）",
+                     node_id, start_pos, end_pos, len(batch),
+                     len(out.profile.model_dump(exclude_none=True)))
+
+    # ── 向上压缩（递归：摘要还能再被摘要）────────────────────
 
     def _compact_level(self, msgs, level, removes, adds) -> bool:
         tree = self.session.get_memory_tree()
@@ -333,27 +390,27 @@ class SummarizationMiddleware(AgentMiddleware):
                 child_msgs.append(m)
                 removable.append(m)
             else:
-                rr = n.get("round_range") or ["?", "?"]
                 child_msgs.append(HumanMessage(
-                    content=f"[{n['id']}] 第{rr[0]}-{rr[1]}条: {n.get('summary', '')}",
+                    content=self._node_full_text(n),
                     metadata={"node_id": n["id"]}))
 
-        child_summaries = "\n".join(
-            f"节点 {n['id']}（第{n.get('round_range', ['?', '?'])[0]}-"
-            f"{n.get('round_range', ['?', '?'])[1]}轮）: {n.get('summary', '')}"
-            for n in to_compact)
+        child_summaries = "\n".join(self._node_full_text(n) for n in to_compact)
         instruction = HumanMessage(
             content=_PARENT_INSTRUCTION.format(n=len(to_compact), child_summaries=child_summaries))
-        parent_summary = self._call_compress(child_msgs, instruction)
-        if not parent_summary or not parent_summary.strip():
+        out = self._call_compress(child_msgs, instruction)
+        if not out or not out.summary or not out.summary.strip():
             _logger.warning("[compress] 父节点摘要为空，停止向上压缩")
             return False
 
-        parent_id = tree.compact([n["id"] for n in to_compact], parent_summary)
+        parent_id = tree.compact(
+            [n["id"] for n in to_compact], out.summary,
+            profile=self._profile_or_none(out),
+            meta={"schema_version": 1, **out.meta})
         rr0 = to_compact[0].get("round_range") or ["?", "?"]
         rr1 = to_compact[-1].get("round_range") or ["?", "?"]
+        parent_text = self._render_node_text(parent_id, rr0[0], rr1[1], out)
         parent_msg = HumanMessage(
-            content=f"[{parent_id}] 第{rr0[0]}-{rr1[1]}条: {parent_summary}",
+            content=parent_text,
             metadata={"node_id": parent_id},
         )
         removes.extend(RemoveMessage(id=m.id) for m in removable)
@@ -362,15 +419,45 @@ class SummarizationMiddleware(AgentMiddleware):
                      parent_id, len(to_compact), level)
         return True
 
-    def _call_compress(self, context_msgs, instruction) -> str:
-        """独立压缩模型调用：system(角色卡) + 上下文原样 + 指令（唯一新增）。"""
+    @staticmethod
+    def _profile_or_none(out: MemoryNodeOutput) -> dict | None:
+        profile = out.profile.model_dump()
+        return profile if any(profile.values()) else None
+
+    # ── 压缩请求 ────────────────────────────────────────────
+
+    def _call_compress(self, context_msgs, instruction) -> MemoryNodeOutput | None:
+        """独立压缩模型调用：system(角色卡) + 上下文原样 + 指令（唯一新增）。
+
+        主通道：with_structured_output(json_mode)——JSON Schema 保证输出可解析；
+        降级 1：文本 JSON model_validate_json；降级 2：纯摘要兜底。
+        """
         from langchain_core.messages import SystemMessage
         model = self.session._get_summary_model()
         request = [SystemMessage(content=self.session.system_prompt)]
         request.extend(context_msgs)
         request.append(instruction)
-        r = model.invoke(request)
-        return (r.content or "").strip()
+        try:
+            structured = model.with_structured_output(MemoryNodeOutput, method="json_mode")
+            out = structured.invoke(request)
+            if isinstance(out, MemoryNodeOutput):
+                return out
+            if isinstance(out, dict):
+                return MemoryNodeOutput.model_validate(out)
+        except Exception:
+            _logger.warning("[compress] with_structured_output 失败，降级解析")
+        try:
+            r = model.invoke(request)
+            text = (r.content or "").strip()
+            return MemoryNodeOutput.model_validate_json(text)
+        except Exception:
+            _logger.warning("[compress] JSON 解析失败，降级为纯摘要")
+            try:
+                r = model.invoke(request)
+                text = (r.content or "").strip()
+            except Exception:
+                return None
+            return MemoryNodeOutput(summary=text) if text else None
 
     @staticmethod
     def _speaker_text(m) -> str:

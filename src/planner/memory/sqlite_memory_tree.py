@@ -33,6 +33,8 @@ CREATE TABLE IF NOT EXISTS nodes (
     round_end INTEGER,
     source_ref TEXT,
     details TEXT,
+    profile TEXT,
+    meta TEXT,
     is_active INTEGER DEFAULT 1,
     created_at INTEGER DEFAULT (unixepoch()),
     PRIMARY KEY (character_id, id)
@@ -82,6 +84,20 @@ class SQLiteMemoryTree:
         if not cur.fetchone():
             with self._conn:
                 self._execute_with_retry("ALTER TABLE nodes ADD COLUMN is_active INTEGER DEFAULT 1")
+        # compat: add profile column if missing（画像字段）
+        cur = self._execute_with_retry(
+            "SELECT name FROM pragma_table_info('nodes') WHERE name = 'profile'"
+        )
+        if not cur.fetchone():
+            with self._conn:
+                self._execute_with_retry("ALTER TABLE nodes ADD COLUMN profile TEXT")
+        # compat: add meta column if missing（schema_version + 未来扩展字段）
+        cur = self._execute_with_retry(
+            "SELECT name FROM pragma_table_info('nodes') WHERE name = 'meta'"
+        )
+        if not cur.fetchone():
+            with self._conn:
+                self._execute_with_retry("ALTER TABLE nodes ADD COLUMN meta TEXT")
 
     def _execute_with_retry(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
         """带简单重试的 SQL 执行，处理多连接并发锁。"""
@@ -116,33 +132,58 @@ class SQLiteMemoryTree:
     # ── 公开查询接口 ──────────────────────────────────────────
 
     def get_node_children_info(self, node_id: str) -> dict | None:
-        """获取节点的子节点信息或叶子详情。"""
+        """获取节点的子节点信息或叶子详情（含画像、后续说明与 meta）。"""
         cur = self._execute_with_retry(
-            "SELECT level, details FROM nodes WHERE id = ? AND character_id = ?",
+            "SELECT level, details, profile, meta FROM nodes WHERE id = ? AND character_id = ?",
             (node_id, self._character_id),
         )
         row = cur.fetchone()
         if row is None:
             return None
 
+        profile = None
+        if row["profile"]:
+            try:
+                profile = json.loads(row["profile"])
+            except json.JSONDecodeError:
+                profile = None
+
+        meta = None
+        if row["meta"]:
+            try:
+                meta = json.loads(row["meta"])
+            except json.JSONDecodeError:
+                meta = None
+
         if row["level"] == 0:
             details = []
+            future_notes = None
             if row["details"]:
                 try:
                     details = json.loads(row["details"])
                 except json.JSONDecodeError:
                     details = []
-            return {"details": details}
+            # 新格式：{"messages": [...], "future_notes": [...]}；旧格式：纯列表
+            if isinstance(details, dict):
+                future_notes = details.get("future_notes")
+                details = details.get("messages", [])
+            return {"details": details, "profile": profile, "future_notes": future_notes,
+                    "meta": meta}
 
         cur = self._execute_with_retry(
-            "SELECT id, summary FROM nodes WHERE parent_id = ? AND character_id = ? ORDER BY round_start",
+            "SELECT id, summary, profile FROM nodes WHERE parent_id = ? AND character_id = ? ORDER BY round_start",
             (node_id, self._character_id),
         )
-        children = [
-            {"node_id": r["id"], "summary": r["summary"]}
-            for r in cur.fetchall()
-        ]
-        return {"children": children}
+        children = []
+        for r in cur.fetchall():
+            cp = None
+            if r["profile"]:
+                try:
+                    cp = json.loads(r["profile"])
+                except json.JSONDecodeError:
+                    cp = None
+            children.append({"node_id": r["id"], "summary": r["summary"], "profile": cp})
+        return {"children": children, "profile": profile, "meta": meta}
 
     # ── 写入接口 ──────────────────────────────────────────────
 
@@ -152,14 +193,25 @@ class SQLiteMemoryTree:
         round_range: tuple[int, int],
         source_ref: str,
         details: list[dict[str, str]] | None = None,
+        profile: dict | None = None,
+        future_notes: list[str] | None = None,
+        meta: dict | None = None,
     ) -> str:
-        """新增一个叶子节点，返回 node_id。"""
+        """新增一个叶子节点，返回 node_id。
+
+        profile: 用户画像 JSON（preferences/personality/habits/goals）；
+        future_notes: 后续说明（结合未来消息的澄清/修正）——存进 details 结构；
+        meta: schema_version 与未来扩展字段（JSON）。
+        """
         node_id = self._next_id(0)
         rr = list(round_range)
+        details_payload = details
+        if future_notes:
+            details_payload = {"messages": details or [], "future_notes": future_notes}
         with self._conn:
             self._execute_with_retry(
-                "INSERT INTO nodes (id, character_id, level, summary, parent_id, round_start, round_end, source_ref, details, is_active) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO nodes (id, character_id, level, summary, parent_id, round_start, round_end, source_ref, details, profile, meta, is_active) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     node_id,
                     self._character_id,
@@ -169,13 +221,18 @@ class SQLiteMemoryTree:
                     rr[0],
                     rr[1],
                     source_ref,
-                    json.dumps(details, ensure_ascii=False) if details else None,
+                    json.dumps(details_payload, ensure_ascii=False) if details_payload else None,
+                    json.dumps(profile, ensure_ascii=False) if profile else None,
+                    json.dumps(meta, ensure_ascii=False) if meta else None,
                     1,
                 ),
             )
         return node_id
 
-    def compact(self, child_ids: list[str], summary: str) -> str:
+    def compact(self, child_ids: list[str], summary: str,
+                profile: dict | None = None,
+                future_notes: list[str] | None = None,
+                meta: dict | None = None) -> str:
         """将多个子节点压缩成一个父节点，返回父节点 node_id。"""
         if not child_ids:
             raise ValueError("compact: child_ids 不能为空")
@@ -204,9 +261,11 @@ class SQLiteMemoryTree:
 
         with self._conn:
             self._execute_with_retry(
-                "INSERT INTO nodes (id, character_id, level, summary, parent_id, round_start, round_end, is_active) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (parent_id, self._character_id, parent_level, summary, None, round_start, round_end, 1),
+                "INSERT INTO nodes (id, character_id, level, summary, parent_id, round_start, round_end, profile, meta, is_active) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (parent_id, self._character_id, parent_level, summary, None, round_start, round_end,
+                 json.dumps(profile, ensure_ascii=False) if profile else None,
+                 json.dumps(meta, ensure_ascii=False) if meta else None, 1),
             )
             for cid in child_ids:
                 self._execute_with_retry(
@@ -220,7 +279,7 @@ class SQLiteMemoryTree:
     def get_nodes_at_level(self, level: int) -> list[dict[str, Any]]:
         """获取指定层级的当前活跃节点（is_active = 1）。"""
         cur = self._execute_with_retry(
-            "SELECT id, level, summary, parent_id, round_start, round_end, source_ref, details, is_active "
+            "SELECT id, level, summary, parent_id, round_start, round_end, source_ref, details, profile, meta, is_active "
             "FROM nodes WHERE character_id = ? AND level = ? AND is_active = 1 ORDER BY round_start",
             (self._character_id, level),
         )
@@ -236,6 +295,16 @@ class SQLiteMemoryTree:
                     node["details"] = []
             else:
                 node["details"] = []
+            if node.get("profile"):
+                try:
+                    node["profile"] = json.loads(node["profile"])
+                except json.JSONDecodeError:
+                    node["profile"] = None
+            if node.get("meta"):
+                try:
+                    node["meta"] = json.loads(node["meta"])
+                except json.JSONDecodeError:
+                    node["meta"] = None
             node["children"] = []
             result.append(node)
         return result
