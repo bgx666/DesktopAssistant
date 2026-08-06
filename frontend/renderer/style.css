@@ -187,14 +187,14 @@ body {
 .msg-text { min-width: 0; }
 .undo-btn {
   flex: 0 0 auto;
-  border: none; background: rgba(255, 255, 255, 0.30); color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.55);
+  background: rgba(255, 255, 255, 0.32); color: #fff;
   font-size: 11px; padding: 2px 8px; border-radius: 9px; cursor: pointer;
-  opacity: 0.65; transition: opacity 0.15s, background 0.15s;
+  opacity: 0.9; transition: opacity 0.15s, background 0.15s;
   white-space: nowrap;
 }
-.msg.user:hover .undo-btn,
-.undo-btn:hover { opacity: 1; }
-.undo-btn:hover { background: rgba(255, 255, 255, 0.45); }
+.msg.user:hover .undo-btn { opacity: 1; }
+.undo-btn:hover { background: rgba(255, 255, 255, 0.5); }
 .undo-btn:disabled { opacity: 0.4; cursor: default; }
 @keyframes msgIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 .msg.user {

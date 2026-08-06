@@ -34,6 +34,7 @@ let panelState = 'hidden';
 let panelLoaded = false;   // 面板页面是否加载完成（listener 就绪）
 let pendingMorph = null;   // 页面加载完成前暂存的变形请求 {kind, from, to, showFirst}
 let ignoreBlurUntil = 0;   // morph-in 完成后短暂忽略 blur（focus 延迟失败的兜底）
+let panelDragged = false;  // 面板是否被拖离过展开位置（决定缩小是否跟随面板）
 
 const BUBBLE_STATE_FILE = () => path.join(app.getPath('userData'), 'bubble-pos.json');
 
@@ -304,6 +305,7 @@ function sendMorph(kind, from, to) {
 function morphIn() {
   if (panelState !== 'hidden') return;
   if (!panelWin || panelWin.isDestroyed()) createPanel();
+  panelDragged = false;                       // 每次展开重置拖动标记
   const from = bubbleWin.getBounds();            // 球当前矩形
   const to = { ...panelTargetPos(), w: PANEL_W, h: PANEL_H };
   panelWin.setBounds({
@@ -323,9 +325,10 @@ function morphOut() {
     return;
   }
   const from = panelWin.getBounds();
-  // 缩小目标：把悬浮球移到面板当前位置，动画即"面板原地缩成球"，
-  // 而不是缩回最初位置（面板被拖走后缩小才不会跳回原处）
-  if (bubbleWin && !bubbleWin.isDestroyed()) {
+  // 缩小目标：
+  // - 面板被拖离过展开位置 → 悬浮球移到面板当前位置，原地缩成球（跟随面板）
+  // - 面板没动过 → 球保持原位，缩回展开前的位置（不漂移）
+  if (panelDragged && bubbleWin && !bubbleWin.isDestroyed()) {
     bubbleWin.setPosition(from.x, from.y);
   }
   const to = bubbleWin.getBounds();
@@ -548,6 +551,7 @@ ipcMain.on('set-panel-bounds', (e, b) => {
 ipcMain.on('move-panel', (e, x, y) => {
   if (panelWin && !panelWin.isDestroyed() && panelState === 'shown') {
     panelWin.setPosition(Math.round(x), Math.round(y));
+    panelDragged = true;   // 拖过面板：缩小跟随面板位置
   }
 });
 ipcMain.on('morph-in-done', () => {
