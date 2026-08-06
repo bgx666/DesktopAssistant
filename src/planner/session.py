@@ -27,6 +27,7 @@ from langchain_core.messages import BaseMessage, HumanMessage, ToolMessage
 from . import config as _config
 from .llm import MockChatModel, build_chat_model
 from .memory.sqlite_memory_tree import SQLiteMemoryTree
+from .middleware import SUMMARIZE_TRIGGER_MESSAGES as _SUMMARIZE_TRIGGER
 from .store.tasks_db import TasksDb
 
 _logger = logging.getLogger("planner.session")
@@ -104,6 +105,9 @@ class PlannerSession:
         # 停止请求（用户点"停止"打断当前生成）：after_model/before_model
         # 中间件检查后跳转 end；每次生成开始时重置
         self._stop_requested: bool = False
+        # 异步压缩：达到阈值后由后台线程压缩，空闲时原子替换 buffer
+        self._compressing: bool = False
+        self._closing: bool = False   # close 信号：压缩线程尽快应用退出
 
         # 免打扰
         self.dnd_enabled: bool = True
@@ -170,13 +174,18 @@ class PlannerSession:
         return self.memory_tree
 
     def close(self) -> None:
-        """优雅关闭：停调度 → 等生成中的 worker 结束 → 落盘 → 关库。"""
+        """优雅关闭：停调度 → 等生成中的 worker 结束 → 等后台压缩 → 落盘 → 关库。"""
         self.stop_heartbeat()
         try:
             with self.chat_lock:  # 等待在途生成完成（worker 持锁期间）
                 pass
         except Exception:
             pass
+        # 等待后台压缩线程结束：否则它可能并发关闭 sqlite 连接 → 原生崩溃
+        self._closing = True
+        deadline = time.time() + 15
+        while self._compressing and time.time() < deadline:
+            time.sleep(0.05)
         self._save_buffer_state()
         if self.memory_tree:
             self.memory_tree.close()
@@ -459,6 +468,67 @@ class PlannerSession:
         self._receive(text, trigger=True)
         self._spawn_worker("heartbeat")
 
+    # ── 异步压缩（后台线程，不阻塞生成）──────────────────────
+
+    def _maybe_compress_async(self) -> None:
+        """阈值检查：raw ≥ 60 且未在压缩 → spawn 后台压缩线程。
+
+        压缩线程对 buffer 快照压缩（不触碰原 buffer），压缩完成后等待
+        空闲窗口（无生成/无待处理消息），原子替换"新消息以外"的旧部分。
+        """
+        if self._compressing:
+            return
+        with self.buffer_lock:
+            raw = [m for m in self.recent_buffer
+                   if "node_id" not in (getattr(m, "metadata", None) or {})]
+            if len(raw) < _SUMMARIZE_TRIGGER:
+                return
+            snapshot = list(self.recent_buffer)
+        self._compressing = True
+        _logger.info("[compress] 触发异步压缩（raw=%d）", len(raw))
+        threading.Thread(target=self._run_async_compression, args=(snapshot,),
+                         name="planner-compress", daemon=True).start()
+
+    def _run_async_compression(self, snapshot: list) -> None:
+        """后台压缩线程：快照压缩 → 等空闲 → 原子替换 buffer。
+
+        替换 = 按消息 id 删除被压缩消息 + 插入节点消息 + 节点排序——
+        压缩期间新到的消息（用户输入/模型生成）id 不在删除集，自然保留，
+        与压缩结果合并；_compressed_total 已在压缩时累加。
+        """
+        try:
+            from .middleware import SummarizationMiddleware
+            comp = SummarizationMiddleware(self)
+            removes, adds = comp.compress_snapshot(snapshot)
+            if not removes and not adds:
+                return
+            remove_ids = {(getattr(m, "id", None) or id(m)) for m in removes}
+
+            # 等空闲：用户打字/生成间隙必然出现，替换是毫秒级原子操作；
+            # close 信号（_closing）→ 立即应用退出（close 已在等 chat_lock，无并发生成）
+            while True:
+                with self.buffer_lock:
+                    idle = ((not self._generating and not self.pending_response
+                             and not self._inbox) or self._closing)
+                    if idle:
+                        break
+                time.sleep(0.2)
+
+            with self.buffer_lock:
+                self.recent_buffer = [
+                    m for m in self.recent_buffer
+                    if (getattr(m, "id", None) or id(m)) not in remove_ids]
+                self.recent_buffer.extend(adds)
+                self._reorder_node_messages()
+            self._save_buffer_state()
+            self.push_event({"type": "memory_update"})
+            _logger.info("[compress] 异步压缩完成：删除 %d 条，插入 %d 节点消息",
+                         len(remove_ids), len(adds))
+        except Exception:
+            _logger.exception("[compress] 异步压缩异常")
+        finally:
+            self._compressing = False
+
     def _log_dir(self) -> Path:
         d = self.data_root / CHARACTER_ID
         d.mkdir(parents=True, exist_ok=True)
@@ -518,6 +588,7 @@ class PlannerSession:
                 phase_ok = True
             if next_at > 0 and time.time() >= next_at:
                 self._fire_heartbeat()
+            self._maybe_compress_async()   # 达到阈值 → 后台压缩（不阻塞）
             self._wake_event.wait(timeout=5)
             self._wake_event.clear()
 

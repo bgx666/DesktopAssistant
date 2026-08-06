@@ -1,5 +1,7 @@
 """Agent 生成管线 + 工具行为测试（mock LLM，不调真实 API）。"""
 
+import time
+
 from langchain_core.messages import HumanMessage
 
 from planner.memory.sqlite_memory_tree import SQLiteMemoryTree
@@ -280,17 +282,38 @@ def test_fire_heartbeat_counts_silence(data_root):
         s.close()
 
 
-def test_tool_result_not_lost_after_compress(data_root):
-    """压缩中间件 RemoveMessage 收缩消息列表后，工具结果事件仍要发出。
+def _node_count(session) -> int:
+    return sum(1 for m in session.recent_buffer
+               if "node_id" in (getattr(m, "metadata", None) or {}))
 
-    回归：旧实现按 len(msgs) 增量检测，压缩把 60 条缩到 20 条后
-    len < seen_count → 新增 ToolMessage 永不遍历 → 工具卡片永远转圈。
+
+def _trigger_async_compress(session, timeout=15.0):
+    """触发异步压缩并等待节点数增加（后台线程完成）。
+
+    先等上一个压缩线程完全结束（_compressing 复位），避免 _maybe_compress_async
+    因并发标志跳过导致下一轮不触发；按节点数增加判断，避免上一轮的
+    节点让等待条件提前满足。
     """
+    deadline = time.time() + timeout
+    while session._compressing and time.time() < deadline:
+        time.sleep(0.05)
+    before = _node_count(session)
+    session._maybe_compress_async()
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if _node_count(session) > before:
+            return
+        time.sleep(0.1)
+    raise AssertionError("异步压缩超时未完成")
+
+
+def test_tool_result_not_lost_after_compress(data_root):
+    """工具结果事件配对正常（历史 seen_count 回归场景由异步压缩规避）。"""
     from planner.middleware import SUMMARIZE_TRIGGER_MESSAGES
     from planner.session import PlannerSession as PS
     s = PS(data_root, mock=True)
     try:
-        # 塞到压缩阈值前 1 条，玩家消息触发后必超阈值 → 本轮 before_model 压缩
+        # 塞到压缩阈值前 1 条，玩家消息触发后必超阈值
         for i in range(SUMMARIZE_TRIGGER_MESSAGES - 1):
             s.recent_buffer.append(HumanMessage(content=f"占位消息 {i}"))
         s._msg_counter += SUMMARIZE_TRIGGER_MESSAGES - 1
@@ -303,9 +326,10 @@ def test_tool_result_not_lost_after_compress(data_root):
         assert tool_calls, "本轮应有工具调用事件"
         for tc in tool_calls:
             assert any(r["id"] == tc["id"] for r in tool_results), (
-                f"工具 {tc['name']} 的 tool_result 未发出（压缩后丢失 → 卡片转圈）"
+                f"工具 {tc['name']} 的 tool_result 未发出"
             )
-        # 确认压缩真的发生了（buffer 里出现 node 摘要消息）
+        # 异步压缩最终应落节点
+        _trigger_async_compress(s)
         assert any("node_id" in (getattr(m, "metadata", None) or {})
                    for m in s.recent_buffer), "压缩应已触发"
     finally:
@@ -327,6 +351,7 @@ def test_compressed_nodes_kept_at_start(data_root):
                 s.recent_buffer.append(HumanMessage(content=f"第{_round}轮占位 {i}"))
             s._msg_counter += SUMMARIZE_TRIGGER_MESSAGES - 1
             _drive_generation(s, f"帮我安排任务（第{_round}轮）")
+            _trigger_async_compress(s)
 
         nodes = [m for m in s.recent_buffer
                  if "node_id" in (getattr(m, "metadata", None) or {})]
@@ -360,6 +385,7 @@ def test_compressed_ranges_are_global_sequential(data_root):
                 s.recent_buffer.append(HumanMessage(content=f"第{_round}轮占位 {i}"))
             s._msg_counter += SUMMARIZE_TRIGGER_MESSAGES - 1
             _drive_generation(s, f"帮我安排任务（第{_round}轮）")
+            _trigger_async_compress(s)
 
         nodes = [m for m in s.recent_buffer
                  if "node_id" in (getattr(m, "metadata", None) or {})]
@@ -389,8 +415,20 @@ def test_compression_emits_memory_update(data_root):
             s.recent_buffer.append(HumanMessage(content=f"占位消息 {i}"))
         s._msg_counter += SUMMARIZE_TRIGGER_MESSAGES - 1
         _drive_generation(s, "帮我安排一下学习计划")
-        events = s.drain_events()
-        assert any(e["type"] == "memory_update" for e in events), "压缩应推送 memory_update"
+        # 异步压缩完成 → memory_update 事件
+        deadline = time.time() + 15
+        got_update = False
+        while time.time() < deadline:
+            events = s.drain_events()
+            if any(e["type"] == "memory_update" for e in events):
+                got_update = True
+                break
+            if any("node_id" in (getattr(m, "metadata", None) or {})
+                   for m in s.recent_buffer):
+                break
+            s._maybe_compress_async()
+            time.sleep(0.1)
+        assert got_update, "压缩应推送 memory_update"
         assert any("node_id" in (getattr(m, "metadata", None) or {})
                    for m in s.recent_buffer), "压缩应已发生"
     finally:

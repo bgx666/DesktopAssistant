@@ -306,14 +306,18 @@ class SummarizationMiddleware(AgentMiddleware):
         self.session = session
 
     def before_model(self, state: PlannerState, runtime: Runtime) -> dict | None:
-        try:
-            return self._maybe_compress(state)
-        except Exception:
-            _logger.exception("[middleware] 压缩异常（跳过本轮压缩）")
-            return None
+        # 压缩已改为异步线程（session._maybe_compress_async / _run_async_compression）：
+        # 达到阈值后由后台线程对 buffer 快照压缩、空闲时原子替换，
+        # 不再同步阻塞生成（压缩 LLM 调用 10~30 秒会卡住整轮回复）。
+        return None
 
-    def _maybe_compress(self, state: PlannerState) -> dict | None:
-        msgs = list(state.get("messages") or [])
+    def compress_snapshot(self, msgs: list) -> tuple[list, list]:
+        """异步压缩入口：基于 buffer 快照压缩，返回 (removes, adds)。
+
+        与同步版 _maybe_compress 同逻辑，但不修改任何 state——
+        removes 为 RemoveMessage（按 id 删除），adds 为节点消息；
+        由 session 压缩线程在空闲时应用到 recent_buffer。
+        """
         removes: list[RemoveMessage] = []
         adds: list[HumanMessage] = []
 
@@ -330,13 +334,12 @@ class SummarizationMiddleware(AgentMiddleware):
                 break
             level += 1
 
+        return removes, adds
+
+    def _maybe_compress(self, state: PlannerState) -> dict | None:
+        """保留：与 compress_snapshot 等价（兼容旧调用/测试），before_model 不再调用。"""
+        removes, adds = self.compress_snapshot(list(state.get("messages") or []))
         if removes or adds:
-            # 通知前端"记忆树有变化"（新压缩节点/父节点）——前端在生成
-            # 结束后重载历史，对话框与 buffer 保持同步
-            try:
-                self.session.push_event({"type": "memory_update"})
-            except Exception:
-                pass
             return {"messages": removes + adds}
         return None
 

@@ -13,6 +13,7 @@ LEVEL_COMPACT_THRESHOLD=6。
 from __future__ import annotations
 
 import json
+import threading
 import sqlite3
 import time
 from pathlib import Path
@@ -66,6 +67,7 @@ class SQLiteMemoryTree:
         self._db_path = db_path
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(db_path), check_same_thread=False, timeout=10)
+        self._lock = threading.RLock()   # 单连接多线程（主线程 + 异步压缩线程）串行化
         self._conn.row_factory = sqlite3.Row
         # WAL：读写不互斥；busy_timeout：锁竞争时等待而非立即报错
         self._conn.execute("PRAGMA journal_mode=WAL")
@@ -76,20 +78,23 @@ class SQLiteMemoryTree:
 
     def close(self) -> None:
         """关闭数据库连接（进程退出/会话销毁时调用）。"""
-        self._conn.close()
+        with self._lock:
+            self._conn.close()
 
     # ── 数据库初始化 ───────────────────────────────────────────
 
     def _init_db(self) -> None:
-        with self._conn:
-            self._conn.executescript(_CREATE_TABLES)
+        with self._lock:
+            with self._conn:
+                self._conn.executescript(_CREATE_TABLES)
         # compat: add is_active column if missing
         cur = self._execute_with_retry(
             "SELECT name FROM pragma_table_info('nodes') WHERE name = 'is_active'"
         )
         if not cur.fetchone():
-            with self._conn:
-                self._execute_with_retry("ALTER TABLE nodes ADD COLUMN is_active INTEGER DEFAULT 1")
+            with self._lock:
+                with self._conn:
+                    self._execute_with_retry("ALTER TABLE nodes ADD COLUMN is_active INTEGER DEFAULT 1")
         # compat: buffer_state 加列（重启回归问候 + 逾期去重持久化，老库平滑升级）
         for col in ("last_activity_at", "reminded_overdue", "compressed_total",
                     "next_heartbeat_at", "heartbeat_minutes", "heartbeat_note"):
@@ -97,33 +102,37 @@ class SQLiteMemoryTree:
                 f"SELECT name FROM pragma_table_info('buffer_state') WHERE name = '{col}'"
             )
             if not cur.fetchone():
-                with self._conn:
-                    self._execute_with_retry(f"ALTER TABLE buffer_state ADD COLUMN {col}")
+                with self._lock:
+                    with self._conn:
+                        self._execute_with_retry(f"ALTER TABLE buffer_state ADD COLUMN {col}")
         # compat: add profile column if missing（画像字段）
         cur = self._execute_with_retry(
             "SELECT name FROM pragma_table_info('nodes') WHERE name = 'profile'"
         )
         if not cur.fetchone():
-            with self._conn:
-                self._execute_with_retry("ALTER TABLE nodes ADD COLUMN profile TEXT")
+            with self._lock:
+                with self._conn:
+                    self._execute_with_retry("ALTER TABLE nodes ADD COLUMN profile TEXT")
         # compat: add meta column if missing（schema_version + 未来扩展字段）
         cur = self._execute_with_retry(
             "SELECT name FROM pragma_table_info('nodes') WHERE name = 'meta'"
         )
         if not cur.fetchone():
-            with self._conn:
-                self._execute_with_retry("ALTER TABLE nodes ADD COLUMN meta TEXT")
+            with self._lock:
+                with self._conn:
+                    self._execute_with_retry("ALTER TABLE nodes ADD COLUMN meta TEXT")
 
     def _execute_with_retry(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
-        """带简单重试的 SQL 执行，处理多连接并发锁。"""
-        last_exc = None
-        for _ in range(3):
-            try:
-                return self._conn.execute(sql, params)
-            except sqlite3.OperationalError as exc:
-                last_exc = exc
-                if "locked" in str(exc).lower():
-                    time.sleep(0.05)
+        """带简单重试的 SQL 执行（锁内串行，处理多线程/多连接并发）。"""
+        with self._lock:
+            last_exc = None
+            for _ in range(3):
+                try:
+                    return self._conn.execute(sql, params)
+                except sqlite3.OperationalError as exc:
+                    last_exc = exc
+                    if "locked" in str(exc).lower():
+                        time.sleep(0.05)
                     continue
                 raise
         raise last_exc
@@ -223,25 +232,26 @@ class SQLiteMemoryTree:
         details_payload = details
         if future_notes:
             details_payload = {"messages": details or [], "future_notes": future_notes}
-        with self._conn:
-            self._execute_with_retry(
-                "INSERT INTO nodes (id, character_id, level, summary, parent_id, round_start, round_end, source_ref, details, profile, meta, is_active) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    node_id,
-                    self._character_id,
-                    0,
-                    summary,
-                    None,
-                    rr[0],
-                    rr[1],
-                    source_ref,
-                    json.dumps(details_payload, ensure_ascii=False) if details_payload else None,
-                    json.dumps(profile, ensure_ascii=False) if profile else None,
-                    json.dumps(meta, ensure_ascii=False) if meta else None,
-                    1,
-                ),
-            )
+        with self._lock:
+            with self._conn:
+                self._execute_with_retry(
+                    "INSERT INTO nodes (id, character_id, level, summary, parent_id, round_start, round_end, source_ref, details, profile, meta, is_active) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        node_id,
+                        self._character_id,
+                        0,
+                        summary,
+                        None,
+                        rr[0],
+                        rr[1],
+                        source_ref,
+                        json.dumps(details_payload, ensure_ascii=False) if details_payload else None,
+                        json.dumps(profile, ensure_ascii=False) if profile else None,
+                        json.dumps(meta, ensure_ascii=False) if meta else None,
+                        1,
+                    ),
+                )
         return node_id
 
     def compact(self, child_ids: list[str], summary: str,
@@ -274,19 +284,20 @@ class SQLiteMemoryTree:
         parent_level = (children_level or 0) + 1
         parent_id = self._next_id(parent_level)
 
-        with self._conn:
-            self._execute_with_retry(
-                "INSERT INTO nodes (id, character_id, level, summary, parent_id, round_start, round_end, profile, meta, is_active) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (parent_id, self._character_id, parent_level, summary, None, round_start, round_end,
-                 json.dumps(profile, ensure_ascii=False) if profile else None,
-                 json.dumps(meta, ensure_ascii=False) if meta else None, 1),
-            )
-            for cid in child_ids:
+        with self._lock:
+            with self._conn:
                 self._execute_with_retry(
-                    "UPDATE nodes SET parent_id = ?, is_active = 0 WHERE id = ? AND character_id = ?",
-                    (parent_id, cid, self._character_id),
+                    "INSERT INTO nodes (id, character_id, level, summary, parent_id, round_start, round_end, profile, meta, is_active) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (parent_id, self._character_id, parent_level, summary, None, round_start, round_end,
+                     json.dumps(profile, ensure_ascii=False) if profile else None,
+                     json.dumps(meta, ensure_ascii=False) if meta else None, 1),
                 )
+                for cid in child_ids:
+                    self._execute_with_retry(
+                        "UPDATE nodes SET parent_id = ?, is_active = 0 WHERE id = ? AND character_id = ?",
+                        (parent_id, cid, self._character_id),
+                    )
         return parent_id
 
     # ── 节点数查询 ───────────────────────────────────────────
@@ -342,25 +353,26 @@ class SQLiteMemoryTree:
                           heartbeat_minutes: float | None = None,
                           heartbeat_note: str | None = None) -> None:
         """保存 recent_buffer 状态到 SQLite（重启恢复）。"""
-        with self._conn:
-            self._execute_with_retry(
-                "INSERT OR REPLACE INTO buffer_state "
-                "(character_id, recent_buffer, msg_counter, round, last_activity_at, reminded_overdue, "
-                "compressed_total, next_heartbeat_at, heartbeat_minutes, heartbeat_note) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    self._character_id,
-                    json.dumps(recent_buffer, ensure_ascii=False),
-                    msg_counter,
-                    round,
-                    last_activity_at,
-                    json.dumps(reminded_overdue or [], ensure_ascii=False),
-                    int(compressed_total or 0),
-                    next_heartbeat_at,
-                    heartbeat_minutes,
-                    heartbeat_note,
-                ),
-            )
+        with self._lock:
+            with self._conn:
+                self._execute_with_retry(
+                    "INSERT OR REPLACE INTO buffer_state "
+                    "(character_id, recent_buffer, msg_counter, round, last_activity_at, reminded_overdue, "
+                    "compressed_total, next_heartbeat_at, heartbeat_minutes, heartbeat_note) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        self._character_id,
+                        json.dumps(recent_buffer, ensure_ascii=False),
+                        msg_counter,
+                        round,
+                        last_activity_at,
+                        json.dumps(reminded_overdue or [], ensure_ascii=False),
+                        int(compressed_total or 0),
+                        next_heartbeat_at,
+                        heartbeat_minutes,
+                        heartbeat_note,
+                    ),
+                )
 
     def load_buffer_state(self) -> dict | None:
         """从 SQLite 读取 recent_buffer 状态。"""
@@ -395,13 +407,14 @@ class SQLiteMemoryTree:
 
     def clear_character_data(self) -> None:
         """清除本角色的所有记忆树节点和 buffer_state。"""
-        with self._conn:
-            self._execute_with_retry(
-                "DELETE FROM nodes WHERE character_id = ?",
-                (self._character_id,),
-            )
-            self._execute_with_retry(
-                "DELETE FROM buffer_state WHERE character_id = ?",
-                (self._character_id,),
-            )
+        with self._lock:
+            with self._conn:
+                self._execute_with_retry(
+                    "DELETE FROM nodes WHERE character_id = ?",
+                    (self._character_id,),
+                )
+                self._execute_with_retry(
+                    "DELETE FROM buffer_state WHERE character_id = ?",
+                    (self._character_id,),
+                )
         self._level_counters.clear()

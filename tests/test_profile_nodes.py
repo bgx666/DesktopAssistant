@@ -1,5 +1,6 @@
-"""记忆树画像字段 + future_notes 测试。"""
+﻿"""记忆树画像字段 + future_notes 测试。"""
 
+import time
 import tempfile
 from pathlib import Path
 
@@ -14,6 +15,68 @@ def _drive(session, content, trigger="player"):
     session._generate_response(trigger)
 
 
+def _wait_compress(session, timeout=15.0):
+    """触发异步压缩并等待后台线程完成（_compressing 复位 = 应用已结束）。
+
+    不能以"节点数增加"判断——父压缩轮会删除子节点消息（节点数反而减少）。
+    """
+    deadline = time.time() + timeout
+    while getattr(session, "_compressing", False) and time.time() < deadline:
+        time.sleep(0.05)
+    session._maybe_compress_async()
+    if not getattr(session, "_compressing", False):
+        return   # 未达阈值，无压缩
+    deadline = time.time() + timeout
+    while getattr(session, "_compressing", False) and time.time() < deadline:
+        time.sleep(0.1)
+    if session._compressing:
+        raise AssertionError("异步压缩超时未完成")
+
+
+def test_compress_merges_messages_arrived_during_compression(data_root, monkeypatch):
+    """压缩期间新到的消息保留：压缩线程基于快照，应用按 id 删除旧部分。
+
+    回归：压缩不能覆盖 buffer——期间用户消息/模型生成的新消息必须保留。
+    """
+    import planner.middleware as MW
+    from planner.session import PlannerSession as PS
+
+    orig_call = MW.SummarizationMiddleware._call_compress
+
+    def slow_call(self, msgs, instruction):
+        time.sleep(1.2)   # 拉长压缩窗口，确保压缩期间有新消息进来
+        return orig_call(self, msgs, instruction)
+
+    monkeypatch.setattr(MW.SummarizationMiddleware, "_call_compress", slow_call)
+    s = PS(data_root, mock=True)
+    try:
+        for i in range(MW.SUMMARIZE_TRIGGER_MESSAGES):
+            s.recent_buffer.append(
+                __import__("langchain_core.messages", fromlist=["HumanMessage"]).HumanMessage(
+                    content=f"占位消息 {i}"))
+        s._msg_counter += MW.SUMMARIZE_TRIGGER_MESSAGES
+        s._maybe_compress_async()          # 触发后台压缩（压缩窗口 1.2s）
+        assert s._compressing, "压缩线程应已启动"
+        # 压缩期间新消息到来（模拟用户说话）
+        time.sleep(0.4)
+        new_msg = __import__("langchain_core.messages", fromlist=["HumanMessage"]).HumanMessage(
+            content="压缩期间的新消息", id="fresh-msg-1")
+        s.recent_buffer.append(new_msg)
+        s._msg_counter += 1
+        # 等压缩完成
+        deadline = time.time() + 15
+        while s._compressing and time.time() < deadline:
+            time.sleep(0.1)
+        assert not s._compressing, "压缩应已完成"
+        # 新消息保留（合并），节点出现
+        assert any(getattr(m, "id", None) == "fresh-msg-1" for m in s.recent_buffer), \
+            "压缩期间的新消息必须保留"
+        assert any("node_id" in (getattr(m, "metadata", None) or {})
+                   for m in s.recent_buffer), "压缩应产生节点"
+    finally:
+        s.close()
+
+
 def _build_session_with_batch(data_root, n=65):
     s = PlannerSession(data_root, mock=True)
     for i in range(n):
@@ -25,6 +88,7 @@ def test_leaf_node_has_profile_and_future_notes(data_root):
     s = _build_session_with_batch(data_root)
     try:
         _drive(s, "（心跳）继续", "player")
+        _wait_compress(s)
         tree = s.get_memory_tree()
         assert tree.get_level_count(0) == 1, "应落 1 个叶子"
         node = tree.get_nodes_at_level(0)[0]
@@ -40,6 +104,7 @@ def test_node_message_renders_full_fields(data_root):
     s = _build_session_with_batch(data_root)
     try:
         _drive(s, "（心跳）继续", "player")
+        _wait_compress(s)
         tree = s.get_memory_tree()
         node = tree.get_nodes_at_level(0)[0]
         # buffer 中的节点消息应含全字段标签
@@ -64,6 +129,7 @@ def test_parent_rolls_up_profile(data_root):
             for i in range(65):
                 s._append_to_buffer({"role": "user", "content": f"第{base+i}条讨论"})
             _drive(s, f"（心跳{rnd}）继续", "player")
+            _wait_compress(s)
             if s.get_memory_tree().get_level_count(1) >= 1:
                 break
         tree = s.get_memory_tree()
@@ -83,6 +149,7 @@ def test_explore_returns_profile_and_future_notes(data_root):
     s = _build_session_with_batch(data_root)
     try:
         _drive(s, "（心跳）继续", "player")
+        _wait_compress(s)
         tree = s.get_memory_tree()
         node = tree.get_nodes_at_level(0)[0]
         info = tree.get_node_children_info(node["id"])
@@ -104,6 +171,7 @@ def test_parse_fallback_on_invalid_json(data_root, monkeypatch):
         # 覆盖 summary model 也返回非法 JSON
         s._summary_model = bad_model
         _drive(s, "（心跳）继续", "player")
+        _wait_compress(s)
         tree = s.get_memory_tree()
         assert tree.get_level_count(0) == 1
         node = tree.get_nodes_at_level(0)[0]
@@ -164,6 +232,7 @@ def test_node_meta_schema_version(data_root):
     s = _build_session_with_batch(data_root)
     try:
         _drive(s, "（心跳）继续", "player")
+        _wait_compress(s)
         tree = s.get_memory_tree()
         node = tree.get_nodes_at_level(0)[0]
         assert node["meta"] == {"schema_version": 1}
@@ -196,6 +265,7 @@ def test_unknown_fields_discarded(data_root):
         s._summary_model = weird
         s.set_chat_model(MockChatModel(session=s))
         _drive(s, "（心跳）继续", "player")
+        _wait_compress(s)
         tree = s.get_memory_tree()
         node = tree.get_nodes_at_level(0)[0]
         assert node["summary"] == "摘要"
