@@ -37,7 +37,7 @@ PLANNER_PORT: int = int(os.getenv("PLANNER_PORT", "18771"))
 PLANNER_MOCK_LLM: bool = os.getenv("PLANNER_MOCK_LLM", "").strip().lower() in ("1", "true", "yes", "on")
 
 # 心跳护栏：LLM 自主决定心跳间隔，clamp 到 [PLANNER_HEARTBEAT_MIN, MAX] 分钟
-PLANNER_HEARTBEAT_MIN_MINUTES: int = int(os.getenv("PLANNER_HEARTBEAT_MIN_MINUTES", "10"))
+PLANNER_HEARTBEAT_MIN_MINUTES: int = int(os.getenv("PLANNER_HEARTBEAT_MIN_MINUTES", "1"))
 PLANNER_HEARTBEAT_MAX_MINUTES: int = int(os.getenv("PLANNER_HEARTBEAT_MAX_MINUTES", "720"))
 
 # 免打扰默认窗口（24h 制闭区间 [start, end)，跨天处理）

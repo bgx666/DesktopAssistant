@@ -101,9 +101,12 @@ def test_heartbeat_clamp_in_tool(data_root):
     s = PlannerSession(data_root, mock=True)
     try:
         tools = {t.name: t for t in build_tools(s)}
-        r = tools["heartbeat"].invoke({"minutes": 5})
-        assert "10 分钟" in r
-        assert s._heartbeat_minutes == 10
+        # 下限护栏现在是 1 分钟：1 分钟有效，0 分钟被拉高到 1
+        r = tools["heartbeat"].invoke({"minutes": 1})
+        assert "1 分钟" in r
+        assert s._heartbeat_minutes == 1
+        tools["heartbeat"].invoke({"minutes": 0})
+        assert s._heartbeat_minutes == 1
         tools["heartbeat"].invoke({"minutes": 100000})
         assert s._heartbeat_minutes == 720
         assert s.heartbeat_dict()["in_minutes"] > 0

@@ -44,7 +44,7 @@ DEFAULT_WAKE_MINUTES = 30        # 首次启动/未调度时的默认唤醒间�
 # 心跳节奏自适应：
 # - 对话中（用户刚说话/在聊）→ 短心跳，随时跟进
 # - 用户沉默（自主唤醒多次没人理）→ 每次心跳逐渐加长，避免烦人
-DIALOG_HEARTBEAT_MINUTES = 10    # 对话默认心跳（用户刚说话后）
+DIALOG_HEARTBEAT_MINUTES = 1     # 对话默认心跳（用户刚说话后）——聊天时主动跟进
 SILENT_ESCALATE_STEP = 10        # 沉默时每次心跳加长的分钟数
 SILENT_ESCALATE_MAX = 120        # 沉默加长上限
 
