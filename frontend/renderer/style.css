@@ -210,6 +210,25 @@ body {
 }
 .msg.log { align-self: center; font-size: 11px; color: var(--text-soft); }
 .msg.log .bubble { box-shadow: none; background: transparent; padding: 2px 6px; }
+/* 记忆摘要（早期对话压缩进记忆树后的浓缩卡片，显示在对话框顶部） */
+.msg.memory { align-self: stretch; }
+.msg.memory .bubble {
+  background: rgba(138, 168, 255, 0.10);
+  border: 1px dashed rgba(91, 124, 250, 0.35);
+  border-radius: 10px;
+  box-shadow: none;
+  font-size: 12px;
+  color: var(--text-soft);
+  line-height: 1.6;
+}
+.msg.memory .bubble::before {
+  content: "记忆摘要（早期对话已压缩）";
+  display: block;
+  font-size: 10px;
+  color: var(--primary);
+  margin-bottom: 4px;
+  font-weight: 600;
+}
 .undo-btn {
   border: none; background: transparent; color: var(--text-soft);
   font-size: 11px; padding: 2px 7px; border-radius: 8px; cursor: pointer;

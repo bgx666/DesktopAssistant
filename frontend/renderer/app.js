@@ -364,7 +364,7 @@
         } else if (m.role === 'tool_result') {
           setToolResult(m.id, m.content);
         } else {
-          const cls = m.role === 'assistant' ? 'assistant' : 'user';
+          const cls = m.role === 'assistant' ? 'assistant' : m.role === 'memory' ? 'memory' : 'user';
           addMessage(m.content, cls, m.id || null);
         }
       });

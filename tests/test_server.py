@@ -127,6 +127,20 @@ def test_history_contains_tool_cards(backend):
     assert any(rr.get("content") for rr in results), "工具结果应有内容"
 
 
+def test_history_shows_memory_nodes(backend):
+    """压缩节点（node_id）应在历史中显示为 memory 消息。"""
+    session, base = backend
+    from langchain_core.messages import HumanMessage
+    session.recent_buffer.insert(
+        0, HumanMessage(content="[node0_001] 第0-40条\n[摘要] 早期对话摘要",
+                        metadata={"node_id": "node0_001"}))
+    hist = _get(base, "/history")
+    memory = [m for m in hist["messages"] if m["role"] == "memory"]
+    assert len(memory) == 1, "历史应显示压缩节点"
+    assert memory[0]["node_id"] == "node0_001"
+    assert "摘要" in memory[0]["content"]
+
+
 def test_task_endpoints(backend):
     _, base = backend
     r = _post(base, "/task", {"title": "写论文", "due_date": "2026-09-01", "priority": "high"})
