@@ -452,6 +452,8 @@ class PlannerSession:
             self.schedule_heartbeat(FALLBACK_HEARTBEAT_MINUTES, note)
             return
         _logger.info("[heartbeat] 启动补唤醒（心跳已到期）")
+        # 先落保底调度（生成中 LLM 覆盖），防止中断/退出导致 next=0 落盘
+        self.schedule_heartbeat(FALLBACK_HEARTBEAT_MINUTES, note)
         text = (f"（心跳到了，请主动跟用户说点东西。{note + '。' if note else ''}"
                 f"可以看看用户的任务进度，决定要不要提醒或调整安排。）")
         self._receive(text, trigger=True)
@@ -540,6 +542,9 @@ class PlannerSession:
             self._heartbeat_silent_count += 1
             _logger.info("[heartbeat] 触发自主生成（距上次 %s：%s）",
                          self._fmt_duration(minutes), note)
+            # 先落一个保底调度（生成中 LLM 会重新设置覆盖）：
+            # 防止触发后进程退出/中断导致 next=0 落盘 → 重启后心跳被重置
+            self.schedule_heartbeat(FALLBACK_HEARTBEAT_MINUTES, note)
             text = (f"（心跳到了，请主动跟用户说点东西。{note + '。' if note else ''}"
                     f"可以看看用户的任务进度，决定要不要提醒或调整安排。）")
             self._receive(text, trigger=True)

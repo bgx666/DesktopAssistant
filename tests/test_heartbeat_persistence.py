@@ -70,3 +70,29 @@ def test_heartbeat_expired_in_dnd_deferred(data_root, monkeypatch):
         assert s2._next_heartbeat_at > time.time(), "应顺延到未来"
     finally:
         s2.close()
+
+
+def test_fire_heartbeat_leaves_scheduled_next(data_root, monkeypatch):
+    """心跳触发后 next 不为 0（先落保底调度）：触发瞬间退出也不会落盘 0。
+
+    回归：旧实现触发时清零 next 后异步生成，若进程在生成前退出，
+    落盘 next=0 → 重启后心跳被重置为默认 30 分钟。
+    """
+    calls = []
+    monkeypatch.setattr(PlannerSession, "_spawn_worker", lambda self, t: calls.append(t))
+    s = PlannerSession(data_root, mock=True)
+    try:
+        s.schedule_heartbeat(1)
+        s._next_heartbeat_at = time.time() - 5   # 模拟到期
+        s._fire_heartbeat()
+        assert calls == ["heartbeat"], "心跳应触发"
+        assert s._next_heartbeat_at > time.time(), "触发后应存在保底调度"
+        s._save_buffer_state()   # 模拟触发瞬间退出前的保存
+    finally:
+        s.close()
+
+    s2 = PlannerSession(data_root, mock=True)   # 模拟重启
+    try:
+        assert s2._next_heartbeat_at > time.time(), "重启后 next 不应为 0（不应重置为默认 30 分钟）"
+    finally:
+        s2.close()
