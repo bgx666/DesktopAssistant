@@ -1,4 +1,4 @@
-# build.ps1 —— 一键发版：复制代码到 D:\xiaob\planner-release 并生成 start.bat
+﻿# build.ps1 —— 一键发版：复制代码到 D:\xiaob\planner-release 并生成 start.bat
 # 用法：
 #   powershell -File build.ps1            # 自动 vX.Y.Z patch+1
 #   powershell -File build.ps1 -Version v0.2.0   # 手动指定
@@ -90,7 +90,7 @@ if (-not (Test-Path $DataDir)) {
 Set-Content -Path $VersionFile -Value $Version -Encoding ascii
 $startBat = @"
 @echo off
-rem 小助 release $Version —— 双击启动（独立数据目录 $DataDir）
+rem xiaozhu release $Version -- double-click to start (data: $DataDir)
 set "PLANNER_PYTHON=$venvPython"
 set "PLANNER_DATA_ROOT=$DataDir"
 start "" "$(Join-Path $AppDir "frontend\node_modules\.bin\electron.cmd")" "$(Join-Path $AppDir "frontend")"
