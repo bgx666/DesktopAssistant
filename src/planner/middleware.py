@@ -52,8 +52,7 @@ class DndGuardMiddleware(AgentMiddleware):
 
     @hook_config(can_jump_to=["end"])
     def before_agent(self, state: PlannerState, runtime: Runtime) -> dict | None:
-        if (self.session.in_dnd()
-                and self.session.current_trigger not in ("player", "startup")):
+        if self.session.in_dnd() and self.session.current_trigger != "player":
             _logger.info("[dnd] 免打扰时段，跳过自主触发")
             self.session.push_log("（免打扰时段，暂不打扰。）")
             return {"jump_to": "end"}

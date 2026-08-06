@@ -489,18 +489,21 @@ class PlannerSession:
         minutes = self._heartbeat_minutes or FALLBACK_HEARTBEAT_MINUTES
         note = self._heartbeat_note
         self._heartbeat_note = ""
-        # 启动补唤醒不检查免打扰：用户主动启动程序 = 人在场，补唤醒说话是
-        # 期望行为（运行中的 _fire_heartbeat 仍受 DND 保护——用户不在时别打扰）
-        _logger.info("[heartbeat] 启动补唤醒（心跳已到期）")
+        if self.in_dnd():
+            # 与运行中心跳一致的统一语义：免打扰时段顺延（无任何时段特判）
+            _logger.info("[heartbeat] 启动时心跳到期遇免打扰，顺延")
+            self.schedule_heartbeat(minutes, note)
+            self._save_buffer_state()
+            return
+        _logger.info("[heartbeat] 启动时心跳已到期，触发")
         # 先落保底调度（生成中 LLM 覆盖），防止中断/退出导致 next=0 落盘；
-        # 保底沿用原心跳间隔（而非固定 60 分钟），避免"重置感"
+        # 保底沿用原心跳间隔
         self.schedule_heartbeat(minutes, note)
         self._save_buffer_state()   # 立即落盘：退出/中断后重开恢复新计时而非旧值
         text = (f"（系统：心跳到了，请主动和用户说话。{note + '。' if note else ''}"
                 f"可以看看用户的任务进度，提醒用户该做的事。）")
         self._receive(text, trigger=True)
-        # trigger=startup：DND 守卫放行（用户主动启动程序 = 在场，补唤醒应说话）
-        self._spawn_worker("startup")
+        self._spawn_worker("heartbeat")
 
     # ── 异步压缩（后台线程，不阻塞生成）──────────────────────
 

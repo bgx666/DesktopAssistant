@@ -42,7 +42,7 @@ def test_heartbeat_expired_while_offline_triggers_on_start(data_root, monkeypatc
 
     s2 = PlannerSession(data_root, mock=True)
     try:
-        assert calls == ["startup"], f"到期应触发补唤醒: {calls}"
+        assert calls == ["heartbeat"], f"到期应触发: {calls}"
         content = "\n".join(
             m.content for m in s2.recent_buffer if getattr(m, "type", "") == "human")
         assert "心跳到了" in content, "补唤醒文案应是指令式而非角色扮演"
@@ -82,7 +82,7 @@ def test_startup_trigger_ignores_dnd(data_root, monkeypatch):
 
     s2 = PlannerSession(data_root, mock=True)   # DND 中重启
     try:
-        assert calls == ["startup"], "启动补唤醒不应被 DND 拦截"
+        assert calls == [], "DND 时启动心跳到期顺延（统一语义）"
     finally:
         s2.close()
 
@@ -131,7 +131,7 @@ def test_startup_trigger_keeps_original_interval(data_root, monkeypatch):
 
     s2 = PlannerSession(data_root, mock=True)        # 重启 → 补唤醒
     try:
-        assert calls == ["startup"], "到期应补唤醒"
+        assert calls == ["heartbeat"], "到期应触发"
         # 保底沿用原间隔：next ≈ now + 2 分钟（而非 60 分钟）
         remain = s2._next_heartbeat_at - time.time()
         assert 60 < remain < 180, f"保底应≈原间隔 2 分钟，实际 {remain:.0f} 秒"
