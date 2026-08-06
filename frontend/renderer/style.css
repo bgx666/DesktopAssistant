@@ -241,6 +241,24 @@ body {
 .undo-btn:disabled { opacity: 0.3; cursor: default; }
 @keyframes msgIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 #input-bar { display: flex; gap: 8px; padding-top: 10px; }
+
+/* ── 回到最新消息按钮（向上翻历史时出现）── */
+#jump-bottom {
+  position: absolute;
+  right: 14px;
+  bottom: 56px;                       /* input-bar 上方 */
+  width: 34px; height: 34px;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: var(--glass-strong);
+  color: var(--primary);
+  font-size: 17px; line-height: 1;
+  cursor: pointer;
+  box-shadow: var(--shadow-md);
+  z-index: 5;
+  transition: background 0.15s, transform 0.15s, opacity 0.15s;
+}
+#jump-bottom:hover { background: #fff; transform: scale(1.08); }
 #input {
   flex: 1; border: 1px solid var(--line); border-radius: 18px; padding: 9px 15px;
   outline: none; font-size: 13px; user-select: text;

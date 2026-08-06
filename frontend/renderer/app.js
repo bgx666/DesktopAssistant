@@ -22,6 +22,17 @@
     });
   }
 
+  // ── 回到最新消息按钮 ──────────────────────────────────
+  // 向上翻历史时显示，点击平滑滚回底部（类主流 AI 对话界面）。
+  const jumpBtn = $('#jump-bottom');
+  messages.addEventListener('scroll', () => {
+    const nearBottom = messages.scrollHeight - messages.scrollTop - messages.clientHeight < 100;
+    jumpBtn.classList.toggle('hidden', nearBottom);
+  });
+  jumpBtn.addEventListener('click', () => {
+    messages.scrollTo({ top: messages.scrollHeight, behavior: 'smooth' });
+  });
+
   // ── 聊天 ─────────────────────────────────────────────
   const messages = $('#messages');
 
