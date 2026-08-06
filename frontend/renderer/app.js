@@ -47,7 +47,12 @@
     }
     const bubble = document.createElement('div');
     bubble.className = 'bubble ' + cls;   // bubble user / bubble assistant（颜色区分）
-    bubble.textContent = text;
+    if (cls === 'assistant' || cls === 'memory') {
+      // LLM 生成内容渲染轻量 markdown（加粗/代码）；用户消息保持原文
+      bubble.innerHTML = renderMarkdown(text);
+    } else {
+      bubble.textContent = text;
+    }
     el.appendChild(bubble);
     if (cls === 'user' && msgId) {
       const undo = document.createElement('button');
@@ -152,6 +157,21 @@
     card.setAttribute('title', '点击展开');
   }
 
+  // ── 轻量 Markdown 渲染（加粗 + 行内代码 + 代码块）────────
+  // 先 escapeHtml 再替换标记（XSS 安全）；代码块内容先占位避免被加粗规则误伤。
+  function renderMarkdown(text) {
+    let html = escapeHtml(String(text == null ? '' : text));
+    const blocks = [];
+    html = html.replace(/```([\s\S]*?)```/g, (m, code) => {
+      blocks.push(code.trim());
+      return '\u0000' + (blocks.length - 1) + '\u0000';
+    });
+    html = html.replace(/`([^`\n]+)`/g, '<code>$1</code>');
+    html = html.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
+    html = html.replace(/\u0000(\d+)\u0000/g, (m, i) => `<pre class="md-code">${blocks[+i]}</pre>`);
+    return html;
+  }
+
   function handleEvent(ev) {
     if (ev.type === 'text_stream') {
       let el = streamMsgs[ev.msg_id];
@@ -163,6 +183,13 @@
       if (bubble) bubble.textContent += ev.content;
       else el.textContent += ev.content;
       messages.scrollTop = messages.scrollHeight;
+    } else if (ev.type === 'text') {
+      // 流式收束（完整文本事件）：对最新一条 assistant 消息整段渲染 markdown
+      const last = [...messages.querySelectorAll('.msg.assistant')].pop();
+      if (last) {
+        const b = last.querySelector('.bubble');
+        if (b && !b.querySelector('strong, code, pre')) b.innerHTML = renderMarkdown(b.textContent);
+      }
     } else if (ev.type === 'tool_call') {
       addToolCard(ev.name, ev.args, ev.id, false);
     } else if (ev.type === 'tool_result') {

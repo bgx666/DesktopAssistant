@@ -250,6 +250,30 @@ body {
   border-bottom-right-radius: 5px;
   box-shadow: 0 4px 14px rgba(91, 124, 250, 0.30);
 }
+/* Markdown 渲染：加粗 / 行内代码 / 代码块 */
+.bubble strong { font-weight: 700; }
+.bubble code {
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 12px;
+  background: rgba(91, 124, 250, 0.10);
+  border: 1px solid rgba(91, 124, 250, 0.14);
+  border-radius: 5px;
+  padding: 0 4px;
+  user-select: text;
+}
+.bubble .md-code {
+  margin: 6px 0;
+  padding: 8px 10px;
+  background: rgba(42, 48, 64, 0.06);
+  border: 1px solid rgba(120, 140, 190, 0.18);
+  border-radius: 8px;
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: text;
+}
 .bubble.assistant {
   background: var(--glass);
   backdrop-filter: blur(10px);
