@@ -31,7 +31,7 @@ npm start
 1. 双击 `D:\xiaob\planner-release\start.bat`（独立 venv + 独立数据目录 `planner-release\data`，记忆/任务与开发互不影响）
 2. 每次开发完成后发版：`D:\xiaob\planner\build.bat`（或 `powershell -File build.ps1`），自动复制代码、生成 `start.bat`、打 `git tag vX.Y.Z`
 3. 回滚 = `git checkout 旧tag` 后重跑 build.ps1（数据在 release `data\`，不受影响）
-4. ⚠️ 开发版与 release 版不能同时开（Electron 单实例锁共用 userData）
+4. 开发版（18771）与 release 版（18772）**可同时运行**：端口/URL/userData 全隔离
 
 ## 核心能力
 

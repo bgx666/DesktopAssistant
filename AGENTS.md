@@ -24,9 +24,9 @@ LLM 配置走 `.env` / `D:\xiaob\.env`：`LLM_API_KEY` 必填，默认 DeepSeek�
   自动 `vX.Y.Z` patch+1（可 `-Version` 手动）→ `robocopy /MIR` 复制 `src/`+`frontend/`（排除 node_modules）
   → venv 首次创建 + `pip install -e app`（可编辑，之后复制代码即生效）→ 首次 `npm install`
   → 首次迁移开发 `data/` 到 release → `git tag` + 生成 `start.bat`
-- 用户日常：双击 `D:\xiaob\planner-release\start.bat`（`PLANNER_PYTHON`=venv、`PLANNER_DATA_ROOT`=release data，main.js/config 均已支持环境变量，代码零改动）
-- 回滚 = `git checkout 旧tag` + 重跑 build.ps1（数据在 release `data/`，不受影响）
-- ⚠️ 开发版与 release 版 Electron `userData` 同名 → 单实例锁冲突，**不能同时开**
+- 用户日常：双击 `D:\xiaob\planner-release\start.bat`（`PLANNER_PYTHON`=venv、`PLANNER_DATA_ROOT`=release data、`PLANNER_PORT`=18772、
+  `PLANNER_URL`、`PLANNER_USER_DATA` 均注入，main.js/config 已支持环境变量）
+- 开发版（18771）与 release 版（18772）**可同时运行**：端口/URL/userData 全部隔离，互不抢占
 
 ## 关键约定（容易猜错/踩过坑的）
 
