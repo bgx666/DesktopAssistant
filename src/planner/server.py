@@ -95,11 +95,16 @@ class _Handler(BaseHTTPRequestHandler):
             # 动态待办队列（按紧急度排序）
             self._send_json({"ok": True, "queue": self.session.db.list_pending()})
         elif path == "/history":
-            # 对话历史（渲染聊天区用）：过滤系统注入的触发消息与压缩摘要节点
+            # 对话历史（渲染聊天区用）：过滤系统注入的触发消息；
+            # 压缩摘要节点（node_id）也展示（role=memory），早期对话以浓缩形式可见
             msgs = []
             for m in self.session.recent_buffer:
                 meta = getattr(m, "metadata", None) or {}
                 if "node_id" in meta:
+                    content = str(getattr(m, "content", "") or "")
+                    if content:
+                        msgs.append({"role": "memory", "content": content,
+                                     "node_id": meta["node_id"]})
                     continue
                 role = getattr(m, "type", "")
                 content = str(getattr(m, "content", "") or "")

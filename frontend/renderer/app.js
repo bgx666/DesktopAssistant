@@ -29,7 +29,7 @@
     const el = document.createElement('div');
     el.className = 'msg ' + cls;
     const bubble = document.createElement('div');
-    bubble.className = 'bubble';
+    bubble.className = 'bubble ' + cls;   // bubble user / bubble assistant（颜色区分）
     bubble.textContent = text;
     el.appendChild(bubble);
     if (cls === 'user' && msgId) {
@@ -345,7 +345,8 @@
       const data = await api('/history');
       if (clear) messages.innerHTML = '';
       (data.messages || []).forEach((m) => {
-        addMessage(m.content, m.role === 'assistant' ? 'assistant' : 'user', m.id || null);
+        const cls = m.role === 'assistant' ? 'assistant' : m.role === 'memory' ? 'memory' : 'user';
+        addMessage(m.content, cls, m.id || null);
       });
     } catch { /* 后端未连接则跳过 */ }
   }
