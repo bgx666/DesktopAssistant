@@ -86,13 +86,15 @@ if (-not (Test-Path $DataDir)) {
     }
 }
 
-# ── 7. VERSION + start.bat + git tag ────────────────────────
+# ── 7. VERSION + start.bat + start.vbs + git tag ────────────
 Set-Content -Path $VersionFile -Value $Version -Encoding ascii
 
-# release 隔离配置（集中定义，供 start.bat 生成与自检共用）
+# release 隔离配置（集中定义，供 start.bat/start.vbs 生成与自检共用）
 $RelPort = 18772                       # release 端口，与开发版 18771 必须不同
 $RelUrl = "http://127.0.0.1:$RelPort"
 $RelUserData = Join-Path $ReleaseRoot "user-data"
+$ElectronExe = Join-Path $AppDir "frontend\node_modules\electron\dist\electron.exe"
+$FrontendDir = Join-Path $AppDir "frontend"
 $startBatContent = @"
 @echo off
 rem xiaozhu release $Version -- double-click to start (data: $DataDir, port $RelPort)
@@ -101,12 +103,27 @@ set "PLANNER_DATA_ROOT=$DataDir"
 set "PLANNER_PORT=$RelPort"
 set "PLANNER_URL=$RelUrl"
 set "PLANNER_USER_DATA=$RelUserData"
-start "" "$(Join-Path $AppDir "frontend\node_modules\electron\dist\electron.exe")" "$(Join-Path $AppDir "frontend")"
+start "" "$ElectronExe" "$FrontendDir"
 "@
 Set-Content -Path $StartBatPath -Value $startBatContent -Encoding ascii
 
+# start.vbs：wscript 无窗口启动（快捷方式用这个，不弹 cmd 黑窗）
+$StartVbsPath = Join-Path $ReleaseRoot "start.vbs"
+$startVbsContent = @"
+Set ws = CreateObject("WScript.Shell")
+Set env = ws.Environment("PROCESS")
+env("PLANNER_PYTHON") = "$venvPython"
+env("PLANNER_DATA_ROOT") = "$DataDir"
+env("PLANNER_PORT") = "$RelPort"
+env("PLANNER_URL") = "$RelUrl"
+env("PLANNER_USER_DATA") = "$RelUserData"
+ws.Run """" & "$ElectronExe" & """" & " " & """" & "$FrontendDir" & """", 0, False
+"@
+Set-Content -Path $StartVbsPath -Value $startVbsContent -Encoding ascii
+
 # start.bat 自检：隔离性缺失/被改坏 = 终止发版（防回归）
 $batText = Get-Content $StartBatPath -Raw
+$vbsText = Get-Content $StartVbsPath -Raw
 $required = @(
     @{ Name = "PLANNER_PYTHON(venv)"; Value = $venvPython },
     @{ Name = "PLANNER_DATA_ROOT(release data)"; Value = $DataDir },
@@ -115,11 +132,11 @@ $required = @(
     @{ Name = "PLANNER_USER_DATA(隔离)"; Value = "PLANNER_USER_DATA=$RelUserData" }
 )
 foreach ($r in $required) {
-    if ($batText -notmatch [regex]::Escape($r.Value)) {
-        throw "start.bat 自检失败：缺少 $($r.Name)"
-    }
+    if ($batText -notmatch [regex]::Escape($r.Value)) { throw "start.bat 自检失败：缺少 $($r.Name)" }
+    if ($vbsText -notmatch [regex]::Escape($r.Value)) { throw "start.vbs 自检失败：缺少 $($r.Name)" }
 }
 if ($batText -match "18771") { throw "start.bat 自检失败：不允许出现开发版端口 18771" }
+if ($vbsText -match "18771") { throw "start.vbs 自检失败：不允许出现开发版端口 18771" }
 
 git tag $Version
 if ($LASTEXITCODE -ne 0) { throw "git tag $Version 失败" }
