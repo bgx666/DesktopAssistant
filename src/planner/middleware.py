@@ -325,6 +325,9 @@ class SummarizationMiddleware(AgentMiddleware):
         if len(raw) >= SUMMARIZE_TRIGGER_MESSAGES:
             batch = raw[:len(raw) - SUMMARIZE_KEEP_MESSAGES]
             if batch:
+                # 扩展 batch：batch 末尾 ai(tool_calls) 的配套 tool 消息也纳入
+                # （否则删 ai 留 tool → 孤儿 ToolMessage → DeepSeek 400）
+                batch = self._extend_batch_for_tool_pairs(msgs, batch)
                 self._summarize_leaf(msgs, batch, removes, adds)
 
         tree = self.session.get_memory_tree()
@@ -335,6 +338,30 @@ class SummarizationMiddleware(AgentMiddleware):
             level += 1
 
         return removes, adds
+
+    @staticmethod
+    def _extend_batch_for_tool_pairs(msgs: list, batch: list) -> list:
+        """把 batch 边界外、与 batch 内 tool_calls 配对的 tool 消息纳入 batch。
+
+        batch 是"最早的 N 条"，若截断处恰好切开 ai(tool_calls) 与其 tool
+        结果，压缩会删除 ai 而留下孤儿 tool 消息 → DeepSeek 400。
+        对齐小B compress_buffer 的 batch_tool_call_ids 扩展逻辑。
+        """
+        call_ids = set()
+        for m in batch:
+            for tc in (getattr(m, "tool_calls", None) or []):
+                call_ids.add(tc.get("id"))
+        if not call_ids:
+            return batch
+        batch_ids = {getattr(m, "id", None) or id(m) for m in batch}
+        extended = list(batch)
+        for m in msgs:
+            if (getattr(m, "id", None) or id(m)) in batch_ids:
+                continue
+            if (getattr(m, "type", None) == "tool"
+                    and getattr(m, "tool_call_id", None) in call_ids):
+                extended.append(m)
+        return extended
 
     def _maybe_compress(self, state: PlannerState) -> dict | None:
         """保留：与 compress_snapshot 等价（兼容旧调用/测试），before_model 不再调用。"""

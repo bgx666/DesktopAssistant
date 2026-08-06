@@ -433,3 +433,69 @@ def test_compression_emits_memory_update(data_root):
                    for m in s.recent_buffer), "压缩应已发生"
     finally:
         s.close()
+
+
+def test_compress_batch_includes_paired_tool_messages(data_root):
+    """压缩 batch 切开 ai(tool_calls) 与其工具结果时，配套 tool 消息必须一并压缩。
+
+    回归：否则删 ai 留 tool → 孤儿 ToolMessage → DeepSeek 400（生成全挂）。
+    """
+    from langchain_core.messages import AIMessage, ToolMessage
+    from planner.middleware import SummarizationMiddleware, SUMMARIZE_KEEP_MESSAGES
+    s = PlannerSession(data_root, mock=True)
+    try:
+        # 构造：ai(tool_calls) 恰好在 batch 边界（index 40），tool 结果在保留区
+        for i in range(40):
+            s.recent_buffer.append(HumanMessage(content=f"占位 {i}"))
+        ai = AIMessage(content="调用工具", id="cut-ai",
+                       tool_calls=[{"name": "get_next_actions", "args": {},
+                                    "id": "cut-call-1", "type": "tool_call"}])
+        tool = ToolMessage(content="结果", tool_call_id="cut-call-1", id="cut-tool")
+        s.recent_buffer.append(ai)
+        s.recent_buffer.append(tool)
+        for i in range(19):
+            s.recent_buffer.append(HumanMessage(content=f"后置 {i}"))
+        s._msg_counter += 40 + 2 + 19
+
+        comp = SummarizationMiddleware(s)
+        removes, _ = comp.compress_snapshot(list(s.recent_buffer))
+        remove_ids = {getattr(m, "id", None) or id(m) for m in removes}
+        # 配套 tool 消息必须与 ai 一起被压缩删除（不在 remove_ids 会留孤儿）
+        assert "cut-ai" in remove_ids, "边界处的 ai(tool_calls) 应被压缩"
+        assert "cut-tool" in remove_ids, "配套 tool 消息必须一并压缩（否则孤儿 400）"
+
+        # 应用删除后 buffer 无孤儿 tool
+        kept = [m for m in s.recent_buffer
+                if (getattr(m, "id", None) or id(m)) not in remove_ids]
+        call_ids = set()
+        for m in kept:
+            for tc in (getattr(m, "tool_calls", None) or []):
+                call_ids.add(tc.get("id"))
+        orphans = [m for m in kept if getattr(m, "type", None) == "tool"
+                   and (getattr(m, "tool_call_id", None) or "") not in call_ids]
+        assert not orphans, "应用删除后不应有孤儿 tool 消息"
+    finally:
+        s.close()
+
+
+def test_strip_orphan_tool_messages(data_root):
+    """生成输入前清理孤儿 tool 消息（防御 400）。"""
+    from langchain_core.messages import ToolMessage
+    s = PlannerSession(data_root, mock=True)
+    try:
+        s.recent_buffer.append(HumanMessage(content="你好"))
+        s.recent_buffer.append(ToolMessage(content="孤儿结果", tool_call_id="ghost-call"))
+        s._strip_orphan_tool_messages()
+        assert not any(getattr(m, "type", None) == "tool" for m in s.recent_buffer), \
+            "孤儿 tool 应被清理"
+        # 正常配对的不动
+        s.recent_buffer.append(HumanMessage(content="再问"))
+        from langchain_core.messages import AIMessage
+        s.recent_buffer.append(AIMessage(
+            content="",
+            tool_calls=[{"name": "x", "args": {}, "id": "ok-call", "type": "tool_call"}]))
+        s.recent_buffer.append(ToolMessage(content="ok", tool_call_id="ok-call"))
+        s._strip_orphan_tool_messages()
+        assert any(getattr(m, "tool_call_id", None) == "ok-call" for m in s.recent_buffer)
+    finally:
+        s.close()

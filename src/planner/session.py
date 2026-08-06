@@ -386,6 +386,25 @@ class PlannerSession:
                         buf.append(ToolMessage(content="（工具调用被中断）", tool_call_id=tid))
                     break
 
+    def _strip_orphan_tool_messages(self) -> None:
+        """删除无配对 tool_calls 的孤儿 tool 消息（防御 DeepSeek 400）。
+
+        压缩 batch 若切开 ai(tool_calls) 与其工具结果，可能留下孤儿
+        ToolMessage；任何来源的孤儿都在生成输入前清掉。
+        """
+        with self.buffer_lock:
+            call_ids = set()
+            for m in self.recent_buffer:
+                for tc in (getattr(m, "tool_calls", None) or []):
+                    call_ids.add(tc.get("id"))
+            kept = [m for m in self.recent_buffer
+                    if not (getattr(m, "type", None) == "tool"
+                            and (getattr(m, "tool_call_id", None) or "") not in call_ids)]
+            if len(kept) != len(self.recent_buffer):
+                _logger.info("[repair] 清理 %d 条孤儿 tool 消息",
+                             len(self.recent_buffer) - len(kept))
+                self.recent_buffer = kept
+
     def _save_buffer_state(self) -> None:
         """buffer 持久化（messages_to_dict → json，存进 memory_tree.db）。"""
         try:
@@ -519,6 +538,7 @@ class PlannerSession:
                     m for m in self.recent_buffer
                     if (getattr(m, "id", None) or id(m)) not in remove_ids]
                 self.recent_buffer.extend(adds)
+                self._strip_orphan_tool_messages()   # 防御：压缩切段可能留孤儿 tool
                 self._reorder_node_messages()
             self._save_buffer_state()
             self.push_event({"type": "memory_update"})
@@ -787,6 +807,7 @@ class PlannerSession:
         from langchain_core.messages import AIMessage, AIMessageChunk
 
         self._repair_buffer()
+        self._strip_orphan_tool_messages()
         with self.buffer_lock:
             input_msgs = list(self.recent_buffer)
         final_messages = None
