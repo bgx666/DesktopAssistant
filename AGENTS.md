@@ -16,6 +16,18 @@
 
 LLM 配置走 `.env` / `D:\xiaob\.env`：`LLM_API_KEY` 必填，默认 DeepSeek。
 
+## 发版（开发/使用分离）
+
+- **开发目录** `D:\xiaob\planner`（本仓库）：AI 改代码、跑测试；用户日常**不使用**开发目录
+- **使用目录** `D:\xiaob\planner-release`（独立数据 `data/`、独立 venv，git 不追踪）：用户日常用
+- 发版 = 开发完成后：`git commit`（工作区必须干净）→ 运行 `build.ps1`（或双击 `build.bat`）：
+  自动 `vX.Y.Z` patch+1（可 `-Version` 手动）→ `robocopy /MIR` 复制 `src/`+`frontend/`（排除 node_modules）
+  → venv 首次创建 + `pip install -e app`（可编辑，之后复制代码即生效）→ 首次 `npm install`
+  → 首次迁移开发 `data/` 到 release → `git tag` + 生成 `start.bat`
+- 用户日常：双击 `D:\xiaob\planner-release\start.bat`（`PLANNER_PYTHON`=venv、`PLANNER_DATA_ROOT`=release data，main.js/config 均已支持环境变量，代码零改动）
+- 回滚 = `git checkout 旧tag` + 重跑 build.ps1（数据在 release `data/`，不受影响）
+- ⚠️ 开发版与 release 版 Electron `userData` 同名 → 单实例锁冲突，**不能同时开**
+
 ## 关键约定（容易猜错/踩过坑的）
 
 ### ⚠️ 测试数据隔离（最高优先级）
@@ -26,7 +38,7 @@ LLM 配置走 `.env` / `D:\xiaob\.env`：`LLM_API_KEY` 必填，默认 DeepSeek�
   $env:PLANNER_MOCK_LLM = "1"
   Remove-Item $env:PLANNER_DATA_ROOT -Recurse -Force -ErrorAction SilentlyContinue
   ```
-  启动后端/Electron 时继承该环境变量；测试完杀进程。**真实用户对话、记忆树、任务只存在于默认 `data/`，验证脚本一律不许触碰。**
+  启动后端/Electron 时继承该环境变量；测试完杀进程。**真实用户对话、记忆树、任务只存在于 release `D:\xiaob\planner-release\data`（或迁移前的开发目录 `data/`），验证脚本一律不许触碰。**
 - 深夜晚间（22:00-08:00）默认 DND 窗口会拦截心跳/自主生成——测试 nudge/心跳前先 `POST /dnd {"enabled": false}`。
 - Windows 端口复用坑：残留旧后端进程可能占着 18771（含真实模式），测试前 `Get-Process python | Stop-Process -Force` 清理。
 

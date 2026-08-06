@@ -96,6 +96,9 @@ class PlannerSession:
         self._stop_event = threading.Event()
         self._wake_event = threading.Event()
 
+        # 最后活动时间（epoch 秒，持久化）：程序关闭期间的离线时长据此补回归问候
+        self._last_activity_at: float = 0.0
+
         # 免打扰
         self.dnd_enabled: bool = True
         self.dnd_until: datetime | None = None      # 一次性免打扰截止时间
@@ -112,6 +115,7 @@ class PlannerSession:
         self._system_prompt = self._build_system_prompt()
         self.get_memory_tree()          # 确保 db 文件落盘
         self._load_buffer_state()
+        self._maybe_welcome_back()
 
     # ── 懒加载 ────────────────────────────────────────────────
 
@@ -356,7 +360,10 @@ class PlannerSession:
         try:
             from langchain_core.messages import messages_to_dict
             self.get_memory_tree().save_buffer_state(
-                messages_to_dict(self.recent_buffer), self._msg_counter, self.round)
+                messages_to_dict(self.recent_buffer), self._msg_counter, self.round,
+                last_activity_at=self._last_activity_at or None,
+                reminded_overdue=list(getattr(self, "_reminded_overdue", set())),
+            )
         except Exception as exc:
             _logger.warning("[session] 保存 buffer 状态失败: %s", exc)
 
@@ -366,18 +373,48 @@ class PlannerSession:
             from langchain_core.messages import messages_from_dict
             state = self.get_memory_tree().load_buffer_state()
             if not state or not state["recent_buffer"]:
+                self._last_activity_at = (state or {}).get("last_activity_at", 0.0) or 0.0
+                reminded = (state or {}).get("reminded_overdue", [])
+                if reminded:
+                    self._reminded_overdue = set(reminded)
                 return False
             msgs = messages_from_dict(state["recent_buffer"])
             if msgs:
                 self.recent_buffer = msgs
                 self._msg_counter = state.get("_msg_counter", len(msgs))
                 self.round = state.get("round", 0)
+                self._last_activity_at = state.get("last_activity_at", 0.0) or 0.0
+                reminded = state.get("reminded_overdue", [])
+                if reminded:
+                    self._reminded_overdue = set(reminded)
                 _logger.info("[session] 从 buffer_state 恢复上下文: %d 条消息", len(msgs))
                 return True
             return False
         except Exception as exc:
             _logger.warning("[session] 加载 buffer 状态失败: %s", exc)
             return False
+
+    def _maybe_welcome_back(self) -> None:
+        """重启回归问候：程序关闭期间离线超过阈值，启动后补一次自主生成。
+
+        任何生成结束都会刷新 _last_activity_at——程序开着时由玩家消息/心跳
+        持续刷新；关闭期间不刷新，重启时差值即真实离线时长。DND 时跳过，
+        交给之后的正常心跳接管。
+        """
+        if self._last_activity_at <= 0:
+            return
+        gap_minutes = (time.time() - self._last_activity_at) / 60
+        if gap_minutes < _config.PLANNER_WELCOME_BACK_MINUTES:
+            return
+        if self.in_dnd():
+            _logger.info("[welcome_back] 免打扰时段，跳过回归问候")
+            return
+        hours = round(gap_minutes / 60, 1)
+        _logger.info("[welcome_back] 距上次活动 %.1f 分钟，补一次回归问候", gap_minutes)
+        text = (f"（距离上次你见到我已经过去了 {hours} 小时。你醒了过来，"
+                f"先看看任务进度和计划，提醒用户最重要的事，说点关心的、有用的话。）")
+        self._receive(text, trigger=True)
+        self._spawn_worker("welcome_back")
 
     def _log_dir(self) -> Path:
         d = self.data_root / CHARACTER_ID
@@ -494,6 +531,7 @@ class PlannerSession:
             pending = pending[:3]
         for t in pending:
             self._reminded_overdue.add(t["id"])
+        self._save_buffer_state()   # 去重持久化，避免重启后重复提醒
         with self.chat_lock:
             with self.buffer_lock:
                 if self._generating:
@@ -566,6 +604,7 @@ class PlannerSession:
             self._set_thinking(False)
             with self.buffer_lock:
                 self._generating = False
+                self._last_activity_at = time.time()   # 任何生成都算一次活动
                 self.current_trigger = "player"
                 while self._inbox:
                     m = self._inbox.pop(0)

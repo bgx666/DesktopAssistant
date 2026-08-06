@@ -51,6 +51,9 @@ PLANNER_EVENING_HOUR: int = int(os.getenv("PLANNER_EVENING_HOUR", "21"))
 # LLM 兜底心跳（LLM 没调 heartbeat 时）
 PLANNER_FALLBACK_MINUTES: int = int(os.getenv("PLANNER_FALLBACK_MINUTES", "60"))
 
+# 重启回归问候：程序关闭期间距最后活动超过该分钟数，启动后补一次自主生成
+PLANNER_WELCOME_BACK_MINUTES: int = int(os.getenv("PLANNER_WELCOME_BACK_MINUTES", "120"))
+
 
 def data_root() -> Path:
     """解析运行时数据根目录（默认项目根/data）。"""

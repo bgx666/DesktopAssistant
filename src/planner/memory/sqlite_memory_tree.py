@@ -47,7 +47,9 @@ CREATE TABLE IF NOT EXISTS buffer_state (
     character_id TEXT PRIMARY KEY,
     recent_buffer TEXT,
     msg_counter INTEGER,
-    round INTEGER
+    round INTEGER,
+    last_activity_at REAL,
+    reminded_overdue TEXT
 );
 """
 
@@ -84,6 +86,14 @@ class SQLiteMemoryTree:
         if not cur.fetchone():
             with self._conn:
                 self._execute_with_retry("ALTER TABLE nodes ADD COLUMN is_active INTEGER DEFAULT 1")
+        # compat: buffer_state 加列（重启回归问候 + 逾期去重持久化，老库平滑升级）
+        for col in ("last_activity_at", "reminded_overdue"):
+            cur = self._execute_with_retry(
+                f"SELECT name FROM pragma_table_info('buffer_state') WHERE name = '{col}'"
+            )
+            if not cur.fetchone():
+                with self._conn:
+                    self._execute_with_retry(f"ALTER TABLE buffer_state ADD COLUMN {col}")
         # compat: add profile column if missing（画像字段）
         cur = self._execute_with_retry(
             "SELECT name FROM pragma_table_info('nodes') WHERE name = 'profile'"
@@ -319,24 +329,30 @@ class SQLiteMemoryTree:
 
     # ── buffer 状态（重启恢复）────────────────────────────────
 
-    def save_buffer_state(self, recent_buffer: list[dict], msg_counter: int, round: int) -> None:
+    def save_buffer_state(self, recent_buffer: list[dict], msg_counter: int, round: int,
+                          last_activity_at: float | None = None,
+                          reminded_overdue: list | None = None) -> None:
         """保存 recent_buffer 状态到 SQLite（重启恢复）。"""
         with self._conn:
             self._execute_with_retry(
-                "INSERT OR REPLACE INTO buffer_state (character_id, recent_buffer, msg_counter, round) "
-                "VALUES (?, ?, ?, ?)",
+                "INSERT OR REPLACE INTO buffer_state "
+                "(character_id, recent_buffer, msg_counter, round, last_activity_at, reminded_overdue) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
                 (
                     self._character_id,
                     json.dumps(recent_buffer, ensure_ascii=False),
                     msg_counter,
                     round,
+                    last_activity_at,
+                    json.dumps(reminded_overdue or [], ensure_ascii=False),
                 ),
             )
 
     def load_buffer_state(self) -> dict | None:
         """从 SQLite 读取 recent_buffer 状态。"""
         cur = self._execute_with_retry(
-            "SELECT recent_buffer, msg_counter, round FROM buffer_state WHERE character_id = ?",
+            "SELECT recent_buffer, msg_counter, round, last_activity_at, reminded_overdue "
+            "FROM buffer_state WHERE character_id = ?",
             (self._character_id,),
         )
         row = cur.fetchone()
@@ -346,10 +362,16 @@ class SQLiteMemoryTree:
             recent_buffer = json.loads(row["recent_buffer"]) if row["recent_buffer"] else []
         except json.JSONDecodeError:
             recent_buffer = []
+        try:
+            reminded = json.loads(row["reminded_overdue"]) if row["reminded_overdue"] else []
+        except (json.JSONDecodeError, TypeError):
+            reminded = []
         return {
             "recent_buffer": recent_buffer,
             "_msg_counter": row["msg_counter"],
             "round": row["round"],
+            "last_activity_at": row["last_activity_at"] or 0.0,
+            "reminded_overdue": reminded,
         }
 
     def clear_character_data(self) -> None:
