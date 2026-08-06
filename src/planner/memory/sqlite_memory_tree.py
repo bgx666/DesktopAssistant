@@ -54,7 +54,8 @@ CREATE TABLE IF NOT EXISTS buffer_state (
     compressed_total INTEGER,
     next_heartbeat_at REAL,
     heartbeat_minutes REAL,
-    heartbeat_note TEXT
+    heartbeat_note TEXT,
+    last_player_message_at REAL
 );
 """
 
@@ -97,7 +98,8 @@ class SQLiteMemoryTree:
                     self._execute_with_retry("ALTER TABLE nodes ADD COLUMN is_active INTEGER DEFAULT 1")
         # compat: buffer_state 加列（重启回归问候 + 逾期去重持久化，老库平滑升级）
         for col in ("last_activity_at", "reminded_overdue", "compressed_total",
-                    "next_heartbeat_at", "heartbeat_minutes", "heartbeat_note"):
+                    "next_heartbeat_at", "heartbeat_minutes", "heartbeat_note",
+                    "last_player_message_at"):
             cur = self._execute_with_retry(
                 f"SELECT name FROM pragma_table_info('buffer_state') WHERE name = '{col}'"
             )
@@ -351,15 +353,17 @@ class SQLiteMemoryTree:
                           compressed_total: int = 0,
                           next_heartbeat_at: float | None = None,
                           heartbeat_minutes: float | None = None,
-                          heartbeat_note: str | None = None) -> None:
+                          heartbeat_note: str | None = None,
+                          last_player_message_at: float | None = None) -> None:
         """保存 recent_buffer 状态到 SQLite（重启恢复）。"""
         with self._lock:
             with self._conn:
                 self._execute_with_retry(
                     "INSERT OR REPLACE INTO buffer_state "
                     "(character_id, recent_buffer, msg_counter, round, last_activity_at, reminded_overdue, "
-                    "compressed_total, next_heartbeat_at, heartbeat_minutes, heartbeat_note) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "compressed_total, next_heartbeat_at, heartbeat_minutes, heartbeat_note, "
+                    "last_player_message_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         self._character_id,
                         json.dumps(recent_buffer, ensure_ascii=False),
@@ -371,6 +375,7 @@ class SQLiteMemoryTree:
                         next_heartbeat_at,
                         heartbeat_minutes,
                         heartbeat_note,
+                        last_player_message_at,
                     ),
                 )
 
@@ -378,7 +383,8 @@ class SQLiteMemoryTree:
         """从 SQLite 读取 recent_buffer 状态。"""
         cur = self._execute_with_retry(
             "SELECT recent_buffer, msg_counter, round, last_activity_at, reminded_overdue, "
-            "compressed_total, next_heartbeat_at, heartbeat_minutes, heartbeat_note "
+            "compressed_total, next_heartbeat_at, heartbeat_minutes, heartbeat_note, "
+            "last_player_message_at "
             "FROM buffer_state WHERE character_id = ?",
             (self._character_id,),
         )
@@ -403,6 +409,7 @@ class SQLiteMemoryTree:
             "next_heartbeat_at": row["next_heartbeat_at"] or 0.0,
             "heartbeat_minutes": row["heartbeat_minutes"] or 0.0,
             "heartbeat_note": row["heartbeat_note"] or "",
+            "last_player_message_at": row["last_player_message_at"] or 0.0,
         }
 
     def clear_character_data(self) -> None:

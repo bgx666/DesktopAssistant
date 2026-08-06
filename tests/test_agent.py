@@ -544,3 +544,27 @@ def test_gap_hint_not_shown_in_history(data_root):
         assert "距上次" not in shown, "间隔不应显示在对话框"
     finally:
         s.close()
+
+
+def test_gap_hint_persists_across_restart(data_root):
+    """上次玩家消息时间持久化：重启后首句也带离线时长间隔（累积）。"""
+    from datetime import datetime, timedelta
+    from planner.session import _TZ
+    s1 = PlannerSession(data_root, mock=True)
+    try:
+        s1.enqueue_player_message("第一句")
+        s1._last_player_message_at = datetime.now(_TZ) - timedelta(hours=2)   # 模拟离线 2 小时
+        s1._save_buffer_state()
+    finally:
+        s1.close()
+
+    s2 = PlannerSession(data_root, mock=True)
+    try:
+        s2.enqueue_player_message("第二句")
+        m = next(x for x in s2.recent_buffer
+                 if "第二句" in str(getattr(x, "content", "")))
+        c = str(m.content)
+        assert "距上次说话" in c, f"重启后首句应带间隔: {c}"
+        assert "2 小时" in c, f"应显示离线时长: {c}"
+    finally:
+        s2.close()

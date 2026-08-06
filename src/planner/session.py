@@ -411,6 +411,9 @@ class PlannerSession:
         """buffer 持久化（messages_to_dict → json，存进 memory_tree.db）。"""
         try:
             from langchain_core.messages import messages_to_dict
+            last_msg_at = None
+            if self._last_player_message_at is not None:
+                last_msg_at = self._last_player_message_at.timestamp()
             self.get_memory_tree().save_buffer_state(
                 messages_to_dict(self.recent_buffer), self._msg_counter, self.round,
                 last_activity_at=self._last_activity_at or None,
@@ -419,6 +422,7 @@ class PlannerSession:
                 next_heartbeat_at=self._next_heartbeat_at or None,
                 heartbeat_minutes=self._heartbeat_minutes or None,
                 heartbeat_note=self._heartbeat_note or None,
+                last_player_message_at=last_msg_at,
             )
         except Exception as exc:
             _logger.warning("[session] 保存 buffer 状态失败: %s", exc)
@@ -435,6 +439,7 @@ class PlannerSession:
                     self._reminded_overdue = set(reminded)
                 self._compressed_total = int((state or {}).get("compressed_total", 0) or 0)
                 self._restore_heartbeat_state(state or {})
+                self._restore_last_player_at(state or {})
                 return False
             msgs = messages_from_dict(state["recent_buffer"])
             if msgs:
@@ -447,6 +452,7 @@ class PlannerSession:
                     self._reminded_overdue = set(reminded)
                 self._compressed_total = int(state.get("compressed_total", 0) or 0)
                 self._restore_heartbeat_state(state)
+                self._restore_last_player_at(state)
                 _logger.info("[session] 从 buffer_state 恢复上下文: %d 条消息", len(msgs))
                 return True
             return False
@@ -462,6 +468,12 @@ class PlannerSession:
         if self._next_heartbeat_at > 0:
             remain = self._next_heartbeat_at - time.time()
             _logger.info("[heartbeat] 恢复调度：剩余 %.0f 秒", max(0, remain))
+
+    def _restore_last_player_at(self, state: dict) -> None:
+        """恢复上次玩家消息时间（跨重启间隔提示累积）。"""
+        ts = float(state.get("last_player_message_at", 0.0) or 0.0)
+        if ts > 0:
+            self._last_player_message_at = datetime.fromtimestamp(ts, tz=_TZ)
 
     def _check_startup_heartbeat(self) -> None:
         """启动时心跳已到期 → 立即补一次自主生成（剩余时间跨重启扣减）。
