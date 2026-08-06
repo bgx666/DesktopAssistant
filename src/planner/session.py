@@ -491,11 +491,12 @@ class PlannerSession:
         self._heartbeat_note = ""
         if self.in_dnd():
             _logger.info("[heartbeat] 启动补唤醒遇免打扰，顺延")
-            self.schedule_heartbeat(FALLBACK_HEARTBEAT_MINUTES, note)
+            self.schedule_heartbeat(minutes, note)
             return
         _logger.info("[heartbeat] 启动补唤醒（心跳已到期）")
-        # 先落保底调度（生成中 LLM 覆盖），防止中断/退出导致 next=0 落盘
-        self.schedule_heartbeat(FALLBACK_HEARTBEAT_MINUTES, note)
+        # 先落保底调度（生成中 LLM 覆盖），防止中断/退出导致 next=0 落盘；
+        # 保底沿用原心跳间隔（而非固定 60 分钟），避免"重置感"
+        self.schedule_heartbeat(minutes, note)
         text = (f"（系统：心跳到了，请主动和用户说话。{note + '。' if note else ''}"
                 f"可以看看用户的任务进度，提醒用户该做的事。）")
         self._receive(text, trigger=True)
@@ -640,7 +641,7 @@ class PlannerSession:
             if self.in_dnd():
                 # 免打扰：不打扰，顺延一个正常间隔
                 self._heartbeat_silent_count += 1
-                self.schedule_heartbeat(FALLBACK_HEARTBEAT_MINUTES, note)
+                self.schedule_heartbeat(minutes, note)
                 _logger.info("[heartbeat] 免打扰时段，顺延")
                 return
             # 自主唤醒 = 用户沉默一次 → 心跳逐步加长
@@ -648,8 +649,9 @@ class PlannerSession:
             _logger.info("[heartbeat] 触发自主生成（距上次 %s：%s）",
                          self._fmt_duration(minutes), note)
             # 先落一个保底调度（生成中 LLM 会重新设置覆盖）：
-            # 防止触发后进程退出/中断导致 next=0 落盘 → 重启后心跳被重置
-            self.schedule_heartbeat(FALLBACK_HEARTBEAT_MINUTES, note)
+            # 防止触发后进程退出/中断导致 next=0 落盘 → 重启后心跳被重置；
+            # 保底沿用原心跳间隔，避免"重置感"
+            self.schedule_heartbeat(minutes, note)
             text = (f"（系统：心跳到了，请主动和用户说话。{note + '。' if note else ''}"
                     f"可以看看用户的任务进度，提醒用户该做的事。）")
             self._receive(text, trigger=True)
