@@ -42,9 +42,9 @@ MAX_WORKER_ROUNDS = 3            # 生成期间到达的新消息最多再补 N 
 DEFAULT_WAKE_MINUTES = 30        # 首次启动/未调度时的默认唤醒间隔
 
 # 心跳节奏自适应：
-# - 对话中（用户刚说话/在聊）→ 短心跳，随时跟进
+# - 对话中（用户刚说话/在聊）→ 短心跳，随时跟进（秒级）
 # - 用户沉默（自主唤醒多次没人理）→ 每次心跳逐渐加长，避免烦人
-DIALOG_HEARTBEAT_MINUTES = 1     # 对话默认心跳（用户刚说话后）——聊天时主动跟进
+DIALOG_HEARTBEAT_MINUTES = 0.33  # 对话默认心跳（用户刚说话后，≈20 秒）
 SILENT_ESCALATE_STEP = 10        # 沉默时每次心跳加长的分钟数
 SILENT_ESCALATE_MAX = 120        # 沉默加长上限
 
@@ -88,7 +88,7 @@ class PlannerSession:
 
         # 心跳调度（分钟级）
         self._next_heartbeat_at: float = 0.0
-        self._heartbeat_minutes: int = 0
+        self._heartbeat_minutes: float = 0.0
         self._heartbeat_note: str = ""
         self._heartbeat_silent_count: int = 0   # 连续自主唤醒用户没说话的次数（沉默递进）
         self._activity: str = ""
@@ -248,18 +248,27 @@ class PlannerSession:
 
     # ── 心跳状态 ──────────────────────────────────────────────
 
-    def set_heartbeat_state(self, minutes: int, note: str = "") -> None:
+    def set_heartbeat_state(self, minutes: float, note: str = "") -> None:
         minutes = max(_config.PLANNER_HEARTBEAT_MIN_MINUTES,
-                      min(_config.PLANNER_HEARTBEAT_MAX_MINUTES, int(minutes)))
+                      min(_config.PLANNER_HEARTBEAT_MAX_MINUTES, float(minutes)))
         with self.buffer_lock:
             self._heartbeat_minutes = minutes
             self._heartbeat_note = note
             self._next_heartbeat_at = time.time() + minutes * 60
         self._wake_event.set()
-        _logger.info("[heartbeat] 调度: %d 分钟后（%s）", minutes, note)
+        _logger.info("[heartbeat] 调度: %s后（%s）", self._fmt_duration(minutes), note)
 
-    def schedule_heartbeat(self, minutes: int, note: str = "") -> None:
+    def schedule_heartbeat(self, minutes: float, note: str = "") -> None:
         self.set_heartbeat_state(minutes, note)
+
+    @staticmethod
+    def _fmt_duration(minutes: float) -> str:
+        """分钟数 → 可读时长（秒级显示）。"""
+        if minutes < 1:
+            return f"{max(1, int(round(minutes * 60)))} 秒"
+        if minutes == int(minutes):
+            return f"{int(minutes)} 分钟"
+        return f"{minutes:.1f} 分钟"
 
     def _cancel_heartbeat(self) -> None:
         """取消挂起的心跳（玩家说话时重置旧的长时间心跳用）。"""
@@ -267,8 +276,8 @@ class PlannerSession:
             self._next_heartbeat_at = 0.0
         self._wake_event.set()
 
-    def _next_silent_minutes(self) -> int:
-        """按沉默次数计算下次心跳分钟数：对话 10 → 沉默逐步加长 → 上限 120。"""
+    def _next_silent_minutes(self) -> float:
+        """按沉默次数计算下次心跳分钟数：对话 0.33 → 沉默逐步加长 → 上限 120。"""
         if self._heartbeat_silent_count <= 0:
             return DIALOG_HEARTBEAT_MINUTES
         return min(SILENT_ESCALATE_MAX,
@@ -277,9 +286,11 @@ class PlannerSession:
     def heartbeat_dict(self) -> dict:
         with self.buffer_lock:
             if self._next_heartbeat_at <= 0:
-                return {"in_minutes": 0, "note": ""}
-            in_minutes = max(0, int((self._next_heartbeat_at - time.time()) / 60) + 1)
-            return {"in_minutes": in_minutes, "note": self._heartbeat_note}
+                return {"in_minutes": 0, "in_seconds": 0, "note": ""}
+            in_seconds = max(0, int(self._next_heartbeat_at - time.time()))
+            return {"in_seconds": in_seconds,
+                    "in_minutes": max(0, int(in_seconds / 60)),
+                    "note": self._heartbeat_note}
 
     # ── 待办队列快照 ──────────────────────────────────────────
 
@@ -511,8 +522,9 @@ class PlannerSession:
                 return
             # 自主唤醒 = 用户沉默一次 → 心跳逐步加长
             self._heartbeat_silent_count += 1
-            _logger.info("[heartbeat] 触发自主生成（距上次 %d 分钟：%s）", minutes, note)
-            text = (f"（{minutes} 分钟过去了。你醒了过来。{note + '。' if note else ''}"
+            _logger.info("[heartbeat] 触发自主生成（距上次 %s：%s）",
+                         self._fmt_duration(minutes), note)
+            text = (f"（{self._fmt_duration(minutes)}过去了。你醒了过来。{note + '。' if note else ''}"
                     f"可以看看用户的任务进度，决定要不要提醒或调整安排。）")
             self._receive(text, trigger=True)
             self._spawn_worker("heartbeat")

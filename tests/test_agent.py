@@ -98,18 +98,21 @@ def test_heartbeat_cycle_breaks_down_and_marks_done(data_root):
 
 
 def test_heartbeat_clamp_in_tool(data_root):
+    from planner import config as _config
     s = PlannerSession(data_root, mock=True)
     try:
         tools = {t.name: t for t in build_tools(s)}
-        # 下限护栏现在是 1 分钟：1 分钟有效，0 分钟被拉高到 1
-        r = tools["heartbeat"].invoke({"minutes": 1})
-        assert "1 分钟" in r
-        assert s._heartbeat_minutes == 1
+        # 秒级心跳：0.2 分钟（12 秒）有效
+        r = tools["heartbeat"].invoke({"minutes": 0.2})
+        assert abs(s._heartbeat_minutes - 0.2) < 1e-6
+        assert "12 秒" in r
+        # 下限护栏 ≈10 秒：0 被拉高到 0.17
         tools["heartbeat"].invoke({"minutes": 0})
-        assert s._heartbeat_minutes == 1
+        assert abs(s._heartbeat_minutes - _config.PLANNER_HEARTBEAT_MIN_MINUTES) < 1e-6
         tools["heartbeat"].invoke({"minutes": 100000})
         assert s._heartbeat_minutes == 720
-        assert s.heartbeat_dict()["in_minutes"] > 0
+        d = s.heartbeat_dict()
+        assert d["in_seconds"] > 0
     finally:
         s.close()
 
@@ -237,9 +240,9 @@ def test_player_message_resets_heartbeat(data_root):
         s.schedule_heartbeat(120)          # 模拟旧的长心跳
         assert s.heartbeat_dict()["in_minutes"] > 60
         s.enqueue_player_message("我回来了")
-        # 心跳被重置为对话默认短间隔
+        # 心跳被重置为对话默认短间隔（秒级）
         hb = s.heartbeat_dict()
-        assert 0 < hb["in_minutes"] <= DIALOG_HEARTBEAT_MINUTES
+        assert 0 < hb["in_seconds"] <= DIALOG_HEARTBEAT_MINUTES * 60 + 2
         assert s._heartbeat_silent_count == 0
     finally:
         s.close()

@@ -244,10 +244,11 @@
       $('#ctx-tokens').textContent = '';
     }
     const hb = s.heartbeat;
-    if (hb && hb.in_minutes > 0) {
-      $('#heartbeat').textContent = hb.note
-        ? `${hb.in_minutes} 分钟后：${hb.note}`
+    if (hb && hb.in_seconds > 0) {
+      const label = hb.in_seconds < 60
+        ? `${hb.in_seconds} 秒后醒来`
         : `${hb.in_minutes} 分钟后醒来`;
+      $('#heartbeat').textContent = hb.note ? `${label}：${hb.note}` : label;
     } else {
       $('#heartbeat').textContent = '';
     }

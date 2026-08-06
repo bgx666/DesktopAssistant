@@ -55,15 +55,15 @@ class BreakDownInput(BaseModel):
 
 
 class HeartbeatInput(BaseModel):
-    """heartbeat 输入：分钟级，clamp 到护栏范围。"""
-    minutes: int = Field(description="多少分钟后再醒来做下一件事")
+    """heartbeat 输入：分钟级（支持小数，0.2 = 12 秒），clamp 到护栏范围。"""
+    minutes: float = Field(description="多少分钟后再醒来做下一件事（支持小数：0.2 = 12 秒，聊天中可用 0.17~1 的秒级短心跳）")
     note: str = Field(default="", description="接下来想做的事（可选），如「到点提醒用户做习题」")
 
     @field_validator("minutes", mode="before")
     @classmethod
     def clamp_minutes(cls, v):
         return max(_config.PLANNER_HEARTBEAT_MIN_MINUTES,
-                   min(_config.PLANNER_HEARTBEAT_MAX_MINUTES, int(v)))
+                   min(_config.PLANNER_HEARTBEAT_MAX_MINUTES, float(v)))
 
 
 class DndInput(BaseModel):
@@ -198,10 +198,12 @@ def build_tools(session) -> list[BaseTool]:
         return "\n".join(lines)
 
     @tool(args_schema=HeartbeatInput)
-    def heartbeat(minutes: int, note: str = "") -> str:
-        """做完事、回答完用户之后必须调用它停下来。它会让你在指定分钟后再醒来查看情况。不调用你会一直想事情、停不下来。"""
-        session.set_heartbeat_state(int(minutes), str(note))
-        return f"（我先歇 {minutes} 分钟，{note or '到点再醒'}。）"
+    def heartbeat(minutes: float, note: str = "") -> str:
+        """做完事、回答完用户之后必须调用它停下来。它会让你在指定时间后再醒来查看情况。不调用你会一直想事情、停不下来。
+
+        聊天中可以用秒级短心跳（0.2 = 12 秒）主动跟进；长时间无事时用较长间隔。"""
+        session.set_heartbeat_state(float(minutes), str(note))
+        return f"（我先歇 {session._fmt_duration(float(minutes))}，{note or '到点再醒'}。）"
 
     @tool(parse_docstring=True)
     def mark_plan_done(plan_id: int) -> str:
