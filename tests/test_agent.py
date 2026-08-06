@@ -84,13 +84,13 @@ def test_heartbeat_cycle_breaks_down_and_marks_done(data_root):
         _drive_generation(s, "给我安排任务", "player")
         assert s.db.list_tasks()
         # 模拟心跳：拆解任务
-        _drive_generation(s, "（30 分钟过去了。你醒了过来。）", "heartbeat")
+        _drive_generation(s, "（心跳到了，请主动跟用户说点东西。）", "heartbeat")
         tasks = s.db.list_tasks()
         t = s.db.get_task(tasks[0]["id"])
         assert t["phases"], "应已拆解出阶段"
         assert t["plan_items"], "应已生成待办条目"
         # 再模拟心跳：勾选完成（动态队列，无固定日期）
-        _drive_generation(s, "（30 分钟过去了。你醒了过来。）", "heartbeat")
+        _drive_generation(s, "（心跳到了，请主动跟用户说点东西。）", "heartbeat")
         pending = s.db.list_pending()
         assert any(p["status"] == "done" for p in s.db.get_plan()) or not pending
     finally:

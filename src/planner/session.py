@@ -122,7 +122,6 @@ class PlannerSession:
         self.get_memory_tree()          # 确保 db 文件落盘
         self._load_buffer_state()
         self._check_startup_heartbeat()
-        self._maybe_welcome_back()
 
     # ── 懒加载 ────────────────────────────────────────────────
 
@@ -453,32 +452,10 @@ class PlannerSession:
             self.schedule_heartbeat(FALLBACK_HEARTBEAT_MINUTES, note)
             return
         _logger.info("[heartbeat] 启动补唤醒（心跳已到期）")
-        text = (f"（{self._fmt_duration(minutes)}过去了。你醒了过来。{note + '。' if note else ''}"
+        text = (f"（心跳到了，请主动跟用户说点东西。{note + '。' if note else ''}"
                 f"可以看看用户的任务进度，决定要不要提醒或调整安排。）")
         self._receive(text, trigger=True)
         self._spawn_worker("heartbeat")
-
-    def _maybe_welcome_back(self) -> None:
-        """重启回归问候：程序关闭期间离线超过阈值，启动后补一次自主生成。
-
-        任何生成结束都会刷新 _last_activity_at——程序开着时由玩家消息/心跳
-        持续刷新；关闭期间不刷新，重启时差值即真实离线时长。DND 时跳过，
-        交给之后的正常心跳接管。
-        """
-        if self._last_activity_at <= 0:
-            return
-        gap_minutes = (time.time() - self._last_activity_at) / 60
-        if gap_minutes < _config.PLANNER_WELCOME_BACK_MINUTES:
-            return
-        if self.in_dnd():
-            _logger.info("[welcome_back] 免打扰时段，跳过回归问候")
-            return
-        hours = round(gap_minutes / 60, 1)
-        _logger.info("[welcome_back] 距上次活动 %.1f 分钟，补一次回归问候", gap_minutes)
-        text = (f"（距离上次你见到我已经过去了 {hours} 小时。你醒了过来，"
-                f"先看看任务进度和计划，提醒用户最重要的事，说点关心的、有用的话。）")
-        self._receive(text, trigger=True)
-        self._spawn_worker("welcome_back")
 
     def _log_dir(self) -> Path:
         d = self.data_root / CHARACTER_ID
@@ -563,7 +540,7 @@ class PlannerSession:
             self._heartbeat_silent_count += 1
             _logger.info("[heartbeat] 触发自主生成（距上次 %s：%s）",
                          self._fmt_duration(minutes), note)
-            text = (f"（{self._fmt_duration(minutes)}过去了。你醒了过来。{note + '。' if note else ''}"
+            text = (f"（心跳到了，请主动跟用户说点东西。{note + '。' if note else ''}"
                     f"可以看看用户的任务进度，决定要不要提醒或调整安排。）")
             self._receive(text, trigger=True)
             self._spawn_worker("heartbeat")
