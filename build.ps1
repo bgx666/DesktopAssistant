@@ -13,6 +13,8 @@ $ErrorActionPreference = "Stop"
 $DevRoot = $PSScriptRoot
 $AppDir = Join-Path $ReleaseRoot "app"
 $VenvDir = Join-Path $ReleaseRoot "venv"
+$venvPythonExe = Join-Path $VenvDir "Scripts\python.exe"    # 安装/初始化用（有控制台，输出可见）
+$venvPythonW = Join-Path $VenvDir "Scripts\pythonw.exe"     # 运行时注入（无控制台，后端不弹黑窗）
 $DataDir = Join-Path $ReleaseRoot "data"
 $VersionFile = Join-Path $ReleaseRoot "VERSION"
 $StartBatPath = Join-Path $ReleaseRoot "start.bat"
@@ -55,12 +57,11 @@ Invoke-RobocopyMirror (Join-Path $DevRoot "frontend") (Join-Path $AppDir "fronte
 Copy-Item (Join-Path $DevRoot "pyproject.toml") $AppDir -Force
 
 # ── 4. venv（可编辑安装：代码复制即更新，零重装开销）────────
-$venvPython = Join-Path $VenvDir "Scripts\python.exe"
-if (-not (Test-Path $venvPython)) {
+if (-not (Test-Path $venvPythonExe)) {
     Write-Host "[build] 首次创建 venv..."
     & $MinicondaPython -m venv $VenvDir
     if ($LASTEXITCODE -ne 0) { throw "venv 创建失败" }
-    & $venvPython -m pip install -e $AppDir
+    & $venvPythonExe -m pip install -e $AppDir
     if ($LASTEXITCODE -ne 0) { throw "pip install 失败" }
 }
 
@@ -98,7 +99,7 @@ $FrontendDir = Join-Path $AppDir "frontend"
 $startBatContent = @"
 @echo off
 rem xiaozhu release $Version -- double-click to start (data: $DataDir, port $RelPort)
-set "PLANNER_PYTHON=$venvPython"
+set "PLANNER_PYTHON=$venvPythonW"
 set "PLANNER_DATA_ROOT=$DataDir"
 set "PLANNER_PORT=$RelPort"
 set "PLANNER_URL=$RelUrl"
@@ -112,7 +113,7 @@ $StartVbsPath = Join-Path $ReleaseRoot "start.vbs"
 $startVbsContent = @"
 Set ws = CreateObject("WScript.Shell")
 Set env = ws.Environment("PROCESS")
-env("PLANNER_PYTHON") = "$venvPython"
+env("PLANNER_PYTHON") = "$venvPythonW"
 env("PLANNER_DATA_ROOT") = "$DataDir"
 env("PLANNER_PORT") = "$RelPort"
 env("PLANNER_URL") = "$RelUrl"
@@ -125,7 +126,7 @@ Set-Content -Path $StartVbsPath -Value $startVbsContent -Encoding ascii
 $batText = Get-Content $StartBatPath -Raw
 $vbsText = Get-Content $StartVbsPath -Raw
 $required = @(
-    @{ Name = "PLANNER_PYTHON(venv)"; Value = $venvPython },
+    @{ Name = "PLANNER_PYTHON(venv)"; Value = $venvPythonW },
     @{ Name = "PLANNER_DATA_ROOT(release data)"; Value = $DataDir },
     @{ Name = "PLANNER_PORT($RelPort)"; Value = $RelPort },
     @{ Name = "PLANNER_URL($RelUrl)"; Value = $RelUrl },

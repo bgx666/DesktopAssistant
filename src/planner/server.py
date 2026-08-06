@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 import threading
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -199,12 +200,13 @@ def _setup_logging(data_root) -> None:
     )
     fmt = logging.Formatter("%(asctime)s [%(name)s] %(levelname)s %(message)s")
     file_handler.setFormatter(fmt)
-    stream_handler = logging.StreamHandler()
-    stream_handler.setFormatter(fmt)
     root = logging.getLogger("planner")
     root.setLevel(logging.INFO)
     root.addHandler(file_handler)
-    root.addHandler(stream_handler)
+    if sys.stderr is not None:   # pythonw（无控制台）下 stderr 为 None，跳过控制台日志
+        stream_handler = logging.StreamHandler()
+        stream_handler.setFormatter(fmt)
+        root.addHandler(stream_handler)
 
 
 def main() -> None:
@@ -216,7 +218,8 @@ def main() -> None:
     mode = "MOCK（脚本化假 LLM）" if session.mock else "真实 LLM"
     _logger.info("planner 后端启动: http://127.0.0.1:%d 模式=%s 数据目录=%s",
                  port, mode, session.data_root)
-    print(f"[planner] 小助后端已启动: http://127.0.0.1:{port} （模式: {mode}）")
+    if sys.stdout is not None:   # pythonw（无控制台）下 stdout 为 None
+        print(f"[planner] 小助后端已启动: http://127.0.0.1:{port} （模式: {mode}）")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
