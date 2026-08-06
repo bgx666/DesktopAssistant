@@ -361,7 +361,12 @@ class SummarizationMiddleware(AgentMiddleware):
             meta={"schema_version": 1, **out.meta},
         )
         node_text = self._render_node_text(node_id, start_pos, end_pos, out)
-        summary_msg = HumanMessage(content=node_text, metadata={"node_id": node_id})
+        # node_start：被压缩消息的起始位置——回写 buffer 后据此把节点移到
+        # 正确位置（压缩的总是最早的消息，节点应排在 buffer 最前，而非
+        # langgraph add_messages 默认的"末尾追加"位置）
+        summary_msg = HumanMessage(
+            content=node_text,
+            metadata={"node_id": node_id, "node_start": start_pos})
         removes.extend(RemoveMessage(id=m.id) for m in batch)
         adds.append(summary_msg)
         _logger.info("[compress] 叶子 %s 第%d-%d条（%d 条消息落树，画像维度=%s）",
@@ -408,10 +413,24 @@ class SummarizationMiddleware(AgentMiddleware):
             meta={"schema_version": 1, **out.meta})
         rr0 = to_compact[0].get("round_range") or ["?", "?"]
         rr1 = to_compact[-1].get("round_range") or ["?", "?"]
+        # 父节点 node_start：子节点覆盖区间的最小起点（优先取 buffer 节点消息
+        # 的 node_start，缺失时取树的 round_range 起始轮次数值化）
+        child_starts = []
+        for n in to_compact:
+            m = by_id.get(n["id"])
+            if m is not None:
+                cs = (getattr(m, "metadata", None) or {}).get("node_start")
+                if cs is not None:
+                    child_starts.append(int(cs))
+            try:
+                child_starts.append(int(n.get("round_range")[0]))
+            except (TypeError, ValueError, IndexError):
+                pass
+        node_start = min(child_starts) if child_starts else 0
         parent_text = self._render_node_text(parent_id, rr0[0], rr1[1], out)
         parent_msg = HumanMessage(
             content=parent_text,
-            metadata={"node_id": parent_id},
+            metadata={"node_id": parent_id, "node_start": node_start},
         )
         removes.extend(RemoveMessage(id=m.id) for m in removable)
         adds.append(parent_msg)

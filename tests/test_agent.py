@@ -304,3 +304,35 @@ def test_tool_result_not_lost_after_compress(data_root):
                    for m in s.recent_buffer), "压缩应已触发"
     finally:
         s.close()
+
+
+def test_compressed_nodes_kept_at_start(data_root):
+    """连续多次压缩后，节点消息按 node_start 排序集中在 buffer 开头。
+
+    回归：压缩节点经 langgraph add_messages 追加到末尾，多次压缩后
+    早期摘要会卡在对话中间（时间顺序错乱）。
+    """
+    from planner.middleware import SUMMARIZE_KEEP_MESSAGES, SUMMARIZE_TRIGGER_MESSAGES
+    from planner.session import PlannerSession as PS
+    s = PS(data_root, mock=True)
+    try:
+        for _round in range(2):
+            for i in range(SUMMARIZE_TRIGGER_MESSAGES - 1):
+                s.recent_buffer.append(HumanMessage(content=f"第{_round}轮占位 {i}"))
+            s._msg_counter += SUMMARIZE_TRIGGER_MESSAGES - 1
+            _drive_generation(s, f"帮我安排任务（第{_round}轮）")
+
+        nodes = [m for m in s.recent_buffer
+                 if "node_id" in (getattr(m, "metadata", None) or {})]
+        rest = [m for m in s.recent_buffer
+                if "node_id" not in (getattr(m, "metadata", None) or {})]
+        assert len(nodes) >= 2, "两轮压缩后应有 ≥2 个节点"
+        # 节点全部在开头
+        assert s.recent_buffer[:len(nodes)] == nodes, "节点应全部排在 buffer 开头"
+        # 按 node_start 升序
+        starts = [(getattr(m, "metadata", None) or {}).get("node_start") for m in nodes]
+        assert starts == sorted(starts), f"节点应按 node_start 升序：{starts}"
+        assert all("node_id" not in (getattr(m, "metadata", None) or {}) for m in rest)
+        assert len(rest) <= SUMMARIZE_KEEP_MESSAGES + 10
+    finally:
+        s.close()

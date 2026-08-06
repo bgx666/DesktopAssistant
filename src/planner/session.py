@@ -726,12 +726,30 @@ class PlannerSession:
         if final_messages:
             with self.buffer_lock:
                 self.recent_buffer = list(final_messages)
+            self._reorder_node_messages()
         # 兜底心跳：LLM 没调 heartbeat → 按对话/沉默节奏自适应
         if not heartbeat_called:
             minutes = self._next_silent_minutes()
             _logger.info("[agent] 未调用 heartbeat，兜底 %d 分钟", minutes)
             self.schedule_heartbeat(minutes)
         self.push_plan_update()
+
+    def _reorder_node_messages(self) -> None:
+        """压缩节点移到 buffer 开头（按 node_start 排序）。
+
+        压缩中间件经 langgraph add_messages 把节点消息追加到列表末尾；
+        多次压缩后节点会卡在对话中间（早期摘要插在晚期对话之间，时间顺序
+        错乱）。压缩的总是最早的消息，节点代表被压缩的早期对话，应排最前。
+        """
+        with self.buffer_lock:
+            nodes = [m for m in self.recent_buffer
+                     if "node_id" in (getattr(m, "metadata", None) or {})]
+            if not nodes:
+                return
+            rest = [m for m in self.recent_buffer
+                    if "node_id" not in (getattr(m, "metadata", None) or {})]
+            nodes.sort(key=lambda m: (getattr(m, "metadata", None) or {}).get("node_start", 0))
+            self.recent_buffer = nodes + rest
 
     def _emit_tool_events(self, m) -> None:
         """从新增消息中提取工具调用/结果，推送前端工具卡片事件。"""
