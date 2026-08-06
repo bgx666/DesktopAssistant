@@ -158,6 +158,10 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json({"ok": False, "error": "bad_request"}, status=400)
                 return
             self._send_json(self.session.undo_message(msg_id))
+        elif path == "/stop":
+            # 停止当前生成（生成在安全点收尾）
+            self.session.request_stop()
+            self._send_json({"ok": True})
         elif path == "/task":
             body = self._read_json_body()
             title = str(body.get("title", "")).strip()

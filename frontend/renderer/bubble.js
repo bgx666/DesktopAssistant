@@ -1,8 +1,7 @@
-// bubble.js —— 悬浮球：纯 JS 拖拽 + 点击弹面板 + 右键菜单 + 轮询后端状态
+// bubble.js —— 悬浮球：纯 JS 拖拽 + 点击弹面板 + 右键菜单（状态由主进程推送）
 (() => {
   'use strict';
 
-  const API = (window.planner && window.planner.apiBase) || 'http://127.0.0.1:18771';
   const core = document.getElementById('core');
 
   // ── 手动拖拽（不用 -webkit-app-region，透明窗口上它吞点击事件）──
@@ -50,26 +49,22 @@
     window.planner.bubbleMenu();
   });
 
-  // 轮询后端状态：状态点（思考中脉冲 / 离线红点 / 逾期徽标）。
-  // /dequeue 由主进程独占消费（面板隐藏时文本事件经主进程冒气泡），
-  // 本窗口不再轮询 /dequeue，避免与面板窗口抢事件导致工具卡片丢结果。
-  async function poll() {
+  // 状态点（思考中脉冲 / 离线红点 / 逾期徽标）由主进程统一推送
+  // （主进程 /dequeue 轮询带 state 广播），本窗口不再各自轮询 /state。
+  function applyState(s) {
     const dot = document.getElementById('status-dot');
     const badge = document.getElementById('badge');
-    try {
-      const data = await (await fetch(API + '/state')).json();
-      const s = data.state || {};
-      dot.classList.toggle('thinking', !!s.thinking);
-      dot.classList.remove('offline');
-      const overdue = (s.plan && s.plan.overdue_count) || 0;
-      badge.classList.toggle('hidden', !overdue);
-      badge.textContent = overdue > 9 ? '9+' : overdue;
-    } catch {
+    if (!s) return;
+    if (s.offline) {
       dot.classList.remove('thinking');
       dot.classList.add('offline');
+      return;
     }
+    dot.classList.toggle('thinking', !!s.thinking);
+    dot.classList.remove('offline');
+    const overdue = (s.plan && s.plan.overdue_count) || 0;
+    badge.classList.toggle('hidden', !overdue);
+    badge.textContent = overdue > 9 ? '9+' : overdue;
   }
-
-  poll();
-  setInterval(poll, 1500);
+  window.planner.onState(applyState);
 })();

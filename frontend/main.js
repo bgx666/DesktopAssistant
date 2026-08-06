@@ -529,6 +529,8 @@ function showBubble() {
 }
 
 // ── 主进程 /dequeue 轮询（唯一消费者）────────────────────
+// 事件 + 状态统一由主进程分发：事件按面板状态（气泡/面板），
+// 状态广播给所有窗口（bubble/面板），各窗口不再各自轮询 /state。
 async function pollDequeue() {
   if (quitting) return;
   try {
@@ -536,6 +538,7 @@ async function pollDequeue() {
     if (!res.ok) return;
     const data = await res.json();
     const events = data.events || [];
+    broadcastState(data.state);
     if (!events.length) return;
     pendingEvents.push(...events);
     if (pendingEvents.length > 60) pendingEvents.splice(0, pendingEvents.length - 60);
@@ -549,7 +552,22 @@ async function pollDequeue() {
       panelWin.webContents.send('events', events);
     }
     // morphing_in 且页面未加载完 → 事件留在 pendingEvents，morph-in-done 时补发
-  } catch { /* 后端未连接时静默，下轮再试 */ }
+  } catch {
+    // 后端不可达 → 广播离线状态，各窗口状态点变红
+    broadcastState({ offline: true });
+  }
+}
+
+// 状态广播：bubble 窗口（状态点/逾期徽标）+ 面板窗口（token/心跳/思考状态）
+function broadcastState(state) {
+  try {
+    if (bubbleWin && !bubbleWin.isDestroyed()) {
+      bubbleWin.webContents.send('state', state);
+    }
+    if (panelWin && !panelWin.isDestroyed()) {
+      panelWin.webContents.send('state', state);
+    }
+  } catch { /* 窗口销毁中忽略 */ }
 }
 
 function startDequeuePoll() {

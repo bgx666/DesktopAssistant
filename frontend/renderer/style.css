@@ -297,8 +297,7 @@ body {
   box-shadow: 0 0 0 3px rgba(91, 124, 250, 0.14), inset 0 1px 3px rgba(90, 120, 200, 0.05);
 }
 #send {
-  border: none; border-radius: 18px; padding: 0 18px; cursor: pointer; font-size: 13px;
-  color: #fff; font-weight: 600;
+  border: none; border-radius: 18px; padding: 0 18px; cursor: pointer; font-size: 13px;  color: #fff; font-weight: 600;
   background: linear-gradient(135deg, #6f8df9, #5b7cfa);
   box-shadow: 0 4px 12px rgba(91, 124, 250, 0.32);
   transition: transform 0.15s, box-shadow 0.15s;
@@ -306,6 +305,20 @@ body {
 #send:hover { transform: translateY(-1px); box-shadow: 0 6px 16px rgba(91, 124, 250, 0.4); }
 #send:active { transform: translateY(0); }
 #send:disabled { opacity: 0.5; }
+/* 停止按钮（生成中显示，输入框旁） */
+#btn-stop {
+  border: 1px solid rgba(255, 107, 129, 0.45);
+  border-radius: 18px;
+  padding: 0 14px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--danger);
+  background: rgba(255, 107, 129, 0.08);
+  transition: background 0.15s;
+  white-space: nowrap;
+}
+#btn-stop:hover { background: rgba(255, 107, 129, 0.16); }
+#btn-stop:disabled { opacity: 0.5; }
 
 /* ── 工具调用卡片（coding agent 风格）────────────────── */
 .tool-card {

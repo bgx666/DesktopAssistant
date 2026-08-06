@@ -101,6 +101,9 @@ class PlannerSession:
         # 已压缩进记忆树的消息累计条数（持久化）：压缩节点 round_range 用
         # 全局序号（小B _span 机制的对齐），多次压缩范围连续不重叠
         self._compressed_total: int = 0
+        # 停止请求（用户点"停止"打断当前生成）：after_model/before_model
+        # 中间件检查后跳转 end；每次生成开始时重置
+        self._stop_requested: bool = False
 
         # 免打扰
         self.dnd_enabled: bool = True
@@ -575,9 +578,13 @@ class PlannerSession:
     def undo_message(self, msg_id: str) -> dict:
         """撤销：从 buffer 删除该玩家消息及其后的所有对话。
 
-        原始消息已不在 buffer（被压缩进记忆树）→ 无法撤销。
+        原始消息已不在 buffer（被压缩进记忆树）→ 无法撤销；
+        生成中撤销会被 _run_agent 的 final_messages 回写覆盖 → 拒绝。
         """
         with self.buffer_lock:
+            if self._generating:
+                return {"ok": False, "reason": "generating",
+                        "error": "小助正在回复中，请先点「停止」再撤销"}
             idx = None
             for i, m in enumerate(self.recent_buffer):
                 if (getattr(m, "type", None) == "human"
@@ -600,6 +607,15 @@ class PlannerSession:
         self.push_event({"type": "log", "text": f"已撤销 {len(removed)} 条对话"})
         self.push_plan_update()
         return {"ok": True, "removed": len(removed)}
+
+    def request_stop(self) -> None:
+        """请求停止当前生成（用户点「停止」）。
+
+        生成会在下一个安全点收尾（当前模型调用结束、工具执行完后），
+        已生成的消息保留在 buffer；停止后无需心跳兜底之外的额外处理。
+        """
+        self._stop_requested = True
+        _logger.info("[stop] 收到停止请求")
 
     def _player_worker(self) -> None:
         for _ in range(MAX_WORKER_ROUNDS):
@@ -637,6 +653,7 @@ class PlannerSession:
     def _generate_response(self, trigger: str) -> None:
         with self.buffer_lock:
             self._generating = True
+            self._stop_requested = False   # 每次生成重置停止标志
             self.current_trigger = trigger
         self._set_thinking(True)
         try:

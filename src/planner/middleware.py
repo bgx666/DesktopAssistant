@@ -137,6 +137,31 @@ class HeartbeatTrackMiddleware(AgentMiddleware):
         return None
 
 
+# ── 停止请求 ─────────────────────────────────────────────
+
+class StopRequestMiddleware(AgentMiddleware):
+    """用户点「停止」→ session._stop_requested 置位 → 在安全点跳 end。
+
+    只在 before_model 跳转（与 PlayerPriority 同理：after_model 跳转会跳过
+    刚返回的 tool_calls 执行 → 孤儿 assistant(tool_calls) → DeepSeek 400）。
+    若上一轮模型刚返回 tool_calls 还没执行，本轮不能跳（等工具执行完，
+    下一轮 before_model 再停）。
+    """
+
+    def __init__(self, session) -> None:
+        super().__init__()
+        self.session = session
+
+    @hook_config(can_jump_to=["end"])
+    def before_model(self, state: PlannerState, runtime: Runtime) -> dict | None:
+        if not self.session._stop_requested:
+            return None
+        msgs = list(state.get("messages") or [])
+        if msgs and getattr(msgs[-1], "tool_calls", None):
+            return None   # 工具还没执行完，下一轮再停
+        return {"jump_to": "end"}
+
+
 # ── 日志 ─────────────────────────────────────────────────────
 
 class LoggingMiddleware(AgentMiddleware):

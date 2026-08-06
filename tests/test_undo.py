@@ -13,6 +13,13 @@ def _drive_generation(session, content: str) -> None:
     session._generate_response("player")
 
 
+def _wait_idle(session, timeout=15.0):
+    """等生成线程结束（_generating 复位）。"""
+    deadline = time.time() + timeout
+    while time.time() < deadline and session._generating:
+        time.sleep(0.1)
+
+
 def test_undo_removes_message_and_after(data_root):
     s = PlannerSession(data_root, mock=True)
     try:
@@ -23,6 +30,7 @@ def test_undo_removes_message_and_after(data_root):
             if any(getattr(m, "type", "") == "ai" for m in s.recent_buffer):
                 break
             time.sleep(0.1)
+        _wait_idle(s)
         total_before = len(s.recent_buffer)
         assert total_before > 1
 
@@ -48,6 +56,7 @@ def test_undo_keeps_earlier_messages(data_root):
             if any(getattr(m, "type", "") == "ai" for m in s.recent_buffer):
                 break
             time.sleep(0.1)
+        _wait_idle(s)
         first_id = next(m.id for m in s.recent_buffer
                         if getattr(m, "type", "") == "human" and "第一句话" in str(m.content))
         s.enqueue_player_message("第二句话")
@@ -56,6 +65,7 @@ def test_undo_keeps_earlier_messages(data_root):
             if sum(1 for m in s.recent_buffer if "第二句话" in str(getattr(m, "content", ""))):
                 break
             time.sleep(0.1)
+        _wait_idle(s)
 
         before = len(s.recent_buffer)
         r = s.undo_message(first_id)
@@ -82,6 +92,37 @@ def test_undo_unknown_message_compressed(data_root):
         s.close()
 
 
+def test_undo_rejected_while_generating(data_root):
+    """生成中撤销会被拒绝（否则被 final_messages 回写覆盖而失效）。"""
+    s = PlannerSession(data_root, mock=True)
+    try:
+        msg_id = s.enqueue_player_message("生成中的消息")
+        assert s._generating, "enqueue 后应处于生成中"
+        r = s.undo_message(msg_id)
+        assert r["ok"] is False
+        assert r["reason"] == "generating"
+        assert any(getattr(m, "id", None) == msg_id for m in s.recent_buffer), "消息应保留"
+    finally:
+        s.close()
+
+
+def test_stop_request_flow(data_root):
+    """request_stop 置位停止标志；新生成开始时重置。"""
+    s = PlannerSession(data_root, mock=True)
+    try:
+        assert s._stop_requested is False
+        s.request_stop()
+        assert s._stop_requested is True
+        # 新生成开始 → 标志重置
+        s._receive("重新来", trigger=True)
+        s.pending_response = False
+        s._generate_response("player")
+        _wait_idle(s)
+        assert s._stop_requested is False, "新生成应重置停止标志"
+    finally:
+        s.close()
+
+
 def test_undo_roundtrip_persisted(data_root):
     """撤销后 buffer_state 持久化：重建 session 时上下文已截断。"""
     s1 = PlannerSession(data_root, mock=True)
@@ -92,6 +133,7 @@ def test_undo_roundtrip_persisted(data_root):
             if any(getattr(m, "type", "") == "ai" for m in s1.recent_buffer):
                 break
             time.sleep(0.1)
+        _wait_idle(s1)
         before = len(s1.recent_buffer)
         r = s1.undo_message(msg_id)
         assert r["ok"] is True

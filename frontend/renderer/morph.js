@@ -162,19 +162,16 @@
     runMorph('out', from, to, () => window.planner.morphDone('out'));
   });
 
-  // ── 球形态状态点（思考中 / 离线）────────────────────────
-  async function pollBallState() {
+  // ── 球形态状态点（思考中 / 离线）——由主进程 state 推送 ──
+  window.planner.onState((s) => {
     const dot = document.getElementById('morph-status-dot');
-    try {
-      const API = (window.planner && window.planner.apiBase) || 'http://127.0.0.1:18771';
-      const data = await (await fetch(API + '/state')).json();
-      dot.classList.toggle('thinking', !!(data.state && data.state.thinking));
-      dot.classList.remove('offline');
-    } catch {
+    if (!s) return;
+    if (s.offline) {
       dot.classList.remove('thinking');
       dot.classList.add('offline');
+      return;
     }
-  }
-  pollBallState();
-  setInterval(pollBallState, 3000);
+    dot.classList.toggle('thinking', !!s.thinking);
+    dot.classList.remove('offline');
+  });
 })();

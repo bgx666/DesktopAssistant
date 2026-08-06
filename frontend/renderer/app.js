@@ -173,37 +173,30 @@
   }
 
   // ── 事件与状态 ─────────────────────────────────────────
-  // /dequeue 由主进程独占消费（避免与悬浮球窗口抢事件），经 events IPC 推送；
-  // 面板只轮询轻量 /state（状态点/token/心跳/计划日期）。
+  // /dequeue 与 /state 都由主进程独占轮询后经 IPC 推送（events / state），
+  // 面板不再各自轮询，减少 HTTP 请求。
   window.planner.onEvents((events) => {
     events.forEach(handleEvent);
   });
 
-  async function poll() {
-    try {
-      const data = await api('/state');
-      applyState(data.state);
-      const plan = data.state && data.state.plan;
-      if (plan && plan.today !== state.lastPlanDate) {
-        state.lastPlanDate = plan.today;
-        refreshPlan();
-      }
-    } catch {
-      setOffline(true);
-    } finally {
-      setTimeout(poll, 1000);
-    }
-  }
+  window.planner.onState(applyState);
 
   function applyState(s) {
     if (!s) return;
+    if (s.offline) {
+      setOffline(true);
+      return;
+    }
     setOffline(false);
     state.heartbeat = s.heartbeat;
     state.dnd = s.dnd;
     $('#btn-dnd').classList.toggle('on', !!(s.dnd && s.dnd.enabled && s.dnd.in_dnd));
-    // 思考状态：以 /state 为准兜底纠正（thinking 事件可能在面板隐藏时被悬浮球消费）
-    $('#thinking').classList.toggle('hidden', !s.thinking);
-    $('.dot').classList.toggle('thinking', !!s.thinking);
+    // 思考状态：以推送的 state 为准兜底纠正（thinking 事件可能在面板隐藏时被悬浮球消费）
+    const thinking = !!s.thinking;
+    $('#thinking').classList.toggle('hidden', !thinking);
+    $('.dot').classList.toggle('thinking', thinking);
+    // 停止按钮：生成中显示
+    $('#btn-stop').classList.toggle('hidden', !thinking);
     // 上下文 token 估算（字符数近似）
     const ctx = s.context;
     if (ctx) {
@@ -225,6 +218,12 @@
     const badge = $('#plan-badge');
     badge.classList.toggle('hidden', !overdue);
     badge.textContent = overdue;
+    // 计划日期变化 → 刷新待办队列
+    const plan = s.plan;
+    if (plan && plan.today && plan.today !== state.lastPlanDate) {
+      state.lastPlanDate = plan.today;
+      refreshPlan();
+    }
   }
 
   function setOffline(off) {
@@ -383,7 +382,20 @@
   }
 
   // 主进程通知：面板变形展开完成 → 重新加载历史（含隐藏期间的气泡消息）
-  window.planner.onPanelShown(() => loadHistory(true));
+  window.planner.onPanelShown(() => {
+    loadHistory(true);
+    // 展开完成：聚焦输入框，可直接打字
+    setTimeout(() => { try { $('#input').focus(); } catch { /* 忽略 */ } }, 80);
+  });
+
+  // ── 停止按钮：生成中点一下打断小助 ─────────────────────
+  $('#btn-stop').addEventListener('click', async () => {
+    $('#btn-stop').disabled = true;
+    try {
+      await post('/stop');
+    } catch { /* 忽略 */ }
+    setTimeout(() => { $('#btn-stop').disabled = false; }, 300);
+  });
 
   // ── 启动 ─────────────────────────────────────────────
   (async () => {
@@ -397,6 +409,5 @@
       setOffline(true);
     }
     loadHistory();
-    poll();
   })();
 })();
