@@ -463,8 +463,8 @@ class PlannerSession:
         _logger.info("[heartbeat] 启动补唤醒（心跳已到期）")
         # 先落保底调度（生成中 LLM 覆盖），防止中断/退出导致 next=0 落盘
         self.schedule_heartbeat(FALLBACK_HEARTBEAT_MINUTES, note)
-        text = (f"（心跳到了，请主动跟用户说点东西。{note + '。' if note else ''}"
-                f"可以看看用户的任务进度，决定要不要提醒或调整安排。）")
+        text = (f"（系统：心跳到了，请主动和用户说话。{note + '。' if note else ''}"
+                f"可以看看用户的任务进度，提醒用户该做的事。）")
         self._receive(text, trigger=True)
         self._spawn_worker("heartbeat")
 
@@ -575,10 +575,10 @@ class PlannerSession:
             today = now.strftime("%Y-%m-%d")
             if now.hour == _config.PLANNER_MORNING_HOUR and last_morning != today:
                 last_morning = today
-                self._fire_scheduled(f"[早晨] 早上好。现在是 {now.strftime('%H:%M')}，新的一天开始了。看看待办队列，安排一下接下来做什么。")
+                self._fire_scheduled(f"（系统：现在是早上 {now.strftime('%H:%M')}，新的一天开始了。看看用户的待办队列，主动安排一下接下来做什么。）")
             if now.hour == _config.PLANNER_EVENING_HOUR and last_evening != today:
                 last_evening = today
-                self._fire_scheduled(f"[晚间] 现在是 {now.strftime('%H:%M')}，回顾一下今天做了什么，没做的提醒用户，调整接下来的安排。")
+                self._fire_scheduled(f"（系统：现在是晚上 {now.strftime('%H:%M')}，回顾一下用户今天做了什么，没做的提醒用户，调整接下来的安排。）")
             # 逾期检查（每 10 分钟一次，避免重复轰炸）
             if now.minute % 10 == 0:
                 self._check_overdue()
@@ -616,8 +616,8 @@ class PlannerSession:
             # 先落一个保底调度（生成中 LLM 会重新设置覆盖）：
             # 防止触发后进程退出/中断导致 next=0 落盘 → 重启后心跳被重置
             self.schedule_heartbeat(FALLBACK_HEARTBEAT_MINUTES, note)
-            text = (f"（心跳到了，请主动跟用户说点东西。{note + '。' if note else ''}"
-                    f"可以看看用户的任务进度，决定要不要提醒或调整安排。）")
+            text = (f"（系统：心跳到了，请主动和用户说话。{note + '。' if note else ''}"
+                    f"可以看看用户的任务进度，提醒用户该做的事。）")
             self._receive(text, trigger=True)
             self._spawn_worker("heartbeat")
 
@@ -654,9 +654,9 @@ class PlannerSession:
             with self.buffer_lock:
                 if self._generating:
                     return
-            text = ("[提醒] 你注意到有几个任务已经逾期还没完成："
+            text = ("（系统：有几个任务已经逾期还没完成："
                     + "；".join(f"#{t['id']}「{t['title']}」截止 {t['due_date']}" for t in pending)
-                    + "。")
+                    + "。提醒用户。）")
             self._receive(text, trigger=True)
             self._spawn_worker("scheduled")
 
