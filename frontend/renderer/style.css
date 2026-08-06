@@ -334,7 +334,7 @@ body {
 #input {
   flex: 1;
   border: 1px solid var(--line);
-  border-radius: 18px;
+  border-radius: 12px;
   padding: 9px 15px;
   outline: none;
   font-size: 13px;
