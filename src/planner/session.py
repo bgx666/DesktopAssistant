@@ -774,9 +774,11 @@ class PlannerSession:
     # ── 上下文统计（token 估算）────────────────────────────────
 
     def context_stats(self) -> dict:
-        """当前上下文的长度估算（无 tokenizer，用字符数近似：≈字符数/2）。
+        """当前上下文的长度估算（无 tokenizer，按中文字符/token 比例粗估）。
 
         范围：system prompt + 对话 buffer（含压缩节点消息）。
+        比例：对话以中文为主，1 个汉字 ≈ 1~1.5 token（含标点/英文混合取 1.2），
+        tokens = chars × 1.2（字符数 ≤ token 数，估算只会偏保守）。
         """
         chars = len(self.system_prompt or "")
         with self.buffer_lock:
@@ -785,7 +787,7 @@ class PlannerSession:
                 if isinstance(content, str):
                     chars += len(content)
             msgs = len(self.recent_buffer)
-        return {"messages": msgs, "chars": chars, "tokens": chars // 2}
+        return {"messages": msgs, "chars": chars, "tokens": int(chars * 1.2)}
 
     def state_dict(self) -> dict:
         with self.buffer_lock:
