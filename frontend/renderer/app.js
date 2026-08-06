@@ -87,12 +87,28 @@
     return el;
   }
 
+  // ── 输入框（textarea）：自动增高 + Enter 发送 / Shift+Enter 换行 ──
+  const input = $('#input');
+  const INPUT_MAX_H = 120;   // 与 style.css 的 max-height 一致
+
+  function autoResizeInput() {
+    input.style.height = 'auto';
+    input.style.height = Math.min(input.scrollHeight, INPUT_MAX_H) + 'px';
+  }
+  input.addEventListener('input', autoResizeInput);
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();                    // Enter 发送（Shift+Enter 换行）
+      $('#input-bar').dispatchEvent(new Event('submit', { cancelable: true }));
+    }
+  });
+
   $('#input-bar').addEventListener('submit', async (e) => {
     e.preventDefault();
-    const input = $('#input');
     const text = input.value.trim();
     if (!text) return;
     input.value = '';
+    input.style.height = 'auto';             // 发送后重置高度
     $('#send').disabled = true;
     try {
       const r = await post('/chat', { message: text });
@@ -471,7 +487,8 @@
     if (e.ctrlKey && (e.key === 'c' || e.key === 'C')) {
       const sel = window.getSelection();
       const text = sel ? sel.toString().trim() : '';
-      if (text && document.activeElement && document.activeElement.tagName !== 'INPUT') {
+      if (text && document.activeElement
+          && !['INPUT', 'TEXTAREA'].includes(document.activeElement.tagName)) {
         e.preventDefault();
         try {
           document.execCommand('copy');

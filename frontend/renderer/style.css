@@ -332,13 +332,24 @@ body {
 }
 #jump-bottom:hover { background: #fff; transform: scale(1.08); }
 #input {
-  flex: 1; border: 1px solid var(--line); border-radius: 18px; padding: 9px 15px;
-  outline: none; font-size: 13px; user-select: text;
+  flex: 1;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  padding: 9px 15px;
+  outline: none;
+  font-size: 13px;
+  user-select: text;
   background: var(--glass-strong);
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
   box-shadow: inset 0 1px 3px rgba(90, 120, 200, 0.05);
   transition: border-color 0.2s, box-shadow 0.2s;
+  font-family: inherit;
+  line-height: 1.5;
+  resize: none;                 /* 禁止手动拉伸（自动增高） */
+  min-height: 38px;             /* 单行高度 */
+  max-height: 120px;            /* 增高上限（约 4-5 行） */
+  overflow-y: auto;             /* 超出滚动（鼠标滚轮可滑动浏览） */
 }
 #input:focus {
   border-color: var(--primary-2);
