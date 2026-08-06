@@ -1,4 +1,4 @@
-"""心跳持久化（跨重启剩余时间扣减 / 到期启动补唤醒 / DND 顺延）测试。"""
+﻿"""心跳持久化（跨重启剩余时间扣减 / 到期启动补唤醒 / DND 顺延）测试。"""
 
 import time
 
@@ -42,7 +42,7 @@ def test_heartbeat_expired_while_offline_triggers_on_start(data_root, monkeypatc
 
     s2 = PlannerSession(data_root, mock=True)
     try:
-        assert calls == ["heartbeat"], f"到期应触发补唤醒: {calls}"
+        assert calls == ["startup"], f"到期应触发补唤醒: {calls}"
         content = "\n".join(
             m.content for m in s2.recent_buffer if getattr(m, "type", "") == "human")
         assert "心跳到了" in content, "补唤醒文案应是指令式而非角色扮演"
@@ -82,7 +82,7 @@ def test_startup_trigger_ignores_dnd(data_root, monkeypatch):
 
     s2 = PlannerSession(data_root, mock=True)   # DND 中重启
     try:
-        assert calls == ["heartbeat"], "启动补唤醒不应被 DND 拦截"
+        assert calls == ["startup"], "启动补唤醒不应被 DND 拦截"
     finally:
         s2.close()
 
@@ -131,9 +131,37 @@ def test_startup_trigger_keeps_original_interval(data_root, monkeypatch):
 
     s2 = PlannerSession(data_root, mock=True)        # 重启 → 补唤醒
     try:
-        assert calls == ["heartbeat"], "到期应补唤醒"
+        assert calls == ["startup"], "到期应补唤醒"
         # 保底沿用原间隔：next ≈ now + 2 分钟（而非 60 分钟）
         remain = s2._next_heartbeat_at - time.time()
         assert 60 < remain < 180, f"保底应≈原间隔 2 分钟，实际 {remain:.0f} 秒"
+    finally:
+        s2.close()
+
+
+def test_fallback_persisted_immediately(data_root, monkeypatch):
+    """触发后的保底立即落盘：退出/中断后重开恢复新计时，不再重复补唤醒。
+
+    回归：killBackend 退出不保存，若保底未落盘，重开恢复旧过期值 →
+    每次都重新补唤醒、显示固定 59 分钟（"重置感"）。
+    """
+    calls = []
+    monkeypatch.setattr(PlannerSession, "_spawn_worker", lambda self, t: calls.append(t))
+    s1 = PlannerSession(data_root, mock=True)
+    try:
+        s1.schedule_heartbeat(1)
+        s1._next_heartbeat_at = time.time() - 60     # 已过期
+        s1._check_startup_heartbeat()                # 补唤醒 → 保底应立即保存
+        saved_next = s1._next_heartbeat_at
+        assert saved_next > time.time()
+    finally:
+        s1.close()                                   # 模拟退出（不额外保存）
+
+    calls2 = []
+    monkeypatch.setattr(PlannerSession, "_spawn_worker", lambda self, t: calls2.append(t))
+    s2 = PlannerSession(data_root, mock=True)        # 重开
+    try:
+        assert calls2 == [], "保底已落盘 → 重开恢复新计时，不应再次补唤醒"
+        assert abs(s2._next_heartbeat_at - saved_next) < 5, "恢复的是新保底时刻"
     finally:
         s2.close()

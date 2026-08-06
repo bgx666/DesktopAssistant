@@ -495,10 +495,12 @@ class PlannerSession:
         # 先落保底调度（生成中 LLM 覆盖），防止中断/退出导致 next=0 落盘；
         # 保底沿用原心跳间隔（而非固定 60 分钟），避免"重置感"
         self.schedule_heartbeat(minutes, note)
+        self._save_buffer_state()   # 立即落盘：退出/中断后重开恢复新计时而非旧值
         text = (f"（系统：心跳到了，请主动和用户说话。{note + '。' if note else ''}"
                 f"可以看看用户的任务进度，提醒用户该做的事。）")
         self._receive(text, trigger=True)
-        self._spawn_worker("heartbeat")
+        # trigger=startup：DND 守卫放行（用户主动启动程序 = 在场，补唤醒应说话）
+        self._spawn_worker("startup")
 
     # ── 异步压缩（后台线程，不阻塞生成）──────────────────────
 
@@ -650,6 +652,7 @@ class PlannerSession:
             # 防止触发后进程退出/中断导致 next=0 落盘 → 重启后心跳被重置；
             # 保底沿用原心跳间隔，避免"重置感"
             self.schedule_heartbeat(minutes, note)
+            self._save_buffer_state()   # 立即落盘：退出/中断后重开恢复新计时
             text = (f"（系统：心跳到了，请主动和用户说话。{note + '。' if note else ''}"
                     f"可以看看用户的任务进度，提醒用户该做的事。）")
             self._receive(text, trigger=True)
