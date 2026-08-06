@@ -499,3 +499,48 @@ def test_strip_orphan_tool_messages(data_root):
         assert any(getattr(m, "tool_call_id", None) == "ok-call" for m in s.recent_buffer)
     finally:
         s.close()
+
+
+def test_player_message_carries_gap_hint(data_root):
+    """玩家消息附带「距上次说话 X」间隔提示（首次不带、之后带、格式化）。"""
+    s = PlannerSession(data_root, mock=True)
+    try:
+        # 首次：无上次记录 → 不带间隔
+        s.enqueue_player_message("第一句")
+        first = next(m for m in s.recent_buffer
+                     if getattr(m, "type", "") == "human" and "第一句" in str(m.content))
+        assert "距上次" not in str(first.content), "首次消息不应带间隔"
+
+        # 第二次：间隔几秒 → 带"X 秒"
+        time.sleep(1.2)
+        s.enqueue_player_message("第二句")
+        second = next(m for m in s.recent_buffer
+                      if getattr(m, "type", "") == "human" and "第二句" in str(m.content))
+        c = str(second.content)
+        assert "距上次说话" in c, f"应有间隔提示: {c}"
+        assert "秒" in c, f"秒级间隔: {c}"
+
+        # 格式：1 小时 5 分钟
+        assert s._fmt_gap(3900) == "1 小时 5 分钟"
+        assert s._fmt_gap(125) == "2 分 5 秒"
+        assert s._fmt_gap(30) == "30 秒"
+    finally:
+        s.close()
+
+
+def test_gap_hint_not_shown_in_history(data_root):
+    """间隔提示在"对你说："之前 → /history 切分后不显示。"""
+    s = PlannerSession(data_root, mock=True)
+    try:
+        s.enqueue_player_message("第一句")
+        time.sleep(0.2)
+        s.enqueue_player_message("第二句")
+        second = next(m for m in s.recent_buffer
+                      if getattr(m, "type", "") == "human" and "第二句" in str(m.content))
+        c = str(second.content)
+        assert "距上次" in c
+        # 模拟 /history 的切分：对你说：之后的部分不应含间隔
+        shown = c.split("对你说：", 1)[1]
+        assert "距上次" not in shown, "间隔不应显示在对话框"
+    finally:
+        s.close()

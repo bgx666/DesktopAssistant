@@ -99,6 +99,8 @@ class PlannerSession:
 
         # 最后活动时间（epoch 秒，持久化）：程序关闭期间的离线时长据此补回归问候
         self._last_activity_at: float = 0.0
+        # 上次玩家消息时间（内存）：玩家消息注入「距上次说话 X」间隔提示
+        self._last_player_message_at: datetime | None = None
         # 已压缩进记忆树的消息累计条数（持久化）：压缩节点 round_range 用
         # 全局序号（小B _span 机制的对齐），多次压缩范围连续不重叠
         self._compressed_total: int = 0
@@ -682,18 +684,34 @@ class PlannerSession:
 
     # ── 玩家消息 ──────────────────────────────────────────────
 
+    @staticmethod
+    def _fmt_gap(seconds: float) -> str:
+        """秒数 → 可读间隔（秒/分秒/小时分）。"""
+        s = max(0, int(seconds))
+        if s < 60:
+            return f"{s} 秒"
+        if s < 3600:
+            return f"{s // 60} 分 {s % 60} 秒"
+        return f"{s // 3600} 小时 {(s % 3600) // 60} 分钟"
+
     def enqueue_player_message(self, message: str) -> str:
         """注入玩家消息并立即触发回复生成。返回该消息的 id（撤销按钮用）。
 
         用户说话 = 活跃状态：重置挂起的旧心跳（避免"1 小时后才醒来"的残留），
         设对话默认短心跳并清零沉默计数；生成中 LLM 会再调 heartbeat 覆盖。
+        消息附带「距上次说话 X」——让 AI 感知对话节奏（间隔信息放在
+        "对你说："之前，/history 切分时丢弃，对话框不显示）。
         """
         now = _now()
         self._cancel_heartbeat()
         self._heartbeat_silent_count = 0
         self.schedule_heartbeat(DIALOG_HEARTBEAT_MINUTES)
+        gap_hint = ""
+        if self._last_player_message_at is not None:
+            gap_hint = f"（距上次说话 {self._fmt_gap((now - self._last_player_message_at).total_seconds())}）"
+        self._last_player_message_at = now
         msg = self._receive(
-            f"[{now.strftime('%H:%M')}] {PLAYER_NAME}对你说：{message}", trigger=True)
+            f"[{now.strftime('%H:%M')}]{gap_hint} {PLAYER_NAME}对你说：{message}", trigger=True)
         self._save_log("user", message)
         self._wake_event.set()
         threading.Thread(target=self._player_worker, name="planner-player", daemon=True).start()
