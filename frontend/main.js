@@ -28,6 +28,14 @@ let trayImage = null;   // 保持 nativeImage 引用，防止被 GC 导致 Tray 
 let backendProc = null;
 let quitting = false;
 
+// ── /dequeue 唯一消费者（主进程）──────────────────────────
+// 之前 bubble（面板隐藏时）和面板窗口各自轮询 /dequeue，展开瞬间两个
+// 消费者重叠 → 事件被抢走（tool_result 被 bubble 吞掉 → 工具卡片永久转圈）。
+// 现在由主进程独占轮询，按 panelState 分发：hidden → 气泡；展开 → 推给面板；
+// pendingEvents 缓存竞态窗口的事件，面板展开完成后补发。
+let dequeueTimer = null;
+let pendingEvents = [];
+
 // 面板状态机：hidden → morphing_in → shown → morphing_out → hidden
 // 动画帧由 renderer 的 rAF 驱动（60fps），主进程只执行 setBounds
 let panelState = 'hidden';
@@ -507,6 +515,36 @@ function showBubble() {
   if (!bubbleWin.isVisible()) bubbleWin.show();
 }
 
+// ── 主进程 /dequeue 轮询（唯一消费者）────────────────────
+async function pollDequeue() {
+  if (quitting) return;
+  try {
+    const res = await fetch(BACKEND_URL + '/dequeue', { signal: AbortSignal.timeout(3000) });
+    if (!res.ok) return;
+    const data = await res.json();
+    const events = data.events || [];
+    if (!events.length) return;
+    pendingEvents.push(...events);
+    if (pendingEvents.length > 60) pendingEvents.splice(0, pendingEvents.length - 60);
+    if (panelState === 'hidden') {
+      // 悬浮球形态：文本事件冒气泡
+      for (const ev of events) {
+        if (ev.type === 'text' && ev.content) showToast(ev.content);
+      }
+    } else if (panelLoaded && panelWin && !panelWin.isDestroyed()) {
+      // 面板展开：推给面板渲染（含 morphing_in/out，事件顺序保持）
+      panelWin.webContents.send('events', events);
+    }
+    // morphing_in 且页面未加载完 → 事件留在 pendingEvents，morph-in-done 时补发
+  } catch { /* 后端未连接时静默，下轮再试 */ }
+}
+
+function startDequeuePoll() {
+  if (dequeueTimer) return;
+  dequeueTimer = setInterval(pollDequeue, 800);
+  pollDequeue();
+}
+
 function toggleDndFromMain() {
   fetch(BACKEND_URL + '/state')
     .then((r) => r.json())
@@ -560,6 +598,11 @@ ipcMain.on('morph-in-done', () => {
   ignoreBlurUntil = Date.now() + 500;   // 防 focus 延迟失败的闪回
   if (panelWin && !panelWin.isDestroyed()) {
     panelWin.focus();
+    // 补发竞态窗口（展开瞬间）被主进程缓存的事件，避免工具卡片/文本丢失
+    if (pendingEvents.length) {
+      panelWin.webContents.send('events', pendingEvents);
+      pendingEvents = [];
+    }
     // 通知 renderer 补渲染隐藏期间的气泡消息
     panelWin.webContents.send('panel-shown');
   }
@@ -612,6 +655,7 @@ if (!gotSingleLock) {
     createBubble();
     createTray();
     ensureBackend(); // 后端不在线则自动拉起
+    startDequeuePoll(); // 主进程独占 /dequeue 消费，按面板状态分发
   });
 }
 

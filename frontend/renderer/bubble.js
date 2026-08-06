@@ -50,33 +50,20 @@
     window.planner.bubbleMenu();
   });
 
-  // 轮询后端：状态点（思考中脉冲 / 离线红点 / 逾期徽标）+ 主动说话气泡。
-  // 面板隐藏时由本窗口轮询 /dequeue（唯一消费者）；面板展开时只查 /state
-  // 更新状态点，避免与面板窗口抢 /dequeue 事件。
+  // 轮询后端状态：状态点（思考中脉冲 / 离线红点 / 逾期徽标）。
+  // /dequeue 由主进程独占消费（面板隐藏时文本事件经主进程冒气泡），
+  // 本窗口不再轮询 /dequeue，避免与面板窗口抢事件导致工具卡片丢结果。
   async function poll() {
     const dot = document.getElementById('status-dot');
     const badge = document.getElementById('badge');
     try {
-      const panelState = await window.planner.getPanelState();
-      if (panelState === 'hidden') {
-        const data = await (await fetch(API + '/dequeue')).json();
-        const s = data.state || {};
-        dot.classList.toggle('thinking', !!s.thinking);
-        dot.classList.remove('offline');
-        const overdue = (s.plan && s.plan.overdue_count) || 0;
-        badge.classList.toggle('hidden', !overdue);
-        badge.textContent = overdue > 9 ? '9+' : overdue;
-        for (const ev of (data.events || [])) {
-          if (ev.type === 'text' && ev.content) {
-            window.planner.showToast(ev.content);
-          }
-        }
-      } else {
-        const data = await (await fetch(API + '/state')).json();
-        const s = data.state || {};
-        dot.classList.toggle('thinking', !!s.thinking);
-        dot.classList.remove('offline');
-      }
+      const data = await (await fetch(API + '/state')).json();
+      const s = data.state || {};
+      dot.classList.toggle('thinking', !!s.thinking);
+      dot.classList.remove('offline');
+      const overdue = (s.plan && s.plan.overdue_count) || 0;
+      badge.classList.toggle('hidden', !overdue);
+      badge.textContent = overdue > 9 ? '9+' : overdue;
     } catch {
       dot.classList.remove('thinking');
       dot.classList.add('offline');

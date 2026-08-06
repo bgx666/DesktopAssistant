@@ -145,23 +145,21 @@
       $('#thinking').classList.toggle('hidden', !ev.value);
       $('.dot').classList.toggle('thinking', !!ev.value);
     } else if (ev.type === 'dnd' || ev.type === 'plan_update') {
-      refreshAll();
+      refreshPlan();
+      refreshTasks();
     }
   }
 
-  // ── 轮询 ─────────────────────────────────────────────
-  // 面板隐藏时暂停 /dequeue 轮询（由悬浮球窗口消费事件并弹气泡），
-  // 避免两个窗口抢事件。panelState 提升到函数作用域（finally 里也要用）。
+  // ── 事件与状态 ─────────────────────────────────────────
+  // /dequeue 由主进程独占消费（避免与悬浮球窗口抢事件），经 events IPC 推送；
+  // 面板只轮询轻量 /state（状态点/token/心跳/计划日期）。
+  window.planner.onEvents((events) => {
+    events.forEach(handleEvent);
+  });
+
   async function poll() {
-    let panelState = null;
     try {
-      panelState = await window.planner.getPanelState();
-      if (panelState === 'hidden') {
-        setTimeout(poll, 600);
-        return;
-      }
-      const data = await api('/dequeue');
-      data.events.forEach(handleEvent);
+      const data = await api('/state');
       applyState(data.state);
       const plan = data.state && data.state.plan;
       if (plan && plan.today !== state.lastPlanDate) {
@@ -171,7 +169,7 @@
     } catch {
       setOffline(true);
     } finally {
-      if (panelState !== 'hidden') setTimeout(poll, 600);
+      setTimeout(poll, 1000);
     }
   }
 

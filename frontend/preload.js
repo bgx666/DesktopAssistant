@@ -23,6 +23,7 @@ contextBridge.exposeInMainWorld('planner', {
   onMorphOut: (cb) => ipcRenderer.on('morph-out', (e, data) => cb(data)),
   onMorphForceFinish: (cb) => ipcRenderer.on('morph-force-finish', (e, kind) => cb(kind)),
   onPanelShown: (cb) => ipcRenderer.on('panel-shown', () => cb()),
+  onEvents: (cb) => ipcRenderer.on('events', (e, list) => cb(list)),
   morphDone: (kind) => ipcRenderer.send(kind === 'in' ? 'morph-in-done' : 'morph-out-done'),
   hidePanel: () => ipcRenderer.send('hide-panel'),
   quitApp: () => ipcRenderer.send('quit-app'),
