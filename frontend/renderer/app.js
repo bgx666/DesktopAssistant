@@ -39,6 +39,12 @@
   function addMessage(text, cls = 'assistant', msgId = null) {
     const el = document.createElement('div');
     el.className = 'msg ' + cls;
+    if (cls === 'assistant') {
+      // 小助头像：与悬浮球同款渐变（CSS 绘制，无需图片资源）
+      const avatar = document.createElement('div');
+      avatar.className = 'avatar';
+      el.appendChild(avatar);
+    }
     const bubble = document.createElement('div');
     bubble.className = 'bubble ' + cls;   // bubble user / bubble assistant（颜色区分）
     bubble.textContent = text;

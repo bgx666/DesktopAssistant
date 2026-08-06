@@ -212,7 +212,30 @@ body {
   animation: msgIn 180ms ease-out;
 }
 .msg.user { align-self: flex-end; align-items: flex-end; }
-.msg.assistant { align-self: flex-start; align-items: flex-start; }
+.msg.assistant { align-self: flex-start; flex-direction: row; align-items: flex-start; gap: 8px; }
+/* 小助头像：与悬浮球同款渐变球（CSS 绘制） */
+.avatar {
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  margin-top: 2px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 32% 28%, #8aa8ff, #5b7cfa 55%, #3f5fd6);
+  box-shadow: 0 2px 6px rgba(91, 124, 250, 0.45);
+  position: relative;
+}
+.avatar::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 32%;
+  height: 32%;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.18);
+}
 .bubble {
   padding: 9px 13px;
   border-radius: 14px;
