@@ -239,7 +239,6 @@
     setOffline(false);
     state.heartbeat = s.heartbeat;
     state.dnd = s.dnd;
-    $('#btn-dnd').classList.toggle('on', !!(s.dnd && s.dnd.enabled && s.dnd.in_dnd));
     // 思考状态：以推送的 state 为准兜底纠正（thinking 事件可能在面板隐藏时被悬浮球消费）
     const thinking = !!s.thinking;
     $('#thinking').classList.toggle('hidden', !thinking);
@@ -284,7 +283,6 @@
   function setOffline(off) {
     if (off) {
       $('#heartbeat').textContent = '后端未连接';
-      $('#btn-dnd').classList.add('on');
     }
   }
 
@@ -397,15 +395,6 @@
       .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;');
   }
-
-  // ── 免打扰按钮 ───────────────────────────────────────
-  $('#btn-dnd').addEventListener('click', async () => {
-    const next = !(state.dnd && state.dnd.enabled);
-    try {
-      await post('/dnd', { enabled: next });
-      applyState(await (await fetch(API + '/state')).json());
-    } catch { /* 忽略 */ }
-  });
 
   // ── 收起（回到悬浮球）──────────────────────────────────────
   $('#btn-fold').addEventListener('click', () => {

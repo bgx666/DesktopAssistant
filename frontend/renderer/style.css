@@ -155,7 +155,6 @@ body {
   transition: background 0.15s, color 0.15s;
 }
 #titlebar-btns button:hover { background: rgba(91, 124, 250, 0.1); color: var(--primary); }
-#btn-dnd.on { color: var(--danger); font-weight: 600; }
 
 /* ── Tab ── */
 #tabs {
