@@ -314,6 +314,7 @@ function morphIn() {
   if (panelState !== 'hidden') return;
   if (!panelWin || panelWin.isDestroyed()) createPanel();
   panelDragged = false;                       // 每次展开重置拖动标记
+  clearAllToasts();                           // 展开面板时清掉所有气泡
   const from = bubbleWin.getBounds();            // 球当前矩形（renderer 起始 transform 用）
   const to = { ...panelTargetPos(), w: PANEL_W, h: PANEL_H };
   // 窗口一次到位（面板最终位置尺寸），变形动画由 renderer 的 CSS transform
@@ -374,7 +375,7 @@ function doQuit() {
   try {
     killBackend();   // 后端进程不随 electron 退出（detached），残留会导致重启复用旧后端
     if (tray && !tray.isDestroyed()) tray.destroy();
-    if (toastWin && !toastWin.isDestroyed()) toastWin.destroy();
+    clearAllToasts();
     if (panelWin && !panelWin.isDestroyed()) panelWin.destroy();
     if (bubbleWin && !bubbleWin.isDestroyed()) bubbleWin.destroy();
   } catch { /* 忽略 */ }
@@ -392,22 +393,17 @@ function killBackend() {
 }
 
 // ── 气泡窗（小助未展开时主动说话的提示）────────────────────
-// bubble 窗口轮询 /dequeue 拿到 text 事件 → 这里弹出独立透明气泡窗，
-// 显示在悬浮球旁，几秒后自动消失；点击气泡展开面板。
+// 主进程 /dequeue 拿到 text 事件 → 每个消息一个独立透明气泡窗，
+// 从悬浮球上方由下往上堆叠（新消息在最下面、旧的被顶上去）；
+// 每个气泡生存 TOAST_MS 后自动消失；点击气泡展开面板。
 const TOAST_W = 280;
 const TOAST_H = 110;
-const TOAST_MS = 6000;
+const TOAST_MS = 20000;                 // 每个气泡生存 20 秒
 
-let toastWin = null;
-let toastTimer = null;
-let toastQueue = [];
-let toastShowing = false;
-let toastLoaded = false;    // toast 页面加载完成（listener 就绪）
-let pendingToast = null;    // 加载完成前暂存的 {text, above}
+let toastWins = [];                     // 堆叠的气泡窗口（[0] 最靠近球=最新）
 
-function createToast() {
-  if (toastWin && !toastWin.isDestroyed()) return;
-  toastWin = new BrowserWindow({
+function createToastWin(text) {
+  const win = new BrowserWindow({
     width: TOAST_W,
     height: TOAST_H,
     frame: false,
@@ -424,80 +420,67 @@ function createToast() {
       nodeIntegration: false,
     },
   });
-  toastWin.loadFile(path.join(__dirname, 'renderer', 'toast.html'));
-  toastWin.setAlwaysOnTop(true, 'pop-up-menu');
-  toastWin.webContents.once('did-finish-load', () => {
-    toastLoaded = true;
-    if (pendingToast) {
-      const p = pendingToast;
-      pendingToast = null;
-      displayToast(p.text, p.above);
-    }
+  win.loadFile(path.join(__dirname, 'renderer', 'toast.html'));
+  win.setAlwaysOnTop(true, 'pop-up-menu');
+  const timer = setTimeout(() => destroyToastWin(win), TOAST_MS);
+  win.on('closed', () => {
+    clearTimeout(timer);
+    const i = toastWins.indexOf(win);
+    if (i >= 0) toastWins.splice(i, 1);
+    layoutToasts();
   });
-  toastWin.on('closed', () => { toastWin = null; toastLoaded = false; });
+  win.webContents.once('did-finish-load', () => {
+    if (win.isDestroyed()) return;
+    win.webContents.send('toast-text', { text, above: true });
+    win.showInactive();   // 不抢焦点
+    layoutToasts();
+  });
+  toastWins.unshift(win);   // 新气泡在最下面（靠近球），旧气泡被顶上去
+  layoutToasts();
+}
+
+function destroyToastWin(win) {
+  try {
+    if (win && !win.isDestroyed()) win.destroy();
+  } catch { /* 忽略 */ }
+}
+
+function clearAllToasts() {
+  const wins = toastWins.slice();
+  toastWins = [];
+  for (const w of wins) destroyToastWin(w);
+}
+
+// 堆叠布局：从悬浮球上方由下往上排（[0] 最新、最靠近球），
+// 球上方放不下时改在球下方往下排；全程夹在工作区内
+function layoutToasts() {
+  if (!toastWins.length) return;
+  const b = bubbleWin && !bubbleWin.isDestroyed() ? bubbleWin.getBounds() : null;
+  const disp = screen.getDisplayNearestPoint({
+    x: (b ? b.x + b.width / 2 : 0), y: (b ? b.y : 0),
+  }).workArea;
+  const x = Math.max(disp.x + 4,
+    Math.min(b ? Math.round(b.x + b.width / 2 - TOAST_W / 2) : disp.x + 40,
+             disp.x + disp.width - TOAST_W - 4));
+  const above = b ? (b.y - TOAST_H - 10 >= disp.y + 4) : true;
+  const baseY = above
+    ? (b ? b.y - TOAST_H - 10 : disp.y + 40)
+    : (b ? b.y + b.height + 10 : disp.y + 40);
+  const step = TOAST_H + 6;
+  for (let i = 0; i < toastWins.length; i++) {
+    const win = toastWins[i];
+    if (win.isDestroyed()) continue;
+    const wy = Math.max(disp.y + 4,
+      Math.min(above ? baseY - i * step : baseY + i * step,
+               disp.y + disp.height - TOAST_H - 4));
+    win.setBounds({ x, y: wy, width: TOAST_W, height: TOAST_H });
+  }
 }
 
 function showToast(text) {
   if (quitting || panelState !== 'hidden') return;   // 面板展开时不需要气泡
   if (!text || !String(text).trim()) return;
-  toastQueue.push(String(text).trim());
-  if (!toastShowing) pumpToast();
-}
-
-function toastPos() {
-  const b = bubbleWin && !bubbleWin.isDestroyed() ? bubbleWin.getBounds() : null;
-  const disp = screen.getDisplayNearestPoint({
-    x: (b ? b.x + b.width / 2 : 0), y: (b ? b.y : 0),
-  }).workArea;
-  let x = b ? Math.round(b.x + b.width / 2 - TOAST_W / 2) : disp.x + 40;
-  let y = b ? b.y - TOAST_H - 10 : disp.y + 40;
-  let above = true;
-  if (y < disp.y + 4) {
-    y = b ? b.y + b.height + 10 : disp.y + 40;
-    above = false;
-  }
-  x = Math.max(disp.x + 4, Math.min(x, disp.x + disp.width - TOAST_W - 4));
-  return { x, y, above };
-}
-
-function displayToast(text, above) {
-  const pos = toastPos();
-  toastWin.setBounds({ x: pos.x, y: pos.y, width: TOAST_W, height: TOAST_H });
-  toastWin.webContents.send('toast-text', { text, above });
-  toastWin.showInactive();   // 不抢焦点
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => {
-    if (toastWin && !toastWin.isDestroyed()) toastWin.hide();
-    pumpToast();
-  }, TOAST_MS);
-}
-
-function pumpToast() {
-  if (quitting || panelState !== 'hidden') {        // 中途展开面板 → 停止队列
-    toastShowing = false;
-    toastQueue = [];
-    pendingToast = null;
-    return;
-  }
-  if (!toastQueue.length) {
-    toastShowing = false;
-    return;
-  }
-  toastShowing = true;
-  const text = toastQueue.shift();
-  if (!toastWin || toastWin.isDestroyed()) {
-    createToast();
-    toastLoaded = false;
-  }
-  if (!toastWin || toastWin.isDestroyed()) {
-    toastShowing = false;
-    return;
-  }
-  if (!toastLoaded) {
-    pendingToast = { text, above: true };   // 加载完成由 did-finish-load 补发
-    return;
-  }
-  displayToast(text, true);
+  createToastWin(String(text).trim());
 }
 
 // ── 托盘 ────────────────────────────────────────────────────
@@ -594,12 +577,11 @@ function toggleDndFromMain() {
 ipcMain.on('toggle-panel', () => togglePanel());
 ipcMain.handle('get-panel-state', () => panelState);
 ipcMain.on('toast-show', (e, text) => showToast(text));
-ipcMain.on('toast-click', () => {
-  // 点击气泡 → 收起气泡并展开面板
-  if (toastWin && !toastWin.isDestroyed()) toastWin.hide();
-  clearTimeout(toastTimer);
-  toastQueue = [];
-  toastShowing = false;
+ipcMain.on('toast-click', (e) => {
+  // 点击气泡 → 销毁该气泡并展开面板（其余气泡也清掉）
+  const win = BrowserWindow.fromWebContents(e.sender);
+  if (win) destroyToastWin(win);
+  clearAllToasts();
   togglePanel();
 });
 ipcMain.on('show-panel', () => {
