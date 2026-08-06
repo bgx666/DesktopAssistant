@@ -28,10 +28,10 @@
   function addMessage(text, cls = 'assistant', msgId = null) {
     const el = document.createElement('div');
     el.className = 'msg ' + cls;
-    const span = document.createElement('span');
-    span.className = 'msg-text';
-    span.textContent = text;
-    el.appendChild(span);
+    const bubble = document.createElement('div');
+    bubble.className = 'bubble';
+    bubble.textContent = text;
+    el.appendChild(bubble);
     if (cls === 'user' && msgId) {
       const undo = document.createElement('button');
       undo.className = 'undo-btn';
@@ -109,8 +109,8 @@
         el = addMessage('', 'assistant');
         streamMsgs[ev.msg_id] = el;
       }
-      const span = el.querySelector('.msg-text');
-      if (span) span.textContent += ev.content;
+      const bubble = el.querySelector('.bubble');
+      if (bubble) bubble.textContent += ev.content;
       else el.textContent += ev.content;
       messages.scrollTop = messages.scrollHeight;
     } else if (ev.type === 'tool_call') {

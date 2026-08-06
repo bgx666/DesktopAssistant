@@ -176,43 +176,46 @@ body {
 /* ── 聊天 ── */
 #messages { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 9px; padding-bottom: 8px; }
 .msg {
-  max-width: 82%; padding: 9px 13px;
+  max-width: 82%;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  animation: msgIn 180ms ease-out;
+}
+.msg.user { align-items: flex-end; }
+.msg.assistant { align-items: flex-start; }
+.bubble {
+  padding: 9px 13px;
   border-radius: 14px;
   line-height: 1.55; white-space: pre-wrap; word-break: break-word;
   box-shadow: var(--shadow-sm);
-  animation: msgIn 180ms ease-out;
-  display: flex; align-items: flex-end; gap: 6px;
 }
-.msg.user { flex-direction: row; }
-.msg-text { min-width: 0; }
-.undo-btn {
-  flex: 0 0 auto;
-  border: 1px solid rgba(255, 255, 255, 0.55);
-  background: rgba(255, 255, 255, 0.32); color: #fff;
-  font-size: 11px; padding: 2px 8px; border-radius: 9px; cursor: pointer;
-  opacity: 0.9; transition: opacity 0.15s, background 0.15s;
-  white-space: nowrap;
-}
-.msg.user:hover .undo-btn { opacity: 1; }
-.undo-btn:hover { background: rgba(255, 255, 255, 0.5); }
-.undo-btn:disabled { opacity: 0.4; cursor: default; }
-@keyframes msgIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
-.msg.user {
-  align-self: flex-end;
+.bubble.user {
   background: linear-gradient(135deg, #6f8df9, #5b7cfa);
   color: #fff;
   border-bottom-right-radius: 5px;
   box-shadow: 0 4px 14px rgba(91, 124, 250, 0.30);
 }
-.msg.assistant {
-  align-self: flex-start;
+.bubble.assistant {
   background: var(--glass);
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
   border: 1px solid rgba(255, 255, 255, 0.75);
   border-bottom-left-radius: 5px;
 }
-.msg.log { align-self: center; font-size: 11px; color: var(--text-soft); background: transparent; box-shadow: none; }
+.msg.log { align-self: center; font-size: 11px; color: var(--text-soft); }
+.msg.log .bubble { box-shadow: none; background: transparent; padding: 2px 6px; }
+.undo-btn {
+  border: none; background: transparent; color: var(--text-soft);
+  font-size: 11px; padding: 2px 7px; border-radius: 8px; cursor: pointer;
+  opacity: 0.55; transition: opacity 0.15s, color 0.15s, background 0.15s;
+  white-space: nowrap;
+}
+.msg.user:hover .undo-btn,
+.undo-btn:hover { opacity: 1; }
+.undo-btn:hover { color: var(--danger); background: rgba(255, 107, 129, 0.10); }
+.undo-btn:disabled { opacity: 0.3; cursor: default; }
+@keyframes msgIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 #input-bar { display: flex; gap: 8px; padding-top: 10px; }
 #input {
   flex: 1; border: 1px solid var(--line); border-radius: 18px; padding: 9px 15px;
