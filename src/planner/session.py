@@ -121,6 +121,7 @@ class PlannerSession:
         self._system_prompt = self._build_system_prompt()
         self.get_memory_tree()          # 确保 db 文件落盘
         self._load_buffer_state()
+        self._check_startup_heartbeat()
         self._maybe_welcome_back()
 
     # ── 懒加载 ────────────────────────────────────────────────
@@ -386,6 +387,9 @@ class PlannerSession:
                 last_activity_at=self._last_activity_at or None,
                 reminded_overdue=list(getattr(self, "_reminded_overdue", set())),
                 compressed_total=self._compressed_total,
+                next_heartbeat_at=self._next_heartbeat_at or None,
+                heartbeat_minutes=self._heartbeat_minutes or None,
+                heartbeat_note=self._heartbeat_note or None,
             )
         except Exception as exc:
             _logger.warning("[session] 保存 buffer 状态失败: %s", exc)
@@ -401,6 +405,7 @@ class PlannerSession:
                 if reminded:
                     self._reminded_overdue = set(reminded)
                 self._compressed_total = int((state or {}).get("compressed_total", 0) or 0)
+                self._restore_heartbeat_state(state or {})
                 return False
             msgs = messages_from_dict(state["recent_buffer"])
             if msgs:
@@ -412,12 +417,46 @@ class PlannerSession:
                 if reminded:
                     self._reminded_overdue = set(reminded)
                 self._compressed_total = int(state.get("compressed_total", 0) or 0)
+                self._restore_heartbeat_state(state)
                 _logger.info("[session] 从 buffer_state 恢复上下文: %d 条消息", len(msgs))
                 return True
             return False
         except Exception as exc:
             _logger.warning("[session] 加载 buffer 状态失败: %s", exc)
             return False
+
+    def _restore_heartbeat_state(self, state: dict) -> None:
+        """恢复心跳调度（跨重启剩余时间扣减离线时长）。"""
+        self._next_heartbeat_at = float(state.get("next_heartbeat_at", 0.0) or 0.0)
+        self._heartbeat_minutes = float(state.get("heartbeat_minutes", 0.0) or 0.0)
+        self._heartbeat_note = str(state.get("heartbeat_note", "") or "")
+        if self._next_heartbeat_at > 0:
+            remain = self._next_heartbeat_at - time.time()
+            _logger.info("[heartbeat] 恢复调度：剩余 %.0f 秒", max(0, remain))
+
+    def _check_startup_heartbeat(self) -> None:
+        """启动时心跳已到期 → 立即补一次自主生成（剩余时间跨重启扣减）。
+
+        心跳到期时刻持久化：退出期间流逝的时间自动计入，重启后剩余时间
+        即为原剩余扣减离线时长；离线超过剩余时间（已到期）则启动即补唤醒。
+        """
+        if self._next_heartbeat_at <= 0:
+            return
+        if time.time() < self._next_heartbeat_at:
+            return   # 还没到期：保留原到期时刻（剩余时间已扣减离线时长）
+        self._next_heartbeat_at = 0.0
+        minutes = self._heartbeat_minutes or FALLBACK_HEARTBEAT_MINUTES
+        note = self._heartbeat_note
+        self._heartbeat_note = ""
+        if self.in_dnd():
+            _logger.info("[heartbeat] 启动补唤醒遇免打扰，顺延")
+            self.schedule_heartbeat(FALLBACK_HEARTBEAT_MINUTES, note)
+            return
+        _logger.info("[heartbeat] 启动补唤醒（心跳已到期）")
+        text = (f"（{self._fmt_duration(minutes)}过去了。你醒了过来。{note + '。' if note else ''}"
+                f"可以看看用户的任务进度，决定要不要提醒或调整安排。）")
+        self._receive(text, trigger=True)
+        self._spawn_worker("heartbeat")
 
     def _maybe_welcome_back(self) -> None:
         """重启回归问候：程序关闭期间离线超过阈值，启动后补一次自主生成。
