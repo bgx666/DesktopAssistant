@@ -202,12 +202,17 @@
     } else if (ev.type === 'dnd' || ev.type === 'plan_update') {
       refreshPlan();
       refreshTasks();
+    } else if (ev.type === 'memory_update') {
+      pendingMemoryReload = true;   // 记忆树有变化，生成结束后重载历史
     }
   }
 
   // ── 事件与状态 ─────────────────────────────────────────
   // /dequeue 与 /state 都由主进程独占轮询后经 IPC 推送（events / state），
   // 面板不再各自轮询，减少 HTTP 请求。
+  // 压缩发生（memory_update）时标记待重载：生成结束（thinking false）后
+  // 自动重载历史，对话框与 buffer 同步（不打断流式）。
+  let pendingMemoryReload = false;
   window.planner.onEvents((events) => {
     events.forEach(handleEvent);
   });
@@ -256,6 +261,11 @@
     if (plan && plan.today && plan.today !== state.lastPlanDate) {
       state.lastPlanDate = plan.today;
       refreshPlan();
+    }
+    // 生成结束且压缩过 → 重载历史（对话框与 buffer 同步，新节点出现）
+    if (!s.thinking && pendingMemoryReload) {
+      pendingMemoryReload = false;
+      loadHistory(true);
     }
   }
 

@@ -331,6 +331,12 @@ class SummarizationMiddleware(AgentMiddleware):
             level += 1
 
         if removes or adds:
+            # 通知前端"记忆树有变化"（新压缩节点/父节点）——前端在生成
+            # 结束后重载历史，对话框与 buffer 保持同步
+            try:
+                self.session.push_event({"type": "memory_update"})
+            except Exception:
+                pass
             return {"messages": removes + adds}
         return None
 

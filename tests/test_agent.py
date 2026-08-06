@@ -371,3 +371,21 @@ def test_compressed_ranges_are_global_sequential(data_root):
         assert s._compressed_total == ranges[-1][1] + 1
     finally:
         s.close()
+
+
+def test_compression_emits_memory_update(data_root):
+    """压缩成功后应推送 memory_update 事件（前端据此重载历史同步对话框）。"""
+    from planner.middleware import SUMMARIZE_TRIGGER_MESSAGES
+    from planner.session import PlannerSession as PS
+    s = PS(data_root, mock=True)
+    try:
+        for i in range(SUMMARIZE_TRIGGER_MESSAGES - 1):
+            s.recent_buffer.append(HumanMessage(content=f"占位消息 {i}"))
+        s._msg_counter += SUMMARIZE_TRIGGER_MESSAGES - 1
+        _drive_generation(s, "帮我安排一下学习计划")
+        events = s.drain_events()
+        assert any(e["type"] == "memory_update" for e in events), "压缩应推送 memory_update"
+        assert any("node_id" in (getattr(m, "metadata", None) or {})
+                   for m in s.recent_buffer), "压缩应已发生"
+    finally:
+        s.close()
