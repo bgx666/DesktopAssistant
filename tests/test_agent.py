@@ -272,3 +272,35 @@ def test_fire_heartbeat_counts_silence(data_root):
         assert s._heartbeat_silent_count == 0
     finally:
         s.close()
+
+
+def test_tool_result_not_lost_after_compress(data_root):
+    """压缩中间件 RemoveMessage 收缩消息列表后，工具结果事件仍要发出。
+
+    回归：旧实现按 len(msgs) 增量检测，压缩把 60 条缩到 20 条后
+    len < seen_count → 新增 ToolMessage 永不遍历 → 工具卡片永远转圈。
+    """
+    from planner.middleware import SUMMARIZE_TRIGGER_MESSAGES
+    from planner.session import PlannerSession as PS
+    s = PS(data_root, mock=True)
+    try:
+        # 塞到压缩阈值前 1 条，玩家消息触发后必超阈值 → 本轮 before_model 压缩
+        for i in range(SUMMARIZE_TRIGGER_MESSAGES - 1):
+            s.recent_buffer.append(HumanMessage(content=f"占位消息 {i}"))
+        s._msg_counter += SUMMARIZE_TRIGGER_MESSAGES - 1
+
+        _drive_generation(s, "帮我安排一下学习计划")
+        events = s.drain_events()
+
+        tool_calls = [e for e in events if e["type"] == "tool_call"]
+        tool_results = [e for e in events if e["type"] == "tool_result"]
+        assert tool_calls, "本轮应有工具调用事件"
+        for tc in tool_calls:
+            assert any(r["id"] == tc["id"] for r in tool_results), (
+                f"工具 {tc['name']} 的 tool_result 未发出（压缩后丢失 → 卡片转圈）"
+            )
+        # 确认压缩真的发生了（buffer 里出现 node 摘要消息）
+        assert any("node_id" in (getattr(m, "metadata", None) or {})
+                   for m in s.recent_buffer), "压缩应已触发"
+    finally:
+        s.close()

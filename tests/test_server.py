@@ -85,6 +85,28 @@ def test_chat_empty_rejected(backend):
         _post(base, "/chat", {"message": ""})
 
 
+def test_undo_endpoint(backend):
+    """/chat 返回 msg_id → /undo 删除该消息及其后对话 → /history 变空。"""
+    session, base = backend
+    r = _post(base, "/chat", {"message": "这条消息稍后要撤销"})
+    assert r["ok"] is True
+    msg_id = r.get("msg_id")
+    assert msg_id, "chat 应返回 msg_id"
+    _wait_events(base, lambda e: e["type"] == "text")
+
+    hist = _get(base, "/history")
+    ids = [m.get("id") for m in hist["messages"] if m.get("role") == "user"]
+    assert msg_id in ids, "history 应携带用户消息 id"
+
+    u = _post(base, "/undo", {"msg_id": msg_id})
+    assert u["ok"] is True
+    hist2 = _get(base, "/history")
+    assert all(m.get("id") != msg_id for m in hist2["messages"]), "撤销后该消息应消失"
+    # 已撤销（不存在）的消息再次撤销 → compressed
+    u2 = _post(base, "/undo", {"msg_id": msg_id})
+    assert u2["ok"] is False and u2.get("reason") == "compressed"
+
+
 def test_task_endpoints(backend):
     _, base = backend
     r = _post(base, "/task", {"title": "写论文", "due_date": "2026-09-01", "priority": "high"})

@@ -326,19 +326,24 @@ class PlannerSession:
             self.recent_buffer.append(msg)
             self._msg_counter += 1
 
-    def _receive(self, content: str, *, trigger: bool = True) -> None:
-        """接收一条外部消息。_generating 期间入队 _inbox，结束后再写入。"""
-        msg = HumanMessage(content=content)
+    def _receive(self, content: str, *, trigger: bool = True) -> BaseMessage:
+        """接收一条外部消息。_generating 期间入队 _inbox，结束后再写入。返回消息对象。
+
+        显式分配 id（langchain 默认 None，langgraph 在模型调用时才补）——
+        撤销按钮依赖消息 id 在入队时就稳定存在。
+        """
+        msg = HumanMessage(content=content, id=uuid.uuid4().hex)
         with self.buffer_lock:
             if self._generating:
                 self._inbox.append(msg)
                 if trigger:
                     self.pending_response = True
-                return
+                return msg
             self.recent_buffer.append(msg)
             self._msg_counter += 1
             if trigger:
                 self.pending_response = True
+        return msg
 
     def _repair_buffer(self) -> None:
         """检查 buffer 末尾是否有孤儿 tool_call，自动补 tool 消息（防御用）。"""
@@ -544,8 +549,8 @@ class PlannerSession:
 
     # ── 玩家消息 ──────────────────────────────────────────────
 
-    def enqueue_player_message(self, message: str) -> bool:
-        """注入玩家消息并立即触发回复生成。
+    def enqueue_player_message(self, message: str) -> str:
+        """注入玩家消息并立即触发回复生成。返回该消息的 id（撤销按钮用）。
 
         用户说话 = 活跃状态：重置挂起的旧心跳（避免"1 小时后才醒来"的残留），
         设对话默认短心跳并清零沉默计数；生成中 LLM 会再调 heartbeat 覆盖。
@@ -554,11 +559,41 @@ class PlannerSession:
         self._cancel_heartbeat()
         self._heartbeat_silent_count = 0
         self.schedule_heartbeat(DIALOG_HEARTBEAT_MINUTES)
-        self._receive(f"[{now.strftime('%H:%M')}] {PLAYER_NAME}对你说：{message}", trigger=True)
+        msg = self._receive(
+            f"[{now.strftime('%H:%M')}] {PLAYER_NAME}对你说：{message}", trigger=True)
         self._save_log("user", message)
         self._wake_event.set()
         threading.Thread(target=self._player_worker, name="planner-player", daemon=True).start()
-        return True
+        return getattr(msg, "id", None) or ""
+
+    def undo_message(self, msg_id: str) -> dict:
+        """撤销：从 buffer 删除该玩家消息及其后的所有对话。
+
+        原始消息已不在 buffer（被压缩进记忆树）→ 无法撤销。
+        """
+        with self.buffer_lock:
+            idx = None
+            for i, m in enumerate(self.recent_buffer):
+                if (getattr(m, "type", None) == "human"
+                        and (getattr(m, "id", None) or id(m)) == msg_id):
+                    idx = i
+                    break
+            if idx is None:
+                return {"ok": False, "reason": "compressed",
+                        "error": "该消息已被压缩进记忆树，无法撤销"}
+            removed = self.recent_buffer[idx:]
+            self.recent_buffer = self.recent_buffer[:idx]
+            self._msg_counter = max(0, self._msg_counter - len(removed))
+            self._repair_buffer()
+        _logger.info("[undo] 撤销 %d 条对话（从消息 %s 起）", len(removed), msg_id)
+        # 撤销 = 用户介入 = 活跃：重置心跳，保存状态，通知前端
+        self._cancel_heartbeat()
+        self._heartbeat_silent_count = 0
+        self.schedule_heartbeat(DIALOG_HEARTBEAT_MINUTES)
+        self._save_buffer_state()
+        self.push_event({"type": "log", "text": f"已撤销 {len(removed)} 条对话"})
+        self.push_plan_update()
+        return {"ok": True, "removed": len(removed)}
 
     def _player_worker(self) -> None:
         for _ in range(MAX_WORKER_ROUNDS):
@@ -631,7 +666,10 @@ class PlannerSession:
         heartbeat_called = False
         current_msg_id = None
         current_chunks = []
-        seen_count = len(input_msgs)   # 输入消息视为已见，只推送本轮新增的工具调用
+        # 已见消息 id（而非 seen_count=len(msgs)）：压缩中间件会 RemoveMessage
+        # 收缩消息列表，按长度增量会漏掉压缩后新增的 ToolMessage → 工具卡片
+        # 永远停在"正在执行"转圈。按消息 id 去重，与列表收缩无关。
+        seen_msg_ids = {getattr(m, "id", None) or id(m) for m in input_msgs}
         try:
             stream = self._agent.stream(
                 {"messages": input_msgs, "model_call_count": 0, "set_heartbeat_called": False},
@@ -665,11 +703,14 @@ class PlannerSession:
                         final_messages = msgs
                     if data.get("set_heartbeat_called"):
                         heartbeat_called = True
-                    # 增量检测工具调用与结果（工具卡片事件）
-                    if msgs is not None and len(msgs) > seen_count:
-                        for m in msgs[seen_count:]:
-                            self._emit_tool_events(m)
-                        seen_count = len(msgs)
+                    # 增量检测工具调用与结果（工具卡片事件）：按消息 id 去重，
+                    # 不受压缩 RemoveMessage 收缩列表影响
+                    if msgs is not None:
+                        for m in msgs:
+                            mid = getattr(m, "id", None) or id(m)
+                            if mid not in seen_msg_ids:
+                                seen_msg_ids.add(mid)
+                                self._emit_tool_events(m)
                     # 每轮模型文本收束 → 完整文本事件（气泡 toast 用）
                     if current_chunks:
                         full_text = "".join(current_chunks)

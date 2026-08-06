@@ -539,6 +539,12 @@ ipcMain.on('set-panel-bounds', (e, b) => {
     });
   }
 });
+// 标题栏拖拽移动面板（仅完全展开时，动画中不动）
+ipcMain.on('move-panel', (e, x, y) => {
+  if (panelWin && !panelWin.isDestroyed() && panelState === 'shown') {
+    panelWin.setPosition(Math.round(x), Math.round(y));
+  }
+});
 ipcMain.on('morph-in-done', () => {
   clearMorphTimeout();
   panelState = 'shown';
@@ -558,6 +564,13 @@ ipcMain.on('morph-out-done', () => {
 ipcMain.handle('get-bubble-pos', () => {
   if (bubbleWin && !bubbleWin.isDestroyed()) {
     const b = bubbleWin.getBounds();
+    return { x: b.x, y: b.y };
+  }
+  return { x: 0, y: 0 };
+});
+ipcMain.handle('get-panel-pos', () => {
+  if (panelWin && !panelWin.isDestroyed()) {
+    const b = panelWin.getBounds();
     return { x: b.x, y: b.y };
   }
   return { x: 0, y: 0 };

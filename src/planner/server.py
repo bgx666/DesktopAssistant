@@ -114,7 +114,8 @@ class _Handler(BaseHTTPRequestHandler):
                             content = content.split("对你说：", 1)[1]
                         else:
                             continue
-                    msgs.append({"role": "user", "content": content})
+                    msgs.append({"role": "user", "content": content,
+                                 "id": getattr(m, "id", None) or ""})
                 elif role == "ai":
                     msgs.append({"role": "assistant", "content": content})
             self._send_json({"ok": True, "messages": msgs})
@@ -131,8 +132,15 @@ class _Handler(BaseHTTPRequestHandler):
             if not message:
                 self._send_json({"ok": False, "error": "bad_request"}, status=400)
                 return
-            self.session.enqueue_player_message(message)
-            self._send_json({"ok": True})
+            msg_id = self.session.enqueue_player_message(message)
+            self._send_json({"ok": True, "msg_id": msg_id})
+        elif path == "/undo":
+            body = self._read_json_body()
+            msg_id = str(body.get("msg_id", "") or "").strip()
+            if not msg_id:
+                self._send_json({"ok": False, "error": "bad_request"}, status=400)
+                return
+            self._send_json(self.session.undo_message(msg_id))
         elif path == "/task":
             body = self._read_json_body()
             title = str(body.get("title", "")).strip()

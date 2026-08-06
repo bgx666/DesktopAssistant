@@ -25,10 +25,30 @@
   // ── 聊天 ─────────────────────────────────────────────
   const messages = $('#messages');
 
-  function addMessage(text, cls = 'assistant') {
+  function addMessage(text, cls = 'assistant', msgId = null) {
     const el = document.createElement('div');
     el.className = 'msg ' + cls;
-    el.textContent = text;
+    const span = document.createElement('span');
+    span.className = 'msg-text';
+    span.textContent = text;
+    el.appendChild(span);
+    if (cls === 'user' && msgId) {
+      const undo = document.createElement('button');
+      undo.className = 'undo-btn';
+      undo.textContent = '撤销';
+      undo.title = '删除这条消息及其之后的对话';
+      undo.addEventListener('click', async () => {
+        undo.disabled = true;
+        try {
+          const r = await post('/undo', { msg_id: msgId });
+          if (r.ok) loadHistory(true);
+          else addMessage(r.error || '无法撤销', 'log');
+        } catch {
+          addMessage('撤销失败（后端未连接）', 'log');
+        }
+      });
+      el.appendChild(undo);
+    }
     messages.appendChild(el);
     messages.scrollTop = messages.scrollHeight;
     return el;
@@ -40,15 +60,42 @@
     const text = input.value.trim();
     if (!text) return;
     input.value = '';
-    addMessage(text, 'user');
     $('#send').disabled = true;
     try {
-      await post('/chat', { message: text });
+      const r = await post('/chat', { message: text });
+      addMessage(text, 'user', r.msg_id || null);
     } catch (err) {
       addMessage('（连接后端失败，稍后重试）', 'log');
     }
     $('#send').disabled = false;
   });
+
+  // ── 标题栏拖拽（仅 titlebar 本体，按钮区域除外）────────
+  (function setupTitlebarDrag() {
+    const bar = $('#titlebar');
+    let dragging = false;
+    let startX = 0, startY = 0, winX = 0, winY = 0;
+    let moved = 0;
+    bar.addEventListener('mousedown', async (e) => {
+      if (e.button !== 0 || e.target.closest('button')) return;
+      dragging = true;
+      moved = 0;
+      startX = e.screenX;
+      startY = e.screenY;
+      try {
+        const pos = await window.planner.getPanelPos();
+        winX = pos.x; winY = pos.y;
+      } catch { /* 忽略 */ }
+    });
+    document.addEventListener('mousemove', (e) => {
+      if (!dragging) return;
+      const dx = e.screenX - startX;
+      const dy = e.screenY - startY;
+      moved = Math.max(moved, Math.abs(dx), Math.abs(dy));
+      if (moved > 4) window.planner.movePanel(winX + dx, winY + dy);
+    });
+    document.addEventListener('mouseup', () => { dragging = false; });
+  })();
 
   // ── 事件处理（/dequeue）──────────────────────────────
   // 流式：text_stream 逐字追加（msg_id 区分多轮）；text 完整文本已由
@@ -296,7 +343,7 @@
       const data = await api('/history');
       if (clear) messages.innerHTML = '';
       (data.messages || []).forEach((m) => {
-        addMessage(m.content, m.role === 'assistant' ? 'assistant' : 'user');
+        addMessage(m.content, m.role === 'assistant' ? 'assistant' : 'user', m.id || null);
       });
     } catch { /* 后端未连接则跳过 */ }
   }

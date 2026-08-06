@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld('planner', {
   bubbleMenu: () => ipcRenderer.send('bubble-menu'),
   moveBubble: (x, y) => ipcRenderer.send('move-bubble', x, y),
   getBubblePos: () => ipcRenderer.invoke('get-bubble-pos'),
+  getPanelPos: () => ipcRenderer.invoke('get-panel-pos'),
   getPanelState: () => ipcRenderer.invoke('get-panel-state'),
   // 气泡窗
   showToast: (text) => ipcRenderer.send('toast-show', text),
@@ -17,6 +18,7 @@ contextBridge.exposeInMainWorld('planner', {
   toastClick: () => ipcRenderer.send('toast-click'),
   // 变形面板
   setPanelBounds: (b) => ipcRenderer.send('set-panel-bounds', b),
+  movePanel: (x, y) => ipcRenderer.send('move-panel', x, y),
   onMorphIn: (cb) => ipcRenderer.on('morph-in', (e, data) => cb(data)),
   onMorphOut: (cb) => ipcRenderer.on('morph-out', (e, data) => cb(data)),
   onMorphForceFinish: (cb) => ipcRenderer.on('morph-force-finish', (e, kind) => cb(kind)),
