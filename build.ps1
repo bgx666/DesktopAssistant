@@ -15,7 +15,7 @@ $AppDir = Join-Path $ReleaseRoot "app"
 $VenvDir = Join-Path $ReleaseRoot "venv"
 $DataDir = Join-Path $ReleaseRoot "data"
 $VersionFile = Join-Path $ReleaseRoot "VERSION"
-$StartBat = Join-Path $ReleaseRoot "start.bat"
+$StartBatPath = Join-Path $ReleaseRoot "start.bat"
 $MinicondaPython = "D:\Miniconda3\python.exe"
 
 function Invoke-RobocopyMirror {
@@ -88,18 +88,18 @@ if (-not (Test-Path $DataDir)) {
 
 # ── 7. VERSION + start.bat + git tag ────────────────────────
 Set-Content -Path $VersionFile -Value $Version -Encoding ascii
-$startBat = @"
+$startBatContent = @"
 @echo off
 rem xiaozhu release $Version -- double-click to start (data: $DataDir)
 set "PLANNER_PYTHON=$venvPython"
 set "PLANNER_DATA_ROOT=$DataDir"
 start "" "$(Join-Path $AppDir "frontend\node_modules\.bin\electron.cmd")" "$(Join-Path $AppDir "frontend")"
 "@
-Set-Content -Path $StartBat -Value $startBat -Encoding ascii
+Set-Content -Path $StartBatPath -Value $startBatContent -Encoding ascii
 git tag $Version
 if ($LASTEXITCODE -ne 0) { throw "git tag $Version 失败" }
 
 Write-Host ""
 Write-Host "[build] 发版完成：$Version"
-Write-Host "  使用：双击 $StartBat"
+Write-Host "  使用：双击 $StartBatPath"
 Write-Host "  数据：$DataDir"
