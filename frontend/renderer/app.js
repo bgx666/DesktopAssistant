@@ -58,13 +58,24 @@
       const undo = document.createElement('button');
       undo.className = 'undo-btn';
       undo.textContent = '撤销';
-      undo.title = '删除这条消息及其之后的对话';
+      undo.title = '撤回这条消息及其之后的对话，内容恢复到输入框';
       undo.addEventListener('click', async () => {
         undo.disabled = true;
         try {
           const r = await post('/undo', { msg_id: msgId });
-          if (r.ok) loadHistory(true);
-          else addMessage(r.error || '无法撤销', 'log');
+          if (r.ok) {
+            // 被撤销的消息内容恢复到输入框（方便修改后重发，而非直接删掉）
+            const bubble = el.querySelector('.bubble');
+            const text = bubble ? bubble.textContent : '';
+            const input = $('#input');
+            if (text) {
+              input.value = text;
+              input.focus();
+            }
+            loadHistory(true);
+          } else {
+            addMessage(r.error || '无法撤销', 'log');
+          }
         } catch {
           addMessage('撤销失败（后端未连接）', 'log');
         }
