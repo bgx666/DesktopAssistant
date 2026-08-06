@@ -101,7 +101,7 @@ set "PLANNER_DATA_ROOT=$DataDir"
 set "PLANNER_PORT=$RelPort"
 set "PLANNER_URL=$RelUrl"
 set "PLANNER_USER_DATA=$RelUserData"
-start "" "$(Join-Path $AppDir "frontend\node_modules\.bin\electron.cmd")" "$(Join-Path $AppDir "frontend")"
+start "" "$(Join-Path $AppDir "frontend\node_modules\electron\dist\electron.exe")" "$(Join-Path $AppDir "frontend")"
 "@
 Set-Content -Path $StartBatPath -Value $startBatContent -Encoding ascii
 
