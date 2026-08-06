@@ -218,6 +218,9 @@ body {
   border-radius: 14px;
   line-height: 1.55; white-space: pre-wrap; word-break: break-word;
   box-shadow: var(--shadow-sm);
+  user-select: text;             /* 对话内容可选中/复制（body 默认 none） */
+  -webkit-user-select: text;
+  cursor: text;
 }
 .bubble.user {
   background: linear-gradient(135deg, #6f8df9, #5b7cfa);
@@ -319,6 +322,24 @@ body {
 }
 #btn-stop:hover { background: rgba(255, 107, 129, 0.16); }
 #btn-stop:disabled { opacity: 0.5; }
+
+/* ── 复制成功提示 ── */
+.copied-tip {
+  position: fixed;
+  left: 50%;
+  bottom: 84px;
+  transform: translateX(-50%);
+  background: rgba(42, 48, 64, 0.85);
+  color: #fff;
+  font-size: 12px;
+  padding: 6px 14px;
+  border-radius: 16px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+  z-index: 99;
+  pointer-events: none;
+  animation: tipIn 150ms ease-out;
+}
+@keyframes tipIn { from { opacity: 0; transform: translateX(-50%) translateY(6px); } to { opacity: 1; transform: translateX(-50%) translateY(0); } }
 
 /* ── 工具调用卡片（coding agent 风格）────────────────── */
 .tool-card {

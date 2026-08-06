@@ -397,6 +397,46 @@
     setTimeout(() => { $('#btn-stop').disabled = false; }, 300);
   });
 
+  // ── 右键复制选中文字（气泡内容已可选中）──────────────
+  function showCopiedTip() {
+    const tip = document.createElement('div');
+    tip.className = 'copied-tip';
+    tip.textContent = '已复制';
+    document.body.appendChild(tip);
+    setTimeout(() => tip.remove(), 1200);
+  }
+
+  document.addEventListener('contextmenu', (e) => {
+    const sel = window.getSelection();
+    const text = sel ? sel.toString().trim() : '';
+    if (!text) return;                       // 无选中文本 → 不拦截（输入框等默认行为）
+    e.preventDefault();
+    // 先试 execCommand（同步可靠），失败降级 clipboard API
+    let copied = false;
+    try {
+      copied = document.execCommand('copy');
+    } catch { /* 降级 */ }
+    if (!copied) {
+      navigator.clipboard.writeText(text).catch(() => { /* 忽略 */ });
+    }
+    showCopiedTip();
+  });
+
+  document.addEventListener('keydown', (e) => {
+    // 全局 Ctrl+C 兜底（选中文本时原生已处理，此处确保无焦点时也可用）
+    if (e.ctrlKey && (e.key === 'c' || e.key === 'C')) {
+      const sel = window.getSelection();
+      const text = sel ? sel.toString().trim() : '';
+      if (text && document.activeElement && document.activeElement.tagName !== 'INPUT') {
+        e.preventDefault();
+        try {
+          document.execCommand('copy');
+          showCopiedTip();
+        } catch { /* 忽略 */ }
+      }
+    }
+  });
+
   // ── 启动 ─────────────────────────────────────────────
   (async () => {
     try {
