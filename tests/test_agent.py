@@ -336,3 +336,38 @@ def test_compressed_nodes_kept_at_start(data_root):
         assert len(rest) <= SUMMARIZE_KEEP_MESSAGES + 10
     finally:
         s.close()
+
+
+def test_compressed_ranges_are_global_sequential(data_root):
+    """多次压缩的节点范围应为全局连续序号（001: 0-39, 002: 40-79…），不重叠。
+
+    回归：旧实现用 enumerate(msgs) 相对索引，每次压缩节点都显示"第0-40条"
+    （假重叠）；对齐小B _span 机制后按 _compressed_total 累计。
+    """
+    import re
+    from planner.middleware import SUMMARIZE_KEEP_MESSAGES, SUMMARIZE_TRIGGER_MESSAGES
+    from planner.session import PlannerSession as PS
+    s = PS(data_root, mock=True)
+    try:
+        for _round in range(2):
+            for i in range(SUMMARIZE_TRIGGER_MESSAGES - 1):
+                s.recent_buffer.append(HumanMessage(content=f"第{_round}轮占位 {i}"))
+            s._msg_counter += SUMMARIZE_TRIGGER_MESSAGES - 1
+            _drive_generation(s, f"帮我安排任务（第{_round}轮）")
+
+        nodes = [m for m in s.recent_buffer
+                 if "node_id" in (getattr(m, "metadata", None) or {})]
+        assert len(nodes) >= 2
+        ranges = []
+        for m in nodes:
+            match = re.search(r"第(\d+)-(\d+)条", str(m.content))
+            assert match, f"节点消息应有范围标注: {str(m.content)[:60]}"
+            ranges.append((int(match.group(1)), int(match.group(2))))
+        # 范围连续不重叠：后一个 start == 前一个 end + 1
+        for prev, cur in zip(ranges, ranges[1:]):
+            assert cur[0] == prev[1] + 1, f"节点范围应连续: {ranges}"
+        # 首个节点从全局 0 开始；累计值 = 最后节点 end + 1
+        assert ranges[0][0] == 0, f"首个节点应从 0 开始: {ranges}"
+        assert s._compressed_total == ranges[-1][1] + 1
+    finally:
+        s.close()

@@ -338,9 +338,11 @@ class SummarizationMiddleware(AgentMiddleware):
 
     def _summarize_leaf(self, msgs, batch, removes, adds) -> None:
         tree = self.session.get_memory_tree()
-        pos = {id(m): i for i, m in enumerate(msgs)}
-        start_pos = pos[id(batch[0])]
-        end_pos = pos[id(batch[-1])]
+        # 全局序号（对齐小B _span 机制）：节点范围 = 已压缩累计条数起，
+        # 连续不重叠——不能用 enumerate(msgs) 相对索引（每次从 0 附近开始，
+        # 多次压缩的节点范围看起来全是从"第0条"开始，假重叠）
+        start_pos = self.session._compressed_total
+        end_pos = start_pos + len(batch) - 1
 
         original_text = "\n".join(self._speaker_text(m) for m in batch)
         instruction = HumanMessage(
@@ -360,10 +362,10 @@ class SummarizationMiddleware(AgentMiddleware):
             future_notes=out.future_notes or None,
             meta={"schema_version": 1, **out.meta},
         )
+        self.session._compressed_total = end_pos + 1   # 累加已压缩条数
         node_text = self._render_node_text(node_id, start_pos, end_pos, out)
-        # node_start：被压缩消息的起始位置——回写 buffer 后据此把节点移到
-        # 正确位置（压缩的总是最早的消息，节点应排在 buffer 最前，而非
-        # langgraph add_messages 默认的"末尾追加"位置）
+        # node_start：全局起始序号——回写 buffer 后据此把节点移到
+        # 正确位置（压缩的总是最早的消息，节点应排在 buffer 最前）
         summary_msg = HumanMessage(
             content=node_text,
             metadata={"node_id": node_id, "node_start": start_pos})

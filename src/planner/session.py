@@ -98,6 +98,9 @@ class PlannerSession:
 
         # 最后活动时间（epoch 秒，持久化）：程序关闭期间的离线时长据此补回归问候
         self._last_activity_at: float = 0.0
+        # 已压缩进记忆树的消息累计条数（持久化）：压缩节点 round_range 用
+        # 全局序号（小B _span 机制的对齐），多次压缩范围连续不重叠
+        self._compressed_total: int = 0
 
         # 免打扰
         self.dnd_enabled: bool = True
@@ -368,6 +371,7 @@ class PlannerSession:
                 messages_to_dict(self.recent_buffer), self._msg_counter, self.round,
                 last_activity_at=self._last_activity_at or None,
                 reminded_overdue=list(getattr(self, "_reminded_overdue", set())),
+                compressed_total=self._compressed_total,
             )
         except Exception as exc:
             _logger.warning("[session] 保存 buffer 状态失败: %s", exc)
@@ -382,6 +386,7 @@ class PlannerSession:
                 reminded = (state or {}).get("reminded_overdue", [])
                 if reminded:
                     self._reminded_overdue = set(reminded)
+                self._compressed_total = int((state or {}).get("compressed_total", 0) or 0)
                 return False
             msgs = messages_from_dict(state["recent_buffer"])
             if msgs:
@@ -392,6 +397,7 @@ class PlannerSession:
                 reminded = state.get("reminded_overdue", [])
                 if reminded:
                     self._reminded_overdue = set(reminded)
+                self._compressed_total = int(state.get("compressed_total", 0) or 0)
                 _logger.info("[session] 从 buffer_state 恢复上下文: %d 条消息", len(msgs))
                 return True
             return False
