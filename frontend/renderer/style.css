@@ -29,8 +29,14 @@ body {
 
 /* ── 面板背景：浅色渐变 + 光晕装饰 ── */
 #panel-ui {
+  /* 内容固定为最终面板尺寸（350×520）并居中于窗口：展开动画期间
+     窗口逐渐放大、内容只是被窗口裁切，文字零 reflow（性能优化） */
   position: absolute;
-  inset: 0;
+  left: 50%;
+  top: 50%;
+  width: 350px;
+  height: 520px;
+  transform: translate(-50%, -50%);
   display: flex;
   flex-direction: column;
   border-radius: 14px;          /* 展开窗口圆角 */
