@@ -370,12 +370,23 @@ function togglePanel() {
 function doQuit() {
   quitting = true;
   try {
+    killBackend();   // 后端进程不随 electron 退出（detached），残留会导致重启复用旧后端
     if (tray && !tray.isDestroyed()) tray.destroy();
     if (toastWin && !toastWin.isDestroyed()) toastWin.destroy();
     if (panelWin && !panelWin.isDestroyed()) panelWin.destroy();
     if (bubbleWin && !bubbleWin.isDestroyed()) bubbleWin.destroy();
   } catch { /* 忽略 */ }
   setTimeout(() => process.exit(0), 50);
+}
+
+// 杀掉本实例拉起的后端（残留的旧后端会让下次启动复用旧代码）
+function killBackend() {
+  try {
+    if (backendProc && backendProc.pid) {
+      backendProc.kill();
+      backendProc = null;
+    }
+  } catch { /* 忽略 */ }
 }
 
 // ── 气泡窗（小助未展开时主动说话的提示）────────────────────
@@ -665,10 +676,11 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   quitting = true;
+  killBackend();   // 任何退出路径都清掉后端，防残留导致重启复用旧代码
 });
 
 app.on('will-quit', () => {
-  });
+});
 
 
 
