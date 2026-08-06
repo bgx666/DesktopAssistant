@@ -32,13 +32,17 @@ LLM 配置走 `.env` / `D:\xiaob\.env`：`LLM_API_KEY` 必填，默认 DeepSeek�
 
 ### ⚠️ 测试数据隔离（最高优先级）
 - **pytest**：已用 `tmp_path` + `PLANNER_DATA_ROOT` 隔离，不写真实 `data/` ✓
-- **端到端验证 / 手动联调脚本**：**必须**设置隔离数据目录，**绝不**让脚本直连默认 18771 的真实后端：
+- **任何端到端验证 / 手动联调脚本 / release 链路验证**：**必须**设置隔离数据目录 + mock，
+  **绝不**让脚本直连或复用真实后端（18771 开发 / 18772 release），也**绝不允许**用真实数据目录
+  启动验证实例（窗口里会加载真实对话，等同拿用户数据测试）：
   ```powershell
   $env:PLANNER_DATA_ROOT = "$env:TEMP\opencode\planner_e2e"   # 每次测试前删掉重建
   $env:PLANNER_MOCK_LLM = "1"
   Remove-Item $env:PLANNER_DATA_ROOT -Recurse -Force -ErrorAction SilentlyContinue
   ```
-  启动后端/Electron 时继承该环境变量；测试完杀进程。**真实用户对话、记忆树、任务只存在于 release `D:\xiaob\planner-release\data`（或迁移前的开发目录 `data/`），验证脚本一律不许触碰。**
+  - release 链路验证：`powershell -File tests\e2e_release.ps1`（内置隔离 + mock + 自动清理）
+  - 真实 LLM 联调：`tests\live_check.py`（**永远 spawn 独立后端** 18773 + 隔离数据，不探测现有后端）
+- 启动后端/Electron 时继承该环境变量；测试完杀进程。**真实用户对话、记忆树、任务只存在于 release `D:\xiaob\planner-release\data`（或迁移前的开发目录 `data/`），验证脚本一律不许触碰；用户日常使用只走 `start.bat`。**
 - 深夜晚间（22:00-08:00）默认 DND 窗口会拦截心跳/自主生成——测试 nudge/心跳前先 `POST /dnd {"enabled": false}`。
 - Windows 端口复用坑：残留旧后端进程可能占着 18771（含真实模式），测试前 `Get-Process python | Stop-Process -Force` 清理。
 
