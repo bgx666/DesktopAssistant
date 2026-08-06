@@ -1,96 +1,137 @@
-// morph.js —— 球 → 矩形窗口的变形动画（rAF 60fps 驱动）
-// 每帧：IPC setBounds 驱动窗口尺寸/位置，CSS 插值圆角与背景，让圆形球体
-// 逐渐"撑开"成矩形面板；到达阈值后球形态淡出、面板 UI 淡入。
+// morph.js —— 球 → 矩形窗口的变形动画（CSS transition 驱动）
+// 窗口本身只 resize 两次（动画前后各一次，由主进程执行）；本文件只驱动
+// #morph-stage 的 transform（scale + translate）与两层 opacity——
+// 全部是合成器属性，由 GPU 合成器完成动画，主线程零开销、零 IPC。
+// 内容固定 350×520 布局，文字全程不 reflow。
+
 (() => {
   'use strict';
 
-  // 动画参数
-  const IN_MS = 420;        // 展开时长（球 → 面板）
-  const OUT_MS = 340;       // 收回时长（面板 → 球）
-  const SWITCH_W = 170;     // 球形态 → 面板形态的窗口宽度阈值
-  const FULL_W = 240;       // 球完全淡出的窗口宽度
+  // 动画参数（与主进程 PANEL_W/H、BUBBLE_SIZE 对应）
+  const STAGE_W = 350;
+  const STAGE_H = 520;
+  const BUBBLE_SIZE = 56;
+  const SCALE0 = BUBBLE_SIZE / STAGE_W;   // 球形态 scale ≈ 0.16
 
+  const stage = document.getElementById('morph-stage');
   const ball = document.getElementById('morph-ball');
-  const ballInner = ball.querySelector('.morph-inner');
   const panelUI = document.getElementById('panel-ui');
+  const ballInner = ball.querySelector('.morph-inner');
 
-  let running = false;
+  let animating = false;
 
-  function easeOutExpo(t) {
-    return t >= 1 ? 1 : 1 - Math.pow(2, -10 * t);
-  }
-  function easeInCubic(t) { return t * t * t; }
-
-  // 每帧应用：窗口矩形 + 球形态插值
-  function applyFrame(b, w, h) {
-    window.planner.setPanelBounds({ x: b.x, y: b.y, w: Math.max(28, w), h: Math.max(28, h) });
-
-    // 圆角：窗口小时 50%（圆形），宽高不等时呈椭圆，接近面板时收敛为 14px
-    const r = w < SWITCH_W
-      ? '50%'
-      : `${Math.max(14, Math.round(50 - (w - SWITCH_W) / (FULL_W - SWITCH_W) * 36))}px`;
-    ball.style.borderRadius = r;
-
-    // 球形态透明度：窗口 < SWITCH_W 完全显示；SWITCH_W→FULL_W 渐隐
-    const ballOpacity = w >= FULL_W ? 0 : Math.max(0, Math.min(1, 1 - (w - SWITCH_W) / (FULL_W - SWITCH_W)));
-    ball.style.opacity = ballOpacity;
-
-    // 面板 UI：SWITCH_W→FULL_W 渐入
-    const uiOpacity = w <= SWITCH_W ? 0 : Math.max(0, Math.min(1, (w - SWITCH_W) / (FULL_W - SWITCH_W)));
-    panelUI.style.opacity = uiOpacity;
-    panelUI.style.pointerEvents = uiOpacity > 0.5 ? 'auto' : 'none';
+  function baseTransform() {
+    // 舞台居中于窗口的基准 transform
+    return `translate(-50%, -50%)`;
   }
 
-  function runMorph({ from, to, duration, easing, done }) {
-    if (running) cancelAnimationFrame(running);
-    const t0 = performance.now();
-    let finished = false;
-    // rAF 被暂停（窗口最小化/隐藏）时的兜底：超时直接跳到终点
-    const failSafe = setTimeout(() => {
-      if (finished) return;
-      finished = true;
-      running = 0;
-      applyFrame(to, to.w, to.h);
-      done(to);
-    }, duration + 600);
-    const finish = (b) => {
-      if (finished) return;
-      finished = true;
-      clearTimeout(failSafe);
-      running = 0;
-      done(b);
-    };
-    const step = () => {
-      const t = Math.min(1, (performance.now() - t0) / duration);
-      const e = easing(t);
-      const b = {
-        x: from.x + (to.x - from.x) * e,
-        y: from.y + (to.y - from.y) * e,
-        w: from.w + (to.w - from.w) * e,
-        h: from.h + (to.h - from.h) * e,
-      };
-      applyFrame(b, b.w, b.h);
-      if (t >= 1) finish(b);
-      else running = requestAnimationFrame(step);
-    };
-    running = requestAnimationFrame(step);
+  // 展开起始态：内容中心对齐球位置，尺寸 = 球尺寸
+  function startTransform(from, to) {
+    const cx = (to.x + to.w / 2) - (from.x + from.w / 2);   // 球中心相对面板中心偏移
+    const cy = (to.y + to.h / 2) - (from.y + from.h / 2);
+    stage.style.transform = `${baseTransform()} translate(${cx}px, ${cy}px) scale(${SCALE0})`;
   }
 
-  // 主进程强制完成（动画卡死/超时）→ 同步 UI 到终点形态
-  window.planner.onMorphForceFinish((kind) => {
-    if (running) cancelAnimationFrame(running);
-    running = 0;
+  function finishTransform() {
+    stage.style.transform = `${baseTransform()} scale(1)`;
+  }
+
+  // 动画结束兜底（transitionend 可能因窗口隐藏/异常丢失）
+  function armTimeout(kind, done) {
+    const ms = kind === 'in' ? 420 : 340;
+    setTimeout(() => {
+      if (!animating) return;
+      animating = false;
+      finishTransform();
+      ball.style.opacity = kind === 'in' ? '0' : '1';
+      panelUI.style.opacity = kind === 'in' ? '1' : '0';
+      done();
+    }, ms + 250);
+  }
+
+  function runMorph(kind, from, to, done) {
+    animating = true;
+    // 视觉状态：早期球可见、面板渐入；收起反向
     if (kind === 'in') {
+      ball.style.opacity = '1';
+      panelUI.style.opacity = '0';
+      startTransform(from, to);
+      // 下一帧应用目标 transform → CSS transition 自动动画
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        if (!animating) return;
+        stage.classList.add('ready');
+        stage.classList.remove('folding');
+        finishTransform();
+      }));
+    } else {
+      stage.classList.add('folding');
+      stage.classList.remove('ready');
+      ball.style.opacity = '1';
+      panelUI.style.opacity = '0';
+      panelUI.classList.remove('ready');
+      panelUI.style.pointerEvents = 'none';
+      startTransform(from, to);   // from=面板, to=球：内容中心滑向球位置并缩小
+    }
+
+    const onEnd = (ev) => {
+      if (!animating) return;
+      if (ev && ev.propertyName !== 'transform') return;
+      animating = false;
+      stage.removeEventListener('transitionend', onEnd);
+      if (kind === 'in') {
+        ball.style.opacity = '0';
+        ball.style.display = 'none';
+        panelUI.style.opacity = '1';
+        panelUI.classList.add('ready');
+        panelUI.style.pointerEvents = 'auto';
+      } else {
+        panelUI.style.opacity = '0';
+        panelUI.style.pointerEvents = 'none';
+        ball.style.display = '';
+        ball.style.opacity = '1';
+      }
+      done();
+    };
+    stage.addEventListener('transitionend', onEnd);
+    armTimeout(kind, () => {
+      stage.removeEventListener('transitionend', onEnd);
+      if (kind === 'in') {
+        ball.style.opacity = '0';
+        ball.style.display = 'none';
+        panelUI.style.opacity = '1';
+        panelUI.classList.add('ready');
+        panelUI.style.pointerEvents = 'auto';
+      } else {
+        panelUI.style.opacity = '0';
+        panelUI.style.pointerEvents = 'none';
+        ball.style.display = '';
+        ball.style.opacity = '1';
+      }
+      done();
+    });
+  }
+
+  // 主进程强制完成（异常/超时）→ 同步 UI 到终点形态
+  window.planner.onMorphForceFinish((kind) => {
+    animating = false;
+    if (kind === 'in') {
+      stage.classList.add('ready');
+      stage.classList.remove('folding');
+      finishTransform();
       ball.style.display = 'none';
-      panelUI.style.opacity = 1;
+      ball.style.opacity = '0';
+      panelUI.style.opacity = '1';
       panelUI.classList.add('ready');
       panelUI.style.pointerEvents = 'auto';
     } else {
-      panelUI.style.opacity = 0;
+      stage.classList.add('folding');
+      stage.classList.remove('ready');
+      finishTransform();
+      panelUI.style.opacity = '0';
       panelUI.classList.remove('ready');
+      panelUI.style.pointerEvents = 'none';
       ball.style.display = '';
-      ball.style.opacity = 1;
-      ball.style.borderRadius = '50%';
+      ball.style.opacity = '1';
     }
   });
 
@@ -98,34 +139,12 @@
   window.planner.onMorphIn(({ from, to }) => {
     panelUI.classList.remove('ready');
     ball.style.display = '';
-    panelUI.style.opacity = 0;
-    runMorph({
-      from, to,
-      duration: IN_MS, easing: easeOutExpo,
-      done: () => {
-        ball.style.display = 'none';
-        panelUI.style.opacity = 1;
-        panelUI.classList.add('ready');
-        panelUI.style.pointerEvents = 'auto';
-        window.planner.morphDone('in');
-      },
-    });
+    runMorph('in', from, to, () => window.planner.morphDone('in'));
   });
 
   // 收回：面板 → 球
   window.planner.onMorphOut(({ from, to }) => {
-    panelUI.classList.remove('ready');
-    panelUI.style.pointerEvents = 'none';
-    ball.style.display = '';
-    ball.style.opacity = 1;
-    runMorph({
-      from, to: { x: to.x, y: to.y, w: 56, h: 56 },
-      duration: OUT_MS, easing: easeInCubic,
-      done: () => {
-        panelUI.style.opacity = 0;
-        window.planner.morphDone('out');
-      },
-    });
+    runMorph('out', from, to, () => window.planner.morphDone('out'));
   });
 
   // ── 球形态状态点（思考中 / 离线）────────────────────────

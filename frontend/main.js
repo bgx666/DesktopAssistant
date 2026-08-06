@@ -314,10 +314,12 @@ function morphIn() {
   if (panelState !== 'hidden') return;
   if (!panelWin || panelWin.isDestroyed()) createPanel();
   panelDragged = false;                       // 每次展开重置拖动标记
-  const from = bubbleWin.getBounds();            // 球当前矩形
+  const from = bubbleWin.getBounds();            // 球当前矩形（renderer 起始 transform 用）
   const to = { ...panelTargetPos(), w: PANEL_W, h: PANEL_H };
+  // 窗口一次到位（面板最终位置尺寸），变形动画由 renderer 的 CSS transform
+  // 完成（GPU 合成）——不再每帧 resize 窗口，帧率大幅提升
   panelWin.setBounds({
-    x: from.x, y: from.y, width: BUBBLE_SIZE, height: BUBBLE_SIZE,
+    x: to.x, y: to.y, width: PANEL_W, height: PANEL_H,
   });
   panelState = 'morphing_in';
   if (bubbleWin && !bubbleWin.isDestroyed()) bubbleWin.hide();  // 球由变形窗口接管

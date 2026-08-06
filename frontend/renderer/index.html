@@ -8,59 +8,63 @@
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <!-- 球形态层：变形动画期间显示（圆 → 椭圆 → 矩形） -->
-  <div id="morph-ball">
-    <div class="morph-inner">
-      <span id="morph-status-dot"></span>
+  <!-- 变形舞台：固定 350×520 居中于窗口，展开/收起动画用 CSS transform
+       （GPU 合成器驱动），窗口本身只在动画前后各 resize 一次 -->
+  <div id="morph-stage">
+    <!-- 球形态层：变形动画期间显示（圆 → 椭圆 → 矩形） -->
+    <div id="morph-ball">
+      <div class="morph-inner">
+        <span id="morph-status-dot"></span>
+      </div>
     </div>
-  </div>
 
-  <!-- 面板 UI 层：窗口尺寸超过阈值后淡入 -->
-  <div id="panel-ui">
-    <!-- 标题栏（可拖拽） -->
-    <header id="titlebar">
-      <div id="logo"><span class="dot"></span><span id="title">小助</span></div>
-      <div id="status">
-        <span id="thinking" class="hidden">思考中…</span>
-        <span id="ctx-tokens" title="当前上下文 token 估算">…</span>
-        <span id="heartbeat" title="下次主动找你"></span>
-      </div>
-      <div id="titlebar-btns">
-        <button id="btn-dnd" title="免打扰">勿扰</button>
-        <button id="btn-fold" title="收起（变回悬浮球）">—</button>
-      </div>
-    </header>
+    <!-- 面板 UI 层：窗口尺寸超过阈值后淡入 -->
+    <div id="panel-ui">
+      <!-- 标题栏（可拖拽） -->
+      <header id="titlebar">
+        <div id="logo"><span class="dot"></span><span id="title">小助</span></div>
+        <div id="status">
+          <span id="thinking" class="hidden">思考中…</span>
+          <span id="ctx-tokens" title="当前上下文 token 估算">…</span>
+          <span id="heartbeat" title="下次主动找你"></span>
+        </div>
+        <div id="titlebar-btns">
+          <button id="btn-dnd" title="免打扰">勿扰</button>
+          <button id="btn-fold" title="收起（变回悬浮球）">—</button>
+        </div>
+      </header>
 
-    <!-- Tab 导航 -->
-    <nav id="tabs">
-      <button class="tab active" data-tab="chat">聊天</button>
-      <button class="tab" data-tab="plan">接下来<span id="plan-badge" class="badge hidden"></span></button>
-      <button class="tab" data-tab="tasks">任务</button>
-    </nav>
+      <!-- Tab 导航 -->
+      <nav id="tabs">
+        <button class="tab active" data-tab="chat">聊天</button>
+        <button class="tab" data-tab="plan">接下来<span id="plan-badge" class="badge hidden"></span></button>
+        <button class="tab" data-tab="tasks">任务</button>
+      </nav>
 
-    <!-- 聊天 -->
-    <section id="chat" class="view active">
-      <div id="messages"></div>
-      <button id="jump-bottom" class="hidden" title="回到最新消息">↓</button>
-      <form id="input-bar">
-        <input id="input" type="text" placeholder="告诉小助你要做什么…" autocomplete="off" />
-        <button id="send" type="submit">发送</button>
-      </form>
-    </section>
+      <!-- 聊天 -->
+      <section id="chat" class="view active">
+        <div id="messages"></div>
+        <button id="jump-bottom" class="hidden" title="回到最新消息">↓</button>
+        <form id="input-bar">
+          <input id="input" type="text" placeholder="告诉小助你要做什么…" autocomplete="off" />
+          <button id="send" type="submit">发送</button>
+        </form>
+      </section>
 
-    <!-- 接下来（动态待办队列） -->
-    <section id="plan" class="view">
-      <div id="plan-header">
-        <span id="plan-date">待办队列</span>
-        <span id="plan-progress"></span>
-      </div>
-      <div id="plan-list"></div>
-    </section>
+      <!-- 接下来（动态待办队列） -->
+      <section id="plan" class="view">
+        <div id="plan-header">
+          <span id="plan-date">待办队列</span>
+          <span id="plan-progress"></span>
+        </div>
+        <div id="plan-list"></div>
+      </section>
 
-    <!-- 任务 -->
-    <section id="tasks" class="view">
-      <div id="task-list"></div>
-    </section>
+      <!-- 任务 -->
+      <section id="tasks" class="view">
+        <div id="task-list"></div>
+      </section>
+    </div>
   </div>
 
   <script src="morph.js"></script>

@@ -29,14 +29,8 @@ body {
 
 /* ── 面板背景：浅色渐变 + 光晕装饰 ── */
 #panel-ui {
-  /* 内容固定为最终面板尺寸（350×520）并居中于窗口：展开动画期间
-     窗口逐渐放大、内容只是被窗口裁切，文字零 reflow（性能优化） */
   position: absolute;
-  left: 50%;
-  top: 50%;
-  width: 350px;
-  height: 520px;
-  transform: translate(-50%, -50%);
+  inset: 0;                     /* 铺满舞台（350×520 已固定） */
   display: flex;
   flex-direction: column;
   border-radius: 14px;          /* 展开窗口圆角 */
@@ -73,10 +67,32 @@ body {
   background: rgba(61, 220, 151, 0.18);
 }
 
-/* ── 球形态层（变形动画） ── */
+/* ── 变形舞台：固定最终尺寸，transform 动画（GPU 合成，零 reflow）── */
+#morph-stage {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 350px;
+  height: 520px;
+  transform: translate(-50%, -50%) scale(1);
+  transform-origin: 50% 50%;
+  pointer-events: none;
+}
+#morph-stage.ready {
+  transition: transform 420ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+#morph-stage.folding {
+  transition: transform 340ms cubic-bezier(0.55, 0.06, 0.68, 0.19);
+}
+
+/* ── 球形态层（变形动画期间显示，圆形外观） ── */
 #morph-ball {
   position: absolute;
-  inset: 0;
+  left: 50%;
+  top: 50%;
+  width: 350px;
+  height: 350px;
+  transform: translate(-50%, -50%);
   background: radial-gradient(circle at 32% 28%, #8aa8ff, #5b7cfa 55%, #3f5fd6);
   box-shadow: 0 4px 18px rgba(91, 124, 250, 0.45), inset 0 1px 2px rgba(255, 255, 255, 0.4);
   overflow: hidden;
@@ -84,6 +100,8 @@ body {
   align-items: center;
   justify-content: center;
   border-radius: 50%;
+  opacity: 1;
+  transition: opacity 120ms linear;
 }
 .morph-inner {
   width: 28%; height: 28%;
