@@ -102,6 +102,39 @@
   // 流式渲染过，面板忽略（气泡 toast 用）。
   const streamMsgs = {};
   const toolCards = {};
+
+  // 工具卡片（实时转圈 / 历史已完成共用）：addToolCard 创建，
+  // setToolResult 填充结果。
+  function addToolCard(name, args, id, done) {
+    const card = document.createElement('div');
+    card.className = done ? 'tool-card done' : 'tool-card running';
+    const argsText = args ? JSON.stringify(args, null, 1) : '';
+    card.innerHTML = `
+      <div class="tool-head">${done ? '<span class="tool-check">✓</span>' : '<span class="tool-spinner"></span>正在执行 '}${escapeHtml(name)}</div>
+      <div class="tool-detail">
+        ${argsText ? `<div class="tool-sec">参数</div><pre class="tool-pre">${escapeHtml(argsText)}</pre>` : ''}
+        <div class="tool-sec">结果</div><pre class="tool-pre tool-result">…</pre>
+      </div>`;
+    card.addEventListener('click', () => card.classList.toggle('expanded'));
+    if (id) toolCards[id] = card;
+    messages.appendChild(card);
+    messages.scrollTop = messages.scrollHeight;
+    return card;
+  }
+
+  function setToolResult(id, content) {
+    const card = toolCards[id];
+    if (!card) return;
+    card.classList.remove('running');
+    card.classList.add('done');
+    const head = card.querySelector('.tool-head');
+    head.innerHTML =
+      `<span class="tool-check">✓</span>${escapeHtml(head.textContent.replace(/正在执行/, '').trim())}`;
+    const pre = card.querySelector('.tool-result');
+    pre.textContent = content;
+    card.setAttribute('title', '点击展开');
+  }
+
   function handleEvent(ev) {
     if (ev.type === 'text_stream') {
       let el = streamMsgs[ev.msg_id];
@@ -114,31 +147,9 @@
       else el.textContent += ev.content;
       messages.scrollTop = messages.scrollHeight;
     } else if (ev.type === 'tool_call') {
-      // 工具卡片：闪烁提示正在执行；点击展开参数与结果
-      const card = document.createElement('div');
-      card.className = 'tool-card running';
-      const argsText = ev.args ? JSON.stringify(ev.args, null, 1) : '';
-      card.innerHTML = `
-        <div class="tool-head"><span class="tool-spinner"></span>正在执行 ${escapeHtml(ev.name)}</div>
-        <div class="tool-detail">
-          ${argsText ? `<div class="tool-sec">参数</div><pre class="tool-pre">${escapeHtml(argsText)}</pre>` : ''}
-          <div class="tool-sec">结果</div><pre class="tool-pre tool-result">…</pre>
-        </div>`;
-      card.addEventListener('click', () => card.classList.toggle('expanded'));
-      toolCards[ev.id] = card;
-      messages.appendChild(card);
-      messages.scrollTop = messages.scrollHeight;
+      addToolCard(ev.name, ev.args, ev.id, false);
     } else if (ev.type === 'tool_result') {
-      const card = toolCards[ev.id];
-      if (card) {
-        card.classList.remove('running');
-        card.classList.add('done');
-        card.querySelector('.tool-head').innerHTML =
-          `<span class="tool-check">✓</span>${escapeHtml(card.querySelector('.tool-head').textContent.replace(/正在执行/, '').trim())}`;
-        const pre = card.querySelector('.tool-result');
-        pre.textContent = ev.content;
-        card.setAttribute('title', '点击展开');
-      }
+      setToolResult(ev.id, ev.content);
     } else if (ev.type === 'log') {
       if (ev.content) addMessage(ev.content, 'log');
     } else if (ev.type === 'thinking') {
@@ -337,14 +348,25 @@
   });
 
   // ── 历史消息（重启恢复 / 面板重新可见时补渲染）────────────
-  // 面板隐藏期间小助说的话只冒了气泡，展开面板时要补进对话框。
+  // 面板隐藏期间小助说的话只冒了气泡，展开面板时要补进对话框；
+  // 历史工具调用渲染为"已完成"卡片（静态，不转圈）。
   async function loadHistory(clear = true) {
     try {
       const data = await api('/history');
-      if (clear) messages.innerHTML = '';
+      if (clear) {
+        messages.innerHTML = '';
+        Object.keys(toolCards).forEach((k) => delete toolCards[k]);
+        Object.keys(streamMsgs).forEach((k) => delete streamMsgs[k]);
+      }
       (data.messages || []).forEach((m) => {
-        const cls = m.role === 'assistant' ? 'assistant' : m.role === 'memory' ? 'memory' : 'user';
-        addMessage(m.content, cls, m.id || null);
+        if (m.role === 'tool_call') {
+          addToolCard(m.name, m.args, m.id, true);
+        } else if (m.role === 'tool_result') {
+          setToolResult(m.id, m.content);
+        } else {
+          const cls = m.role === 'assistant' ? 'assistant' : m.role === 'memory' ? 'memory' : 'user';
+          addMessage(m.content, cls, m.id || null);
+        }
       });
     } catch { /* 后端未连接则跳过 */ }
   }

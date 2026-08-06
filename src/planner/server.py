@@ -122,7 +122,19 @@ class _Handler(BaseHTTPRequestHandler):
                     msgs.append({"role": "user", "content": content,
                                  "id": getattr(m, "id", None) or ""})
                 elif role == "ai":
-                    msgs.append({"role": "assistant", "content": content})
+                    if content:
+                        msgs.append({"role": "assistant", "content": content})
+                    # 历史工具调用卡片（与实时事件一致：heartbeat 不展示）
+                    for tc in (getattr(m, "tool_calls", None) or []):
+                        name = tc.get("name", "?")
+                        if name == "heartbeat":
+                            continue
+                        msgs.append({"role": "tool_call", "id": tc.get("id", ""),
+                                     "name": name, "args": tc.get("args", {})})
+                elif role == "tool":
+                    msgs.append({"role": "tool_result",
+                                 "id": getattr(m, "tool_call_id", ""),
+                                 "content": str(getattr(m, "content", "") or "")})
             self._send_json({"ok": True, "messages": msgs})
         else:
             self._send_json({"ok": False, "error": f"unknown endpoint: {path}"}, status=404)

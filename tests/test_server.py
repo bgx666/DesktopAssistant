@@ -107,6 +107,26 @@ def test_undo_endpoint(backend):
     assert u2["ok"] is False and u2.get("reason") == "compressed"
 
 
+def test_history_contains_tool_cards(backend):
+    """历史消息应包含工具调用卡片（tool_call + tool_result，heartbeat 除外）。"""
+    _, base = backend
+    r = _post(base, "/chat", {"message": "帮我安排学习计划"})
+    assert r["ok"] is True
+    _wait_events(base, lambda e: e["type"] == "text")
+
+    hist = _get(base, "/history")
+    roles = [m["role"] for m in hist["messages"]]
+    assert "tool_call" in roles, "历史应包含工具调用卡片"
+    assert "tool_result" in roles, "历史应包含工具结果"
+    calls = [m for m in hist["messages"] if m["role"] == "tool_call"]
+    results = [m for m in hist["messages"] if m["role"] == "tool_result"]
+    # 每个 tool_call 都有对应 id 的 tool_result（工具已完成）
+    for c in calls:
+        assert any(rr["id"] == c["id"] for rr in results), "tool_call 应有对应 tool_result"
+        assert c["name"] != "heartbeat", "heartbeat 不展示"
+    assert any(rr.get("content") for rr in results), "工具结果应有内容"
+
+
 def test_task_endpoints(backend):
     _, base = backend
     r = _post(base, "/task", {"title": "写论文", "due_date": "2026-09-01", "priority": "high"})
