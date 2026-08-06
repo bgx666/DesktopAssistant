@@ -132,10 +132,13 @@ $required = @(
     @{ Name = "PLANNER_USER_DATA(隔离)"; Value = $RelUserData }
 )
 foreach ($r in $required) {
-    if ($batText -notmatch [regex]::Escape("$($r.Name.Split('(')[0])=$($r.Value)")) {
+    $key = $r.Name.Split('(')[0]
+    $batPat = $key + '=' + $r.Value
+    $vbsPat = 'env("' + $key + '") = "' + $r.Value + '"'
+    if ($batText -notmatch [regex]::Escape($batPat)) {
         throw "start.bat 自检失败：缺少 $($r.Name)"
     }
-    if ($vbsText -notmatch [regex]::Escape("env(`"$($r.Name.Split('(')[0])`") = `"$($r.Value)`"")) {
+    if ($vbsText -notmatch [regex]::Escape($vbsPat)) {
         throw "start.vbs 自检失败：缺少 $($r.Name)"
     }
 }
