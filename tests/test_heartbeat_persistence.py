@@ -52,7 +52,23 @@ def test_heartbeat_expired_while_offline_triggers_on_start(data_root, monkeypatc
 
 
 def test_heartbeat_expired_in_dnd_deferred(data_root, monkeypatch):
-    """到期补唤醒遇免打扰 → 不触发，顺延一个正常间隔。"""
+    """运行中心跳到期遇免打扰 → 不触发，顺延（启动补唤醒不受 DND 限制）。"""
+    calls = []
+    monkeypatch.setattr(PlannerSession, "_spawn_worker", lambda self, t: calls.append(t))
+    monkeypatch.setattr(PlannerSession, "in_dnd", lambda self, at=None: True)
+    s = PlannerSession(data_root, mock=True)
+    try:
+        s.schedule_heartbeat(1)
+        s._next_heartbeat_at = time.time() - 60
+        s._fire_heartbeat()                 # 运行中心跳：DND 顺延
+        assert calls == [], "DND 时运行中心跳不应触发"
+        assert s._next_heartbeat_at > time.time(), "应顺延到未来"
+    finally:
+        s.close()
+
+
+def test_startup_trigger_ignores_dnd(data_root, monkeypatch):
+    """启动补唤醒忽略免打扰：用户主动启动程序 = 人在场，到期即补唤醒。"""
     calls = []
     monkeypatch.setattr(PlannerSession, "_spawn_worker", lambda self, t: calls.append(t))
     monkeypatch.setattr(PlannerSession, "in_dnd", lambda self, at=None: True)
@@ -64,10 +80,9 @@ def test_heartbeat_expired_in_dnd_deferred(data_root, monkeypatch):
     finally:
         s1.close()
 
-    s2 = PlannerSession(data_root, mock=True)
+    s2 = PlannerSession(data_root, mock=True)   # DND 中重启
     try:
-        assert calls == [], "DND 不应触发补唤醒"
-        assert s2._next_heartbeat_at > time.time(), "应顺延到未来"
+        assert calls == ["heartbeat"], "启动补唤醒不应被 DND 拦截"
     finally:
         s2.close()
 

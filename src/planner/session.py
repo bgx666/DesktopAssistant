@@ -489,10 +489,8 @@ class PlannerSession:
         minutes = self._heartbeat_minutes or FALLBACK_HEARTBEAT_MINUTES
         note = self._heartbeat_note
         self._heartbeat_note = ""
-        if self.in_dnd():
-            _logger.info("[heartbeat] 启动补唤醒遇免打扰，顺延")
-            self.schedule_heartbeat(minutes, note)
-            return
+        # 启动补唤醒不检查免打扰：用户主动启动程序 = 人在场，补唤醒说话是
+        # 期望行为（运行中的 _fire_heartbeat 仍受 DND 保护——用户不在时别打扰）
         _logger.info("[heartbeat] 启动补唤醒（心跳已到期）")
         # 先落保底调度（生成中 LLM 覆盖），防止中断/退出导致 next=0 落盘；
         # 保底沿用原心跳间隔（而非固定 60 分钟），避免"重置感"
