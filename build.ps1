@@ -88,17 +88,39 @@ if (-not (Test-Path $DataDir)) {
 
 # ── 7. VERSION + start.bat + git tag ────────────────────────
 Set-Content -Path $VersionFile -Value $Version -Encoding ascii
+
+# release 隔离配置（集中定义，供 start.bat 生成与自检共用）
+$RelPort = 18772                       # release 端口，与开发版 18771 必须不同
+$RelUrl = "http://127.0.0.1:$RelPort"
+$RelUserData = Join-Path $ReleaseRoot "user-data"
 $startBatContent = @"
 @echo off
-rem xiaozhu release $Version -- double-click to start (data: $DataDir, port 18772)
+rem xiaozhu release $Version -- double-click to start (data: $DataDir, port $RelPort)
 set "PLANNER_PYTHON=$venvPython"
 set "PLANNER_DATA_ROOT=$DataDir"
-set "PLANNER_PORT=18772"
-set "PLANNER_URL=http://127.0.0.1:18772"
-set "PLANNER_USER_DATA=$ReleaseRoot\user-data"
+set "PLANNER_PORT=$RelPort"
+set "PLANNER_URL=$RelUrl"
+set "PLANNER_USER_DATA=$RelUserData"
 start "" "$(Join-Path $AppDir "frontend\node_modules\.bin\electron.cmd")" "$(Join-Path $AppDir "frontend")"
 "@
 Set-Content -Path $StartBatPath -Value $startBatContent -Encoding ascii
+
+# start.bat 自检：隔离性缺失/被改坏 = 终止发版（防回归）
+$batText = Get-Content $StartBatPath -Raw
+$required = @(
+    @{ Name = "PLANNER_PYTHON(venv)"; Value = $venvPython },
+    @{ Name = "PLANNER_DATA_ROOT(release data)"; Value = $DataDir },
+    @{ Name = "PLANNER_PORT($RelPort)"; Value = "PLANNER_PORT=$RelPort" },
+    @{ Name = "PLANNER_URL($RelUrl)"; Value = "PLANNER_URL=$RelUrl" },
+    @{ Name = "PLANNER_USER_DATA(隔离)"; Value = "PLANNER_USER_DATA=$RelUserData" }
+)
+foreach ($r in $required) {
+    if ($batText -notmatch [regex]::Escape($r.Value)) {
+        throw "start.bat 自检失败：缺少 $($r.Name)"
+    }
+}
+if ($batText -match "18771") { throw "start.bat 自检失败：不允许出现开发版端口 18771" }
+
 git tag $Version
 if ($LASTEXITCODE -ne 0) { throw "git tag $Version 失败" }
 

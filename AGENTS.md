@@ -28,6 +28,16 @@ LLM 配置走 `.env` / `D:\xiaob\.env`：`LLM_API_KEY` 必填，默认 DeepSeek�
   `PLANNER_URL`、`PLANNER_USER_DATA` 均注入，main.js/config 已支持环境变量）
 - 开发版（18771）与 release 版（18772）**可同时运行**：端口/URL/userData 全部隔离，互不抢占
 
+### 隔离防回归（三层，缺一不可）
+release 与开发版的隔离依赖 `start.bat` 注入的 5 个环境变量（`PLANNER_PYTHON`/`PLANNER_DATA_ROOT`/
+`PLANNER_PORT`=18772/`PLANNER_URL`/`PLANNER_USER_DATA`）。**新增任何 release 运行状态**（日志、缓存、
+userData、临时文件、端口）都必须经 `PLANNER_*` 环境变量注入 release，且满足：
+1. **build.ps1 自检**：生成 `start.bat` 后校验变量完整且值正确，缺/错 → 拒绝发版（不许 git tag）
+2. **e2e_release.ps1 静态断言**：解析 `start.bat` 全部 `set` 行与期望值逐一比对 + 禁止出现 18771
+3. **e2e_release.ps1 动态断言**：CDP 实测前端 `apiBase`=18772、隔离 user-data 目录被创建、
+   后端数据落在隔离目录
+回归测试：故意改坏 `start.bat`（删变量/改值/带 18771）→ e2e 必须红。
+
 ## 关键约定（容易猜错/踩过坑的）
 
 ### ⚠️ 测试数据隔离（最高优先级）
