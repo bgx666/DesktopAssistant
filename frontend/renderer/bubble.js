@@ -2,7 +2,7 @@
 (() => {
   'use strict';
 
-  const API = 'http://127.0.0.1:18771';
+  const API = (window.planner && window.planner.apiBase) || 'http://127.0.0.1:18771';
   const core = document.getElementById('core');
 
   // ── 手动拖拽（不用 -webkit-app-region，透明窗口上它吞点击事件）──

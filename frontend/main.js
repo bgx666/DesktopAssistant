@@ -11,6 +11,12 @@ const PROJECT_ROOT = path.join(app.getAppPath(), '..');       // frontend/ → p
 const PYTHON = process.env.PLANNER_PYTHON || 'D:\\Miniconda3\\python.exe';
 const TRAY_ICON_FILE = path.join(__dirname, 'assets', 'tray.png');
 
+// 独立实例：release 版设 PLANNER_USER_DATA，避免与开发版共用 userData
+// （单实例锁、悬浮球位置等全部随之隔离，两个版本可同时运行）
+if (process.env.PLANNER_USER_DATA) {
+  app.setPath('userData', process.env.PLANNER_USER_DATA);
+}
+
 const BUBBLE_SIZE = 56;      // 悬浮球尺寸
 const PANEL_W = 350;         // 面板宽
 const PANEL_H = 520;         // 面板高

@@ -2,7 +2,7 @@
 (() => {
   'use strict';
 
-  const API = 'http://127.0.0.1:18771';
+  const API = (window.planner && window.planner.apiBase) || 'http://127.0.0.1:18771';
 
   const $ = (sel) => document.querySelector(sel);
   const state = { heartbeat: null, dnd: null, plan: null, lastPlanDate: '' };

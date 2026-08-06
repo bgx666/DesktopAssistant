@@ -132,7 +132,8 @@
   async function pollBallState() {
     const dot = document.getElementById('morph-status-dot');
     try {
-      const data = await (await fetch('http://127.0.0.1:18771/state')).json();
+      const API = (window.planner && window.planner.apiBase) || 'http://127.0.0.1:18771';
+      const data = await (await fetch(API + '/state')).json();
       dot.classList.toggle('thinking', !!(data.state && data.state.thinking));
       dot.classList.remove('offline');
     } catch {

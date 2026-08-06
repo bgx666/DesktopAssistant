@@ -90,9 +90,12 @@ if (-not (Test-Path $DataDir)) {
 Set-Content -Path $VersionFile -Value $Version -Encoding ascii
 $startBatContent = @"
 @echo off
-rem xiaozhu release $Version -- double-click to start (data: $DataDir)
+rem xiaozhu release $Version -- double-click to start (data: $DataDir, port 18772)
 set "PLANNER_PYTHON=$venvPython"
 set "PLANNER_DATA_ROOT=$DataDir"
+set "PLANNER_PORT=18772"
+set "PLANNER_URL=http://127.0.0.1:18772"
+set "PLANNER_USER_DATA=$ReleaseRoot\user-data"
 start "" "$(Join-Path $AppDir "frontend\node_modules\.bin\electron.cmd")" "$(Join-Path $AppDir "frontend")"
 "@
 Set-Content -Path $StartBatPath -Value $startBatContent -Encoding ascii

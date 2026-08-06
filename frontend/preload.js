@@ -3,6 +3,8 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('planner', {
   platform: process.platform,
+  // 后端地址（release 版经 PLANNER_URL 指向独立端口）
+  apiBase: process.env.PLANNER_URL || 'http://127.0.0.1:18771',
   // 悬浮球
   togglePanel: () => ipcRenderer.send('toggle-panel'),
   bubbleMenu: () => ipcRenderer.send('bubble-menu'),
