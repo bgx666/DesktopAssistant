@@ -51,8 +51,9 @@
 
   function runMorph(kind, from, to, done) {
     animating = true;
-    // 视觉状态：早期球可见、面板渐入；收起反向
     if (kind === 'in') {
+      // 起始：球形态
+      ball.style.display = '';
       ball.style.opacity = '1';
       panelUI.style.opacity = '0';
       startTransform(from, to);
@@ -62,15 +63,29 @@
         stage.classList.add('ready');
         stage.classList.remove('folding');
         finishTransform();
+        // 动画中段：球渐隐、面板渐入（opacity transition 渐变衔接，
+        // 避免"放大后瞬间刷成面板"的突兀感）
+        setTimeout(() => {
+          if (!animating) return;
+          ball.style.opacity = '0';
+          panelUI.style.opacity = '1';
+        }, 190);
       }));
     } else {
       stage.classList.add('folding');
       stage.classList.remove('ready');
-      ball.style.opacity = '1';
-      panelUI.style.opacity = '0';
+      ball.style.display = '';
+      ball.style.opacity = '0';
+      panelUI.style.opacity = '1';
       panelUI.classList.remove('ready');
       panelUI.style.pointerEvents = 'none';
       startTransform(from, to);   // from=面板, to=球：内容中心滑向球位置并缩小
+      // 动画中段：面板渐隐、球渐显
+      setTimeout(() => {
+        if (!animating) return;
+        ball.style.opacity = '1';
+        panelUI.style.opacity = '0';
+      }, 140);
     }
 
     const onEnd = (ev) => {

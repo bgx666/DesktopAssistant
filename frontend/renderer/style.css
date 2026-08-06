@@ -45,7 +45,7 @@ body {
     linear-gradient(165deg, #f3f6ff 0%, #f8faff 45%, #eff6ff 100%);
   opacity: 0;
   pointer-events: none;
-  transition: opacity 120ms linear;
+  transition: opacity 180ms linear;   /* 变形中段球/面板渐变衔接 */
 }
 #panel-ui.ready { opacity: 1; }
 #panel-ui::before,
@@ -101,7 +101,7 @@ body {
   justify-content: center;
   border-radius: 50%;
   opacity: 1;
-  transition: opacity 120ms linear;
+  transition: opacity 180ms linear;   /* 变形中段球/面板渐变衔接 */
 }
 .morph-inner {
   width: 28%; height: 28%;
