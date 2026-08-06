@@ -24,6 +24,15 @@ npm install
 npm start
 ```
 
+## 日常使用（release 版）
+
+日常使用时**不要**在开发目录跑，用发版产物：
+
+1. 双击 `D:\xiaob\planner-release\start.bat`（独立 venv + 独立数据目录 `planner-release\data`，记忆/任务与开发互不影响）
+2. 每次开发完成后发版：`D:\xiaob\planner\build.bat`（或 `powershell -File build.ps1`），自动复制代码、生成 `start.bat`、打 `git tag vX.Y.Z`
+3. 回滚 = `git checkout 旧tag` 后重跑 build.ps1（数据在 release `data\`，不受影响）
+4. ⚠️ 开发版与 release 版不能同时开（Electron 单实例锁共用 userData）
+
 ## 核心能力
 
 | 能力 | 说明 |
