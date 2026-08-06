@@ -127,13 +127,17 @@ $vbsText = Get-Content $StartVbsPath -Raw
 $required = @(
     @{ Name = "PLANNER_PYTHON(venv)"; Value = $venvPython },
     @{ Name = "PLANNER_DATA_ROOT(release data)"; Value = $DataDir },
-    @{ Name = "PLANNER_PORT($RelPort)"; Value = "PLANNER_PORT=$RelPort" },
-    @{ Name = "PLANNER_URL($RelUrl)"; Value = "PLANNER_URL=$RelUrl" },
-    @{ Name = "PLANNER_USER_DATA(隔离)"; Value = "PLANNER_USER_DATA=$RelUserData" }
+    @{ Name = "PLANNER_PORT($RelPort)"; Value = $RelPort },
+    @{ Name = "PLANNER_URL($RelUrl)"; Value = $RelUrl },
+    @{ Name = "PLANNER_USER_DATA(隔离)"; Value = $RelUserData }
 )
 foreach ($r in $required) {
-    if ($batText -notmatch [regex]::Escape($r.Value)) { throw "start.bat 自检失败：缺少 $($r.Name)" }
-    if ($vbsText -notmatch [regex]::Escape($r.Value)) { throw "start.vbs 自检失败：缺少 $($r.Name)" }
+    if ($batText -notmatch [regex]::Escape("$($r.Name.Split('(')[0])=$($r.Value)")) {
+        throw "start.bat 自检失败：缺少 $($r.Name)"
+    }
+    if ($vbsText -notmatch [regex]::Escape("env(`"$($r.Name.Split('(')[0])`") = `"$($r.Value)`"")) {
+        throw "start.vbs 自检失败：缺少 $($r.Name)"
+    }
 }
 if ($batText -match "18771") { throw "start.bat 自检失败：不允许出现开发版端口 18771" }
 if ($vbsText -match "18771") { throw "start.vbs 自检失败：不允许出现开发版端口 18771" }
