@@ -323,7 +323,12 @@ function morphOut() {
     return;
   }
   const from = panelWin.getBounds();
-  const to = bubbleWin.getBounds();              // 缩回球的位置
+  // 缩小目标：把悬浮球移到面板当前位置，动画即"面板原地缩成球"，
+  // 而不是缩回最初位置（面板被拖走后缩小才不会跳回原处）
+  if (bubbleWin && !bubbleWin.isDestroyed()) {
+    bubbleWin.setPosition(from.x, from.y);
+  }
+  const to = bubbleWin.getBounds();
   panelState = 'morphing_out';
   sendMorph('out', from, to);
 }

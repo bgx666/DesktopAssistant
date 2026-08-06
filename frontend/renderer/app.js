@@ -109,7 +109,9 @@
         el = addMessage('', 'assistant');
         streamMsgs[ev.msg_id] = el;
       }
-      el.textContent += ev.content;
+      const span = el.querySelector('.msg-text');
+      if (span) span.textContent += ev.content;
+      else el.textContent += ev.content;
       messages.scrollTop = messages.scrollHeight;
     } else if (ev.type === 'tool_call') {
       // 工具卡片：闪烁提示正在执行；点击展开参数与结果
