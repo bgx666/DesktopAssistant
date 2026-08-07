@@ -1,0 +1,611 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>小助 · 你的学习工作伙伴</title>
+<style>
+  :root {
+    --bg: #0a0f1e;
+    --card: rgba(255,255,255,0.04);
+    --line: rgba(125,238,227,0.14);
+    --cyan: #39c5bb;
+    --cyan2: #7deee3;
+    --blue: #5fb8d6;
+    --pink: #ff2e97;
+    --purple: #a99ae8;
+    --text: #e8f4f7;
+    --dim: #8fa8b8;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    background: radial-gradient(1200px 800px at 70% -10%, #12224a 0%, var(--bg) 55%), var(--bg);
+    color: var(--text);
+    font-family: "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+    overflow-x: hidden;
+  }
+  ::selection { background: rgba(57,197,187,0.35); }
+
+  .scroll-wrap { height: 100vh; overflow-y: auto; scroll-snap-type: y proximity; }
+  section {
+    min-height: 100vh;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    padding: 48px 24px 60px;
+    scroll-snap-align: start;
+    position: relative;
+  }
+  .inner { width: min(920px, 100%); }
+
+  .kicker {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-size: 13px; color: var(--cyan2); letter-spacing: 2px;
+    padding: 6px 14px; border: 1px solid var(--line); border-radius: 999px;
+    background: rgba(125,238,227,0.06); margin-bottom: 18px;
+  }
+  h2 { font-size: clamp(26px, 4vw, 40px); margin-bottom: 14px; font-weight: 800; letter-spacing: 1px; }
+  h2 em { font-style: normal; color: var(--cyan2); }
+  .sub { color: var(--dim); font-size: 15px; line-height: 1.9; max-width: 660px; }
+  .sub b { color: var(--cyan2); font-weight: 600; }
+  .replay {
+    margin-top: 22px; padding: 8px 22px; cursor: pointer;
+    border: 1px solid var(--line); border-radius: 999px; background: transparent;
+    color: var(--cyan2); font-size: 13px; transition: all .2s;
+  }
+  .replay:hover { background: rgba(125,238,227,0.12); }
+  .step-tip { color: var(--dim); font-size: 12px; margin-top: 14px; letter-spacing: 1px; }
+
+  .fade { opacity: 0; transform: translateY(24px); transition: opacity .7s ease, transform .7s ease; }
+  .on .fade { opacity: 1; transform: none; }
+  .on .fade.d1 { transition-delay: .15s; }
+  .on .fade.d2 { transition-delay: .3s; }
+  .on .fade.d3 { transition-delay: .45s; }
+  .on .fade.d4 { transition-delay: .6s; }
+
+  /* Hero */
+  .hero { text-align: center; }
+  .hero h1 { font-size: clamp(34px, 6vw, 56px); font-weight: 900; letter-spacing: 2px; margin: 10px 0 8px; }
+  .hero h1 span { color: var(--cyan2); }
+  .hero .tagline { color: var(--dim); font-size: 17px; margin-top: 12px; line-height: 1.8; }
+  .hero-ball-wrap { margin: 44px 0 6px; display: flex; justify-content: center; }
+  .scroll-hint { margin-top: 32px; color: var(--dim); font-size: 13px; animation: bob 1.6s infinite; }
+  @keyframes bob { 50% { transform: translateY(6px); } }
+
+  .ball {
+    width: 92px; height: 92px; border-radius: 50%;
+    background: #5fb8d6;
+    border: 1px solid rgba(255,255,255,0.35);
+    position: relative; display: flex; align-items: center; justify-content: center;
+  }
+  .ball::before {
+    content: ""; position: absolute; left: 22%; top: 19%;
+    width: 8px; height: 8px; border-radius: 50%;
+    background: rgba(255,255,255,0.7);
+  }
+  .ball .dot {
+    width: 20px; height: 20px; border-radius: 50%;
+    background: #6fd993; border: 2px solid #fff;
+  }
+  .hero .ball { animation: floaty 3.4s ease-in-out infinite; }
+  @keyframes floaty { 50% { transform: translateY(-12px); } }
+
+  /* 演示舞台 */
+  .stage {
+    position: relative; width: 100%; min-height: 360px;
+    background: var(--card); border: 1px solid var(--line); border-radius: 20px;
+    overflow: hidden; margin-top: 30px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .stage-tl { width: 100%; height: 100%; position: relative; min-height: 360px; }
+  .stage-ball { position: absolute; left: 50%; top: 50%; margin: -46px 0 0 -46px; }
+  .toast {
+    position: absolute; padding: 10px 14px; border-radius: 12px; font-size: 13px;
+    background: rgba(255,255,255,0.9); color: #223; max-width: 230px;
+    box-shadow: 0 6px 20px rgba(0,0,0,0.35);
+    opacity: 0; transform: translateY(10px) scale(0.94);
+    transition: opacity .35s, transform .35s;
+  }
+  .toast.show { opacity: 1; transform: none; }
+  .toast .src { color: #6a7; font-size: 11px; margin-top: 4px; }
+  .toast.t1 { left: 50%; top: 18%; margin-left: -115px; }
+  .toast.t2 { left: 50%; top: 42%; margin-left: -90px; }
+  .toast.t3 { left: 50%; top: 64%; margin-left: -120px; }
+  .mic-tag {
+    position: absolute; left: 50%; top: 80%; transform: translateX(-50%);
+    color: var(--cyan2); font-size: 12px; letter-spacing: 2px; opacity: 0;
+  }
+  .file-chip {
+    position: absolute; right: 8%; top: 12%; padding: 4px 10px; border-radius: 8px;
+    background: rgba(95,184,214,0.25); border: 1px solid rgba(95,184,214,0.5);
+    color: var(--cyan2); font-size: 12px; opacity: 0; transform: translateY(8px);
+    transition: all .4s;
+  }
+  .file-chip.show { opacity: 1; transform: none; }
+  .ring-svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; opacity: 0; transition: opacity .3s; }
+  .ring-svg.show { opacity: 1; }
+
+  /* ═══ Memory Tree · 建树过程 ═══ */
+  .mt-stage { display: grid; grid-template-columns: 1.05fr .95fr; gap: 18px; margin-top: 26px; }
+  @media (max-width: 760px) { .mt-stage { grid-template-columns: 1fr; } }
+  .mt-chat {
+    background: var(--card); border: 1px solid var(--line); border-radius: 16px;
+    padding: 16px; overflow: hidden; position: relative; min-height: 440px;
+  }
+  .mt-chat h5 { font-size: 12px; color: var(--dim); letter-spacing: 2px; margin-bottom: 12px; }
+  .msg-row {
+    display: flex; gap: 8px; margin-bottom: 7px; opacity: 0; transform: translateY(6px);
+    transition: opacity .4s, transform .4s;
+  }
+  .msg-row.show { opacity: 1; transform: none; }
+  .msg-row.shrink { opacity: 0.12; transform: scale(0.92); transition: opacity .5s, transform .5s; }
+  .msg-row .who { font-size: 11px; flex: none; width: 40px; text-align: right; color: var(--dim); padding-top: 4px; }
+  .msg-row .bub { font-size: 12.5px; padding: 7px 11px; border-radius: 10px; max-width: 78%; }
+  .msg-row.user .bub { background: rgba(57,197,187,0.16); margin-left: auto; }
+  .msg-row.ai .bub { background: rgba(255,46,151,0.12); }
+  .mt-gauge { display: flex; align-items: center; gap: 10px; margin-top: 10px; font-size: 11.5px; color: var(--dim); }
+  .mt-gauge .bar { flex: 1; height: 6px; border-radius: 3px; background: rgba(255,255,255,0.08); overflow: hidden; }
+  .mt-gauge .bar i { display: block; height: 100%; width: 0%; background: linear-gradient(90deg, var(--cyan), var(--cyan2)); transition: width .3s; }
+  .compress-flag {
+    position: absolute; left: 16px; right: 16px; bottom: 14px; padding: 9px 12px;
+    border-radius: 10px; font-size: 12.5px; text-align: center;
+    background: rgba(169,154,232,0.15); border: 1px solid rgba(169,154,232,0.4);
+    color: var(--purple); opacity: 0; transition: opacity .4s;
+  }
+  .compress-flag.show { opacity: 1; }
+
+  /* 建树演示面板（右侧） */
+  .mt-build {
+    background: var(--card); border: 1px solid var(--line); border-radius: 16px;
+    padding: 16px; position: relative; min-height: 440px;
+  }
+  .mt-build h5 { font-size: 12px; color: var(--dim); letter-spacing: 2px; margin-bottom: 12px; }
+  .build-canvas { position: relative; height: 388px; }
+  .b-node {
+    position: absolute; left: 50%; padding: 7px 11px; border-radius: 10px;
+    font-size: 11.5px; border: 1px solid; opacity: 0; transform: translateX(-50%) scale(.9);
+    transition: all .5s ease; white-space: nowrap;
+  }
+  .b-node.show { opacity: 1; transform: translateX(-50%) scale(1); }
+  .b-node.leaf { background: rgba(57,197,187,0.12); border-color: rgba(57,197,187,0.45); color: var(--cyan2); }
+  .b-node.mid  { background: rgba(95,184,214,0.14); border-color: rgba(95,184,214,0.5); color: var(--blue); }
+  .b-node.top  { background: rgba(169,154,232,0.14); border-color: rgba(169,154,232,0.5); color: var(--purple); }
+  .b-node.root { background: rgba(255,46,151,0.12); border-color: rgba(255,46,151,0.5); color: var(--pink); font-weight: 700; }
+  .b-node .meta { font-size: 9.5px; opacity: .7; display: block; margin-top: 2px; }
+  .merge-tag {
+    position: absolute; left: 50%; transform: translateX(-50%);
+    font-size: 10.5px; color: var(--dim); letter-spacing: 1px; opacity: 0; transition: opacity .4s;
+  }
+  .merge-tag.show { opacity: 1; }
+  .b-note {
+    position: absolute; left: 12px; right: 12px; bottom: 10px;
+    font-size: 11.5px; color: var(--dim); line-height: 1.7; text-align: center;
+    opacity: 0; transition: opacity .4s;
+  }
+  .b-note.show { opacity: 1; }
+
+  /* ═══ Memory Tree · 最终形状 ═══ */
+  .shape-box {
+    margin-top: 30px; background: var(--card); border: 1px solid var(--line);
+    border-radius: 20px; padding: 26px 22px;
+  }
+  .shape-head { text-align: center; margin-bottom: 18px; }
+  .shape-head h3 { font-size: 18px; color: var(--cyan2); margin-bottom: 6px; }
+  .shape-head p { font-size: 12.5px; color: var(--dim); }
+  .tree-row { display: flex; flex-direction: column; align-items: center; margin: 9px 0; }
+  .tree-row .row-label { font-size: 11px; color: var(--dim); letter-spacing: 1.5px; margin-bottom: 5px; }
+  .tree-row .row-label b { color: var(--cyan2); font-weight: 600; }
+  .dots { display: flex; align-items: center; justify-content: center; gap: 2px; min-height: 20px; }
+  .dots .d { border-radius: 50%; opacity: 0; transform: scale(.3); transition: all .5s ease; }
+  .dots .d.show { opacity: 1; transform: scale(1); }
+  .dots .d.leaf { background: var(--cyan); }
+  .dots .d.mid  { background: var(--blue); }
+  .dots .d.top  { background: var(--purple); }
+  .dots .d.root { background: var(--pink); }
+  .merge-line { text-align: center; font-size: 10px; color: rgba(125,238,227,0.55); letter-spacing: 2px; opacity: 0; transition: opacity .5s; }
+  .merge-line.show { opacity: 1; }
+  .shape-note {
+    margin-top: 18px; text-align: center; font-size: 13px; color: var(--dim); line-height: 1.9;
+    opacity: 0; transition: opacity .6s;
+  }
+  .shape-note.show { opacity: 1; }
+  .shape-note b { color: var(--cyan2); }
+
+  /* ═══ 其他能力速览 ═══ */
+  .mini-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 14px; margin-top: 28px; }
+  .mini {
+    background: var(--card); border: 1px solid var(--line); border-radius: 16px;
+    padding: 18px 16px; opacity: 0; transform: translateY(20px); transition: all .6s;
+  }
+  .on .mini { opacity: 1; transform: none; }
+  .on .mini.m2 { transition-delay: .15s; }
+  .on .mini.m3 { transition-delay: .3s; }
+  .on .mini.m4 { transition-delay: .45s; }
+  .mini .icon { font-size: 24px; margin-bottom: 8px; }
+  .mini h4 { font-size: 14px; margin-bottom: 6px; color: var(--cyan2); }
+  .mini p { font-size: 12.5px; color: var(--dim); line-height: 1.7; }
+
+  /* CTA */
+  .cta { text-align: center; }
+  .cta .ball { margin: 0 auto 22px; animation: floaty 3.4s ease-in-out infinite; }
+  .cta .start { display: inline-block; margin-top: 22px; padding: 12px 34px; border-radius: 999px; text-decoration: none; font-weight: 700; color: #063; background: linear-gradient(135deg, var(--cyan2), var(--cyan)); }
+  .cta small { display: block; margin-top: 14px; color: var(--dim); }
+</style>
+</head>
+<body>
+<div class="scroll-wrap" id="root">
+
+  <!-- HERO -->
+  <section class="hero" data-sec="hero">
+    <div class="inner">
+      <div class="kicker">DESKTOP COMPANION</div>
+      <h1>小助<span> · 住在你桌面上的</span><br>学习工作伙伴</h1>
+      <div class="hero-ball-wrap"><div class="ball"><span class="dot"></span></div></div>
+      <p class="tagline">听得懂话 · 看得懂文件 · 记得住每一件事</p>
+      <div class="scroll-hint">▼ 向下滚动</div>
+    </div>
+  </section>
+
+  <!-- 悬浮球交互（精简） -->
+  <section data-sec="interact">
+    <div class="inner">
+      <div class="kicker fade">01 · 它会这样跟你互动</div>
+      <h2 class="fade">一个球，<em>三种操作</em></h2>
+      <div class="stage fade d1">
+        <div class="stage-tl" id="stageInteract">
+          <svg class="ring-svg" id="interRing" viewBox="0 0 200 200">
+            <g id="interSpokes"></g><g id="interEdges"></g><g id="interPts"></g>
+          </svg>
+          <div class="toast t1">你的论文进度我记着，今天该做第三章了。<span class="src">← 单击 · 看最近回复</span></div>
+          <div class="toast t2">上次你说读完第二章，已更新待办。<span class="src">← 再单击 · 更早一条</span></div>
+          <div class="toast t3">识别中…「帮我把第二章整理成笔记」<span class="src">← 长按说话</span></div>
+          <div class="stage-ball"><div class="ball"><span class="dot"></span></div></div>
+          <div class="mic-tag">L I S T E N I N G</div>
+          <div class="file-chip">📎 report.pdf 已挂载</div>
+        </div>
+      </div>
+      <div class="step-tip fade d2">单击看历史 · 长按语音输入 · 拖入文件挂载，语音时一起发送</div>
+      <button class="replay" data-replay="interact">重播本节</button>
+    </div>
+  </section>
+
+  <!-- Memory Tree ① 建树过程 -->
+  <section data-sec="build">
+    <div class="inner">
+      <div class="kicker fade">02 · 记忆树 · 建树过程</div>
+      <h2 class="fade">对话太多？<em>压缩成记忆</em></h2>
+      <p class="sub fade d1">上下文是有限的。对话积累到 60 条时，小助把<b>最早的 40 条压缩成一个"叶子摘要"</b>——不仅总结说了什么，还提炼出你的<b>画像</b>。</p>
+      <div class="mt-stage fade d2">
+        <div class="mt-chat">
+          <h5>对话进行中…</h5>
+          <div id="mtMsgs"></div>
+          <div class="mt-gauge">对话长度 <div class="bar"><i id="mtBar"></i></div> <span id="mtCount">0 / 60</span></div>
+          <div class="compress-flag" id="mtFlag">⚡ 达到 60 条 → 最早的 40 条压缩成叶子摘要</div>
+        </div>
+        <div class="mt-build">
+          <h5>记忆树 · 向上生长</h5>
+          <div class="build-canvas" id="buildCanvas"></div>
+        </div>
+      </div>
+      <div class="step-tip fade d3">每一层积累 ≥6 个节点时，取 3 个合并成上一层的父节点 —— 递归向上</div>
+      <button class="replay" data-replay="build">重播本节</button>
+    </div>
+  </section>
+
+  <!-- Memory Tree ② 最终形状 -->
+  <section data-sec="shape">
+    <div class="inner">
+      <div class="kicker fade">03 · 记忆树 · 最终形状</div>
+      <h2 class="fade">一年之后，它长成<em>一棵 6 层的树</em></h2>
+      <p class="sub fade d1">每天一点对话，叶子摘要不断累积、逐层 3 合 1。长期使用后，记忆树是这样一棵金字塔：<b>每一层都有压缩节点</b>，越往上越凝练。</p>
+      <div class="shape-box fade d2" id="shapeBox"></div>
+      <div class="shape-note" id="shapeNote"></div>
+      <button class="replay" data-replay="shape">重播本节</button>
+    </div>
+  </section>
+
+  <!-- 其他能力速览 -->
+  <section data-sec="misc">
+    <div class="inner">
+      <div class="kicker fade">04 · 它还会</div>
+      <h2 class="fade">文件、图片、屏幕，<em>它都看得懂</em></h2>
+      <div class="mini-grid fade d1">
+        <div class="mini m1"><div class="icon">📄📑</div><h4>拖文件给它</h4><p>文本直接读，PDF/Word 自动解析，长文档分段理解。</p></div>
+        <div class="mini m2"><div class="icon">🖼️</div><h4>图片 OCR</h4><p>拖入图片即提取文字，标注来源后结合回答。</p></div>
+        <div class="mini m3"><div class="icon">🖥️</div><h4>"看一下我的屏幕"</h4><p>它会自己截屏、识别文字、回答你。</p></div>
+        <div class="mini m4"><div class="icon">⏰</div><h4>分钟级定时任务</h4><p>一人一句不插话；最短 10 分钟醒来一次，检查你的任务进度再开口。</p></div>
+      </div>
+      <div class="mini-grid fade d1">
+        <div class="mini m1"><div class="icon">🎙️</div><h4>语音识别 · 完全本地</h4><p>SenseVoice + ONNX 在 CPU 上跑，不联网、不上传。</p></div>
+        <div class="mini m2"><div class="icon">🔒</div><h4>数据都在你电脑上</h4><p>对话、任务、记忆树存本地 SQLite；只有大模型推理需联网。</p></div>
+      </div>
+      <button class="replay" data-replay="misc">重播本节</button>
+    </div>
+  </section>
+
+  <!-- CTA -->
+  <section class="cta" data-sec="cta">
+    <div class="inner">
+      <div class="ball"><span class="dot"></span></div>
+      <h2>让它住进你的桌面吧</h2>
+      <p class="sub" style="margin:0 auto">小助 · 学习工作助手<br>听你说，帮你看，替你记。</p>
+      <a class="start" href="#">开始使用</a>
+      <small>双击 start.bat 即可启动 · 单机运行 · 数据本地</small>
+    </div>
+  </section>
+
+</div>
+
+<script>
+(() => {
+  'use strict';
+
+  const root = document.getElementById('root');
+  const seen = new Set();
+  const cleanup = {};
+  const io = new IntersectionObserver((entries) => {
+    for (const en of entries) {
+      if (en.isIntersecting && !seen.has(en.target.dataset.sec)) {
+        seen.add(en.target.dataset.sec);
+        en.target.classList.add('on');
+        startPlay(en.target.dataset.sec);
+      }
+    }
+  }, { threshold: 0.3 });
+  document.querySelectorAll('section').forEach((s) => io.observe(s));
+  document.querySelectorAll('[data-replay]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const sec = document.querySelector('section[data-sec="' + btn.dataset.replay + '"]');
+      if (sec) { sec.classList.remove('on'); void sec.offsetWidth; sec.classList.add('on'); }
+      startPlay(btn.dataset.replay);
+    });
+  });
+
+  function startPlay(name) {
+    if (cleanup[name]) { cleanup[name](); delete cleanup[name]; }
+    const fn = {
+      interact: playInteract,
+      build: playBuild,
+      shape: playShape,
+    }[name];
+    if (fn) cleanup[name] = fn();
+  }
+
+  /* ═══ 01 悬浮球交互 ═══ */
+  function playInteract() {
+    const tl = document.getElementById('stageInteract');
+    const ball = tl.querySelector('.ball');
+    const dot = tl.querySelector('.dot');
+    const toasts = tl.querySelectorAll('.toast');
+    const micTag = tl.querySelector('.mic-tag');
+    const fileChip = tl.querySelector('.file-chip');
+    const ringSvg = tl.querySelector('.ring-svg');
+    const timers = [];
+    const later = (fn, ms) => timers.push(setTimeout(fn, ms));
+    toasts.forEach((t) => t.classList.remove('show'));
+    ball.classList.remove('rec');
+    micTag.style.opacity = 0;
+    fileChip.classList.remove('show');
+    ringSvg.classList.remove('show');
+    later(() => toasts[0].classList.add('show'), 400);
+    later(() => toasts[1].classList.add('show'), 1800);
+    later(() => {
+      ball.classList.add('rec');
+      dot.style.background = '#7deee3';
+      micTag.style.opacity = 1;
+      ringSvg.classList.add('show');
+      startRingAnim();
+    }, 3000);
+    later(() => toasts[2].classList.add('show'), 4300);
+    later(() => {
+      ball.classList.remove('rec');
+      dot.style.background = '#6fd993';
+      micTag.style.opacity = 0;
+      ringSvg.classList.remove('show');
+      stopRingAnim();
+    }, 6300);
+    later(() => fileChip.classList.add('show'), 7000);
+    return () => { timers.forEach(clearTimeout); stopRingAnim(); };
+  }
+
+  const SPOKES = document.getElementById('interSpokes');
+  const EDGES = document.getElementById('interEdges');
+  const PTS = document.getElementById('interPts');
+  const RING_N = 12, CX = 100, CY = 100, R = 64;
+  const COLORS = ['#6fd8cf', '#e59cc0', '#a99ae8'];
+  let ringRaf = null, ringEdges = [], ringPts = [];
+  (function initRing() {
+    for (let i = 0; i < 8; i++) {
+      const a = (i / 8) * Math.PI * 2;
+      const l = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+      l.setAttribute('x1', CX); l.setAttribute('y1', CY);
+      l.setAttribute('x2', (CX + R * Math.cos(a)).toFixed(1)); l.setAttribute('y2', (CY + R * Math.sin(a)).toFixed(1));
+      l.setAttribute('stroke', 'rgba(125,238,227,0.3)');
+      SPOKES.appendChild(l);
+    }
+    for (let i = 0; i < RING_N; i++) {
+      const l = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+      l.setAttribute('stroke', COLORS[i % 3]); l.setAttribute('stroke-width', '2');
+      EDGES.appendChild(l); ringEdges.push(l);
+      const c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      c.setAttribute('r', '2.2'); c.setAttribute('fill', COLORS[i % 3]);
+      PTS.appendChild(c); ringPts.push(c);
+    }
+  })();
+  function startRingAnim() {
+    if (ringRaf) return;
+    const step = () => {
+      const t = Date.now() / 200;
+      const coords = [];
+      for (let i = 0; i < RING_N; i++) {
+        const a = (i / RING_N) * Math.PI * 2;
+        const wave = 0.5 + 0.5 * Math.sin(t + i * 0.9);
+        const r = 28 + wave * (R - 28);
+        coords.push({ x: CX + r * Math.cos(a), y: CY + r * Math.sin(a) });
+      }
+      for (let i = 0; i < RING_N; i++) {
+        const a = coords[i], b = coords[(i + 1) % RING_N];
+        ringEdges[i].setAttribute('x1', a.x.toFixed(1)); ringEdges[i].setAttribute('y1', a.y.toFixed(1));
+        ringEdges[i].setAttribute('x2', b.x.toFixed(1)); ringEdges[i].setAttribute('y2', b.y.toFixed(1));
+        ringPts[i].setAttribute('cx', a.x.toFixed(1)); ringPts[i].setAttribute('cy', a.y.toFixed(1));
+      }
+      ringRaf = requestAnimationFrame(step);
+    };
+    ringRaf = requestAnimationFrame(step);
+  }
+  function stopRingAnim() { if (ringRaf) { cancelAnimationFrame(ringRaf); ringRaf = null; } }
+
+  /* ═══ 02 建树过程 ═══ */
+  const MT_SUMMARY = '用户在写论文：已完成引言与文献综述，正在整理第二章笔记，目标周末完成初稿；卡顿时先列要点再动笔。';
+  const MT_PROF = ['偏好：晚上学习', '性格：做事有计划', '习惯：先列大纲再写', '目标：周末完成初稿'];
+  const MT_NOTES = '未来备忘：3 天后提醒检查第二章笔记';
+  const MSG_POOL = [
+    ['u', '我今天先看第三章'], ['a', '好，第三章已排进待办。'],
+    ['u', '第二章笔记整理好了'], ['a', '已更新进度，建议开始第三章。'],
+    ['u', '写作有点卡'], ['a', '先列要点再动笔，我帮你拆三步。'],
+    ['u', '导师提了新要求'], ['a', '记下了，优先级提到最高。'],
+    ['u', '周末前想完成初稿'], ['a', '已拆好阶段，按计划推进。'],
+  ];
+
+  function playBuild() {
+    const msgs = document.getElementById('mtMsgs');
+    const bar = document.getElementById('mtBar');
+    const count = document.getElementById('mtCount');
+    const flag = document.getElementById('mtFlag');
+    const canvas = document.getElementById('buildCanvas');
+    const timers = [];
+    const later = (fn, ms) => timers.push(setTimeout(fn, ms));
+
+    msgs.innerHTML = '';
+    bar.style.width = '0%';
+    count.textContent = '0 / 60';
+    flag.classList.remove('show');
+    canvas.innerHTML = '<div class="b-note">等待第一片叶子…</div>';
+    canvas.querySelector('.b-note').classList.add('show');
+
+    const TOTAL = 60;
+    let shown = 0;
+    const addMsg = (who, text, delay) => {
+      const row = document.createElement('div');
+      row.className = 'msg-row ' + who;
+      row.innerHTML = '<span class="who">' + (who === 'u' ? '你' : '小助') + '</span><span class="bub">' + text + '</span>';
+      msgs.appendChild(row);
+      if (msgs.children.length > 5) msgs.removeChild(msgs.firstChild);
+      later(() => row.classList.add('show'), delay);
+    };
+    for (let i = 0; i < TOTAL; i++) {
+      const m = MSG_POOL[i % MSG_POOL.length];
+      later(() => {
+        addMsg(m[0], m[1], 0);
+        shown++;
+        bar.style.width = Math.min(100, (shown / TOTAL) * 100) + '%';
+        count.textContent = shown + ' / 60';
+      }, 300 + i * 90);
+    }
+    const t0 = 300 + TOTAL * 90 + 500;
+
+    // 叶子生成
+    later(() => {
+      flag.classList.add('show');
+      msgs.querySelectorAll('.msg-row').forEach((r) => r.classList.add('shrink'));
+      canvas.querySelector('.b-note').classList.remove('show');
+      const leaf = document.createElement('div');
+      leaf.className = 'b-node leaf';
+      leaf.style.top = '8%';
+      leaf.innerHTML = '🧠 叶子摘要（第 1-40 条）<span class="meta">summary + 画像 + 未来备忘</span>';
+      canvas.appendChild(leaf);
+      later(() => leaf.classList.add('show'), 120);
+      later(() => leaf.classList.add('grow'), 1600);   // 表示被"合并"选中
+    }, t0);
+    // 3 合 1 → L1
+    later(() => {
+      const merge = document.createElement('div');
+      merge.className = 'merge-tag';
+      merge.style.top = '30%';
+      merge.textContent = '每 3 个叶子 → 合并成 1 个上层节点';
+      canvas.appendChild(merge);
+      later(() => merge.classList.add('show'), 100);
+      const n1 = document.createElement('div');
+      n1.className = 'b-node mid';
+      n1.style.top = '46%';
+      n1.innerHTML = '阶段摘要 L2（3 个叶子）<span class="meta">范围：第 1-120 条</span>';
+      canvas.appendChild(n1);
+      later(() => n1.classList.add('show'), 500);
+      const n2 = document.createElement('div');
+      n2.className = 'b-node top';
+      n2.style.top = '70%';
+      n2.innerHTML = '阶段摘要 L3（3 个 L2）<span class="meta">再往上：递归</span>';
+      canvas.appendChild(n2);
+      later(() => n2.classList.add('show'), 1500);
+      const note = document.createElement('div');
+      note.className = 'b-note';
+      note.textContent = '每层积累 ≥6 个节点时取前 3 个合并 —— 一直递归，直到某层不足 6 个';
+      canvas.appendChild(note);
+      later(() => note.classList.add('show'), 2400);
+    }, t0 + 2000);
+    return () => { timers.forEach(clearTimeout); };
+  }
+
+  /* ═══ 03 最终形状 ═══ */
+  const TREE_SHAPE = [
+    { count: 243, label: '叶子摘要', meta: '每 40 条对话 → 1 片叶子', cls: 'leaf', d: 3, gap: 1 },
+    { count: 81,  label: '阶段摘要 L2', meta: '3 合 1', cls: 'mid', d: 4, gap: 3 },
+    { count: 27,  label: '阶段摘要 L3', meta: '3 合 1', cls: 'mid', d: 6, gap: 4 },
+    { count: 9,   label: '阶段摘要 L4', meta: '3 合 1', cls: 'top', d: 9, gap: 6 },
+    { count: 3,   label: '阶段摘要 L5', meta: '3 合 1', cls: 'top', d: 12, gap: 10 },
+    { count: 1,   label: '长期记忆', meta: '全局画像 + 关键决定', cls: 'root', d: 18, gap: 0 },
+  ];
+
+  function playShape() {
+    const box = document.getElementById('shapeBox');
+    const note = document.getElementById('shapeNote');
+    const timers = [];
+    const later = (fn, ms) => timers.push(setTimeout(fn, ms));
+
+    box.innerHTML = '<div class="shape-head"><h3>记忆树 · Memory Tree</h3><p>每一层都是压缩节点 · 越往上越凝练</p></div>';
+    note.classList.remove('show');
+    const rows = [];
+    TREE_SHAPE.forEach((lv, li) => {
+      const row = document.createElement('div');
+      row.className = 'tree-row';
+      row.innerHTML = '<div class="row-label">' + lv.label + ' <b>×' + lv.count + '</b><span style="color:rgba(143,168,184,.6)"> · ' + lv.meta + '</span></div><div class="dots"></div>';
+      box.appendChild(row);
+      const dots = row.querySelector('.dots');
+      for (let i = 0; i < lv.count; i++) {
+        const d = document.createElement('div');
+        d.className = 'd ' + lv.cls;
+        d.style.width = lv.d + 'px';
+        d.style.height = lv.d + 'px';
+        dots.appendChild(d);
+      }
+      rows.push(row);
+      if (li < TREE_SHAPE.length - 1) {
+        const ml = document.createElement('div');
+        ml.className = 'merge-line';
+        ml.textContent = '▲ 每 3 个合并为 1 个';
+        box.appendChild(ml);
+      }
+    });
+    // 自下而上逐层生长
+    const delay = (lv) => 400 + lv * 550;
+    TREE_SHAPE.forEach((lv, li) => {
+      later(() => {
+        const dots = rows[li].querySelectorAll('.d');
+        dots.forEach((d, i) => later(() => d.classList.add('show'), i * 8));
+      }, delay(li));
+      const mergeLines = box.querySelectorAll('.merge-line');
+      if (li < TREE_SHAPE.length - 1) {
+        later(() => mergeLines[li].classList.add('show'), delay(li) + 400);
+      }
+    });
+    // 收尾说明
+    later(() => {
+      note.innerHTML = '<b>6 层 · 243 片叶子摘要 → 1 个长期记忆根节点</b><br>对话再多也不会撑爆上下文：旧事压缩成树，随时可回溯（explore_memory_tree），重启后依然记得。';
+      note.classList.add('show');
+    }, delay(TREE_SHAPE.length - 1) + 500);
+    return () => { timers.forEach(clearTimeout); };
+  }
+})();
+</script>
+</body>
+</html>
