@@ -126,8 +126,14 @@
 
   // 单击 → 依次显示历史回复（第 1 次最新、第 2 次倒数第二…，循环）
   // 气泡按"距最新偏移"排序堆叠：越久远的越靠上（从上方落下）
-  let replyOffset = 0;   // 距最新的偏移：0=最新
+  // 若上一批气泡已过期消失（>气泡生命周期），重新从最新一条开始翻
+  let replyOffset = 0;       // 距最新的偏移：0=最新
+  let lastReplyAt = 0;       // 上次单击时间戳
+  const REPLY_LIFE_MS = 30000;   // 与主进程 TOAST_MS 一致（气泡 30 秒生存）
   async function showLastReply() {
+    const now = Date.now();
+    if (now - lastReplyAt > REPLY_LIFE_MS) replyOffset = 0;   // 旧气泡已过期 → 重新从最新
+    lastReplyAt = now;
     try {
       const r = await fetch(window.planner.apiBase + '/history', { signal: AbortSignal.timeout(5000) });
       const d = await r.json();

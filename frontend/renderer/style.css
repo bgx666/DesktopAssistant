@@ -155,6 +155,13 @@ body {
   transition: background 0.15s, color 0.15s;
 }
 #titlebar-btns button:hover { background: rgba(91, 124, 250, 0.1); color: var(--primary); }
+/* 缩小（收起）按钮：勿扰按钮已移出标题栏，无误触风险，加大点击区域 */
+#btn-fold {
+  font-size: 20px;
+  padding: 4px 16px;
+  border-radius: 10px;
+  line-height: 1.2;
+}
 
 /* ── Tab ── */
 #tabs {
