@@ -29,6 +29,7 @@ def test_parse_bing_limits():
 
 
 def test_web_search_success(monkeypatch):
+    """查询原样交给搜索引擎（不预处理、不加引号）。"""
     calls = {}
 
     class _FakeResp:
@@ -44,46 +45,23 @@ def test_web_search_success(monkeypatch):
 
     monkeypatch.setattr(httpx_mod, "get", fake_get)
     tools = {t.name: t for t in build_tools(None)}
-    res = tools["web_search"].invoke({"query": "最新科技新闻"})
+    res = tools["web_search"].invoke({"query": "四川大学 校历"})
     assert "示例新闻标题 A" in res
     assert "https://example.com/a" in res
-    assert calls["params"]["q"] == "最新科技新闻"
+    assert calls["params"]["q"] == "四川大学 校历", "查询应原样转发，不做任何加工"
 
 
-def test_web_search_quotes_entity_names(monkeypatch):
-    """带空格时机构名自动加引号；连续短语（用户手动搜索行为）保持原样。"""
-    calls = {}
+def test_web_search_failure(monkeypatch):
+    def boom(url, **kw):
+        raise RuntimeError("network down")
 
-    class _FakeResp:
-        text = BING_HTML
-
-        def raise_for_status(self):
-            pass
-
-    def fake_get(url, **kw):
-        calls["params"] = kw.get("params")
-        return _FakeResp()
-
-    monkeypatch.setattr(httpx_mod, "get", fake_get)
+    monkeypatch.setattr(httpx_mod, "get", boom)
     tools = {t.name: t for t in build_tools(None)}
-    tools["web_search"].invoke({"query": "四川大学 校历"})
-    assert calls["params"]["q"] == '"四川大学" 校历'
-    tools["web_search"].invoke({"query": "四川大学教务处"})
-    assert calls["params"]["q"] == "四川大学教务处", "连续短语保持原样"
-    # 已带引号/非机构名不动
-    tools["web_search"].invoke({"query": '"北京大学" 招生'})
-    assert calls["params"]["q"] == '"北京大学" 招生'
-    tools["web_search"].invoke({"query": "今天天气"})
-    assert calls["params"]["q"] == "今天天气"
-
-
-def test_quote_entity_names_direct():
-    q = tools_mod._quote_entity_names("南京大学校历")
-    assert q == "南京大学校历", "连续短语不加引号"
-    q2 = tools_mod._quote_entity_names("清华大学 计算机系")
-    assert q2 == '"清华大学" 计算机系'
-    q3 = tools_mod._quote_entity_names("成都市天气")
-    assert q3 == "成都市天气", "非机构名不应被引号包住"
+    res = tools["web_search"].invoke({"query": "x"})
+    assert "搜索失败" in res
+    # 空关键词
+    res2 = tools["web_search"].invoke({"query": "  "})
+    assert "不能为空" in res2
 
 
 def test_extract_links():
