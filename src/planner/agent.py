@@ -29,6 +29,7 @@ from .middleware import (
     PlayerPriorityMiddleware,
     StopRequestMiddleware,
     SummarizationMiddleware,
+    TypingHintMiddleware,
 )
 from .tools import build_tools
 
@@ -46,6 +47,7 @@ def build_planner_agent(session):
         DndGuardMiddleware(session),
         PlanSnapshotMiddleware(session),
         PlayerPriorityMiddleware(session),
+        TypingHintMiddleware(session),
         StopRequestMiddleware(session),
         NudgeMiddleware(),
         HeartbeatTrackMiddleware(),

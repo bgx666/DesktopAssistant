@@ -115,6 +115,9 @@ class PlannerSession:
         self.dnd_enabled: bool = True
         self.dnd_until: datetime | None = None      # 一次性免打扰截止时间
 
+        # 用户正在输入（瞬态，不持久化；由前端输入框状态驱动）
+        self.typing: bool = False
+
         # 计划快照注入
         self._last_plan_fingerprint: str = ""
 
@@ -228,6 +231,10 @@ class PlannerSession:
         self.push_event({"type": "thinking", "value": value})
 
     # ── 免打扰 ────────────────────────────────────────────────
+
+    def set_typing(self, typing: bool) -> None:
+        """前端输入框状态：非空 = 正在输入（瞬态，不持久化）。"""
+        self.typing = bool(typing)
 
     def set_dnd(self, enabled: bool, until_hour: int | None = None) -> None:
         with self.buffer_lock:

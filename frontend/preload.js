@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld('planner', {
   togglePanel: () => ipcRenderer.send('toggle-panel'),
   bubbleNudge: () => ipcRenderer.send('bubble-nudge'),
   bubbleMenu: () => ipcRenderer.send('bubble-menu'),
+  setTyping: (typing) => ipcRenderer.send('typing-state', typing),
   moveBubble: (x, y) => ipcRenderer.send('move-bubble', x, y),
   getBubblePos: () => ipcRenderer.invoke('get-bubble-pos'),
   getPanelPos: () => ipcRenderer.invoke('get-panel-pos'),

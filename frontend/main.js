@@ -582,6 +582,15 @@ function toggleDndFromMain() {
 
 // ── IPC：渲染进程 ↔ 主进程 ──────────────────────────────────
 ipcMain.on('toggle-panel', () => togglePanel());
+// 输入框状态同步：非空 = 正在输入（模型生成前提示，临时注入不落库）
+ipcMain.on('typing-state', (e, typing) => {
+  fetch(BACKEND_URL + '/typing', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ typing: !!typing }),
+    signal: AbortSignal.timeout(3000),
+  }).catch(() => {});
+});
 // 单击悬浮球 → 让 AI 主动说一句（气泡显示，不放大窗口）
 ipcMain.on('bubble-nudge', () => {
   fetch(BACKEND_URL + '/nudge', { method: 'POST', signal: AbortSignal.timeout(3000) }).catch(() => {});

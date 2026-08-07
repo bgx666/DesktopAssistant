@@ -200,6 +200,10 @@ class _Handler(BaseHTTPRequestHandler):
             self.session.set_dnd(bool(body.get("enabled", True)),
                                  body.get("until_hour"))
             self._send_json({"ok": True, "dnd": self.session.state_dict()["dnd"]})
+        elif path == "/typing":
+            body = self._read_json_body()
+            self.session.set_typing(bool(body.get("typing", False)))
+            self._send_json({"ok": True})
         elif path == "/nudge":
             now = datetime.now(timezone(timedelta(hours=8))).strftime("%H:%M")
             self.session._receive(f"[{now}] {PLAYER_NAME}戳了戳你，想看看你在忙什么。", trigger=True)

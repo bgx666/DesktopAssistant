@@ -137,6 +137,28 @@ class HeartbeatTrackMiddleware(AgentMiddleware):
         return None
 
 
+# ── 用户正在输入提示 ───────────────────────────────────────
+
+class TypingHintMiddleware(AgentMiddleware):
+    """wrap_model_call：用户输入框非空时，每次 LLM 调用前在上下文末尾临时追加
+    一句提示（只影响本次调用，不落 state / buffer）。"""
+
+    def __init__(self, session) -> None:
+        super().__init__()
+        self.session = session
+
+    def wrap_model_call(self, request, handler: Callable):
+        if self.session.typing:
+            request = request.override(messages=[
+                *request.messages,
+                HumanMessage(
+                    content="（当前用户正在输入文字，可能马上要发消息。"
+                            "如果你生成时用户可能在输入，请别说太多，简短收尾。）",
+                ),
+            ])
+        return handler(request)
+
+
 # ── 停止请求 ─────────────────────────────────────────────
 
 class StopRequestMiddleware(AgentMiddleware):

@@ -601,3 +601,39 @@ def test_heartbeat_may_stay_silent_with_empty_reply(data_root):
         assert any(e["type"] == "text" for e in s.drain_events())
     finally:
         s.close()
+
+
+def test_typing_hint_injected_temporarily(data_root):
+    """输入框非空 → 每次 LLM 调用前上下文末尾临时加"正在输入"提示；
+    不落 buffer（不持久化）。"""
+    from planner.llm import MockChatModel
+
+    class _RecordingMock(MockChatModel):
+        last_msgs: list = []   # pydantic 字段声明（BaseChatModel 是 pydantic 模型）
+
+        def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+            self.last_msgs = list(messages)
+            return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+
+    s = PlannerSession(data_root, mock=True)
+    try:
+        model = _RecordingMock(session=s)
+        s.set_chat_model(model)
+        # 未在输入：末尾无提示
+        _drive_generation(s, "在吗？", "player")
+        assert not any("正在输入" in str(m.content) for m in model.last_msgs)
+        s.drain_events()
+        # 输入中：提示加在上下文最后（每次 LLM 调用前）
+        s.set_typing(True)
+        _drive_generation(s, "帮我看看任务", "player")
+        assert model.last_msgs, "应有 LLM 调用记录"
+        assert "正在输入" in str(model.last_msgs[-1].content), "提示应加在上下文末尾"
+        # 提示不落 buffer（临时注入，不持久化）
+        assert not any("正在输入" in str(m.content) for m in s.recent_buffer)
+        s.drain_events()
+        # 停止输入：提示消失
+        s.set_typing(False)
+        _drive_generation(s, "再说一遍", "player")
+        assert not any("正在输入" in str(m.content) for m in model.last_msgs)
+    finally:
+        s.close()

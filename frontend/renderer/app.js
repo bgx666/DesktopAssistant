@@ -96,6 +96,16 @@
     input.style.height = Math.min(input.scrollHeight, INPUT_MAX_H) + 'px';
   }
   input.addEventListener('input', autoResizeInput);
+  // 输入框非空 = 正在输入 → 通知后端（只在状态变化时发送）
+  let typingSent = false;
+  function syncTypingState() {
+    const typing = input.value.trim().length > 0;
+    if (typing !== typingSent) {
+      typingSent = typing;
+      window.planner.setTyping(typing);
+    }
+  }
+  input.addEventListener('input', syncTypingState);
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();                    // Enter 发送（Shift+Enter 换行）
@@ -109,6 +119,7 @@
     if (!text) return;
     input.value = '';
     input.style.height = 'auto';             // 发送后重置高度
+    syncTypingState();                       // 清空输入 → 退出"正在输入"状态
     $('#send').disabled = true;
     try {
       const r = await post('/chat', { message: text });
