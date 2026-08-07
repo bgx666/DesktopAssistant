@@ -49,7 +49,7 @@
     bubble.className = 'bubble ' + cls;   // bubble user / bubble assistant（颜色区分）
     if (cls === 'assistant' || cls === 'memory') {
       // LLM 生成内容渲染轻量 markdown（加粗/代码）；用户消息保持原文
-      bubble.innerHTML = renderMarkdown(text);
+      bubble.innerHTML = window.md.render(text);
     } else {
       bubble.textContent = text;
     }
