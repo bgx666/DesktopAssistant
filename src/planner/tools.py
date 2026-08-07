@@ -201,8 +201,9 @@ def build_tools(session) -> list[BaseTool]:
     def heartbeat(minutes: float, note: str = "") -> str:
         """设置下次定时唤醒（定时任务）的时间，然后停下来休息。到点后你会醒来检查任务进度、主动和用户说话。
 
-        心跳是分钟级定时任务：minutes 最小 10 分钟（10~720）。
-        用户说话后不要重置心跳——保持你原来定的时间，等用户说话你再回答（一人一句）。"""
+        心跳是分钟级定时任务，不是对话跟进：minutes 最小 10 分钟（10~720）。
+        即使刚回答完用户，也不要设置低于 10 分钟的间隔去跟进；
+        用户说话后不要重置心跳——保持你原来定的时间（一人一句）。"""
         session.set_heartbeat_state(float(minutes), str(note))
         return f"（我先歇 {session._fmt_duration(float(minutes))}，{note or '到点再醒'}。）"
 
