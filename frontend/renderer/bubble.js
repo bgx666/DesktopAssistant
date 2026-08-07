@@ -1,4 +1,4 @@
-// bubble.js —— 悬浮球：纯 JS 拖拽 + 单击说话/双击弹面板 + 右键菜单（状态由主进程推送）
+// bubble.js —— 悬浮球：纯 JS 拖拽 + 单击说话 + 右键菜单（状态由主进程推送）
 (() => {
   'use strict';
 
@@ -53,13 +53,12 @@
     }, 300);
   });
 
-  // 双击 → 放大窗口（变形展开面板）
+  // 双击：无操作（放大走右键菜单）——只清掉单击的延迟说话，避免双击触发两句
   core.addEventListener('dblclick', (e) => {
     if (clickTimer) {
       clearTimeout(clickTimer);
       clickTimer = null;
     }
-    window.planner.togglePanel();
   });
 
   // 右键 → 菜单（打开小助 / 切换免打扰 / 退出）

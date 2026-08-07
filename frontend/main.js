@@ -658,7 +658,7 @@ ipcMain.on('move-bubble', (e, x, y) => {
 });
 ipcMain.on('quit-app', () => doQuit());ipcMain.on('bubble-menu', (e) => {
   const menu = Menu.buildFromTemplate([
-    { label: '打开小助', click: () => togglePanel() },
+    { label: '放大', click: () => togglePanel() },
     { label: '切换免打扰', click: () => toggleDndFromMain() },
     { type: 'separator' },
     { label: '退出', click: () => doQuit() },
