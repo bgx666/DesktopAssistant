@@ -760,6 +760,8 @@ ipcMain.on('quit-app', () => doQuit());ipcMain.on('bubble-menu', (e) => {
       },
     });
   }
+  items.push({ type: 'separator' });
+  items.push({ label: '清除气泡', click: () => clearAllToasts() });
   items.push({ type: 'separator' }, { label: '退出', click: () => doQuit() });
   const menu = Menu.buildFromTemplate(items);
   menu.popup({ window: bubbleWin });
