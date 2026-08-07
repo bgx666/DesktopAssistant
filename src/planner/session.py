@@ -910,8 +910,8 @@ class PlannerSession:
         流式输出：stream_mode=["messages", "values"]——
         - messages：AIMessageChunk 逐 token → push text_stream（面板逐字渲染）；
           非流式模型（mock）yield 完整 AIMessage → 整段作为一条 chunk
-        - values：完整 state（removes 已生效）→ 最终 messages 回写 buffer、
-          set_heartbeat_called 兜底判断；每轮模型文本收束时 push 完整 text（气泡 toast 用）
+        - values：完整 state（removes 已生效）→ 最终 messages 回写 buffer；
+          每轮模型文本收束时 push 完整 text（气泡 toast 用）
         """
         from langchain_core.messages import AIMessage, AIMessageChunk
 
@@ -920,7 +920,6 @@ class PlannerSession:
         with self.buffer_lock:
             input_msgs = list(self.recent_buffer)
         final_messages = None
-        heartbeat_called = False
         current_msg_id = None
         current_chunks = []
         # 已见消息 id（而非 seen_count=len(msgs)）：压缩中间件会 RemoveMessage
@@ -958,8 +957,6 @@ class PlannerSession:
                     msgs = data.get("messages")
                     if msgs is not None:
                         final_messages = msgs
-                    if data.get("set_heartbeat_called"):
-                        heartbeat_called = True
                     # 增量检测工具调用与结果（工具卡片事件）：按消息 id 去重，
                     # 不受压缩 RemoveMessage 收缩列表影响
                     if msgs is not None:
@@ -1000,11 +997,6 @@ class PlannerSession:
                          and getattr(m, "type", None) == "human"]
                 self.recent_buffer = filtered + extra
             self._reorder_node_messages()
-        # 兜底心跳：LLM 没调 heartbeat → 按对话/沉默节奏自适应
-        if not heartbeat_called:
-            minutes = self._next_silent_minutes()
-            _logger.info("[agent] 未调用 heartbeat，兜底 %d 分钟", minutes)
-            self.schedule_heartbeat(minutes)
         self.push_plan_update()
 
     def _reorder_node_messages(self) -> None:

@@ -562,6 +562,34 @@ def test_message_during_generation_not_lost(data_root):
         s.close()
 
 
+def test_generation_without_heartbeat_keeps_original(data_root):
+    """LLM 回复时不调用 heartbeat 工具 → 保持用户原定时间（不再被兜底改成 10 分钟）。
+
+    场景：用户说"40 分钟后叫我"→ 期间又对话 → 对话回复不需要调用心跳工具，
+    原定的 40 分钟必须保持不变。
+    """
+    from planner.llm import MockChatModel
+
+    class _NoHbMock(MockChatModel):
+        def _player_reply(self):
+            return self._make_result("好的，我记住了。")
+
+        def _heartbeat_reply(self):
+            return self._make_result("（已查看，一切正常。）")
+
+    s = PlannerSession(data_root, mock=True)
+    try:
+        s.set_chat_model(_NoHbMock(session=s))
+        s.schedule_heartbeat(40)          # 用户先设 40 分钟
+        s._receive("请 40 分钟后叫我", trigger=True)
+        s.pending_response = False
+        s._generate_response("player")    # 该轮 LLM 不调用 heartbeat 工具
+        assert abs(s._heartbeat_minutes - 40) < 1e-6, \
+            f"心跳被兜底覆盖: {s._heartbeat_minutes}"
+    finally:
+        s.close()
+
+
 def test_gap_hint_not_shown_in_history(data_root):
     """间隔提示在"对你说："之前 → /history 切分后不显示。"""
     s = PlannerSession(data_root, mock=True)
