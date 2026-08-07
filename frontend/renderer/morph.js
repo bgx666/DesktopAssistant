@@ -10,8 +10,8 @@
   // 动画参数（与主进程 PANEL_W/H、BUBBLE_SIZE 对应）
   const STAGE_W = 350;
   const STAGE_H = 520;
-  const BUBBLE_SIZE = 56;
-  const SCALE0 = BUBBLE_SIZE / STAGE_W;   // 球形态 scale ≈ 0.16
+  const BUBBLE_SIZE = 100;   // 球形态窗口尺寸（辉光留白）
+  const SCALE0 = BUBBLE_SIZE / STAGE_W;   // 球形态 scale ≈ 0.29
 
   const stage = document.getElementById('morph-stage');
   const ball = document.getElementById('morph-ball');

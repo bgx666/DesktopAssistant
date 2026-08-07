@@ -17,7 +17,7 @@ if (process.env.PLANNER_USER_DATA) {
   app.setPath('userData', process.env.PLANNER_USER_DATA);
 }
 
-const BUBBLE_SIZE = 56;      // 悬浮球尺寸
+const BUBBLE_SIZE = 100;     // 悬浮球窗口尺寸（core 44px 居中，四周留 ~28px 给辉光）
 const PANEL_W = 350;         // 面板宽
 const PANEL_H = 520;         // 面板高
 
@@ -223,13 +223,17 @@ function resetPanelState() {
   ignoreBlurUntil = 0;
 }
 
-// ── 面板目标位置：贴悬浮球旁边，夹在屏幕工作区内 ──────────────
+// ── 面板目标位置：贴悬浮球视觉边缘旁，夹在屏幕工作区内 ──────────
 function panelTargetPos() {
   const b = bubbleWin.getBounds();
   const disp = screen.getDisplayNearestPoint({ x: b.x, y: b.y }).workArea;
-  let x = b.x + b.width + 6;
-  let y = b.y - Math.round(PANEL_H / 2) + Math.round(BUBBLE_SIZE / 2);
-  if (x + PANEL_W > disp.x + disp.width) x = b.x - PANEL_W - 6;
+  // 球窗口比视觉球大（辉光留白）：以球视觉中心（=窗口中心）定位，面板贴球边缘
+  const ballCX = b.x + b.width / 2;
+  const ballCY = b.y + b.height / 2;
+  const BALL_R = 22;   // 视觉球半径（44/2）
+  let x = ballCX + BALL_R + 6;
+  let y = ballCY - Math.round(PANEL_H / 2);
+  if (x + PANEL_W > disp.x + disp.width) x = ballCX - BALL_R - PANEL_W - 6;
   x = Math.max(disp.x + 4, Math.min(x, disp.x + disp.width - PANEL_W - 4));
   y = Math.max(disp.y + 4, Math.min(y, disp.y + disp.height - PANEL_H - 4));
   return { x: Math.round(x), y: Math.round(y) };
@@ -347,7 +351,12 @@ function morphOut() {
   // - 面板被拖离过展开位置 → 悬浮球移到面板当前位置，原地缩成球（跟随面板）
   // - 面板没动过 → 球保持原位，缩回展开前的位置（不漂移）
   if (panelDragged && bubbleWin && !bubbleWin.isDestroyed()) {
-    bubbleWin.setPosition(from.x, from.y);
+    // 球窗口对齐面板中心（窗口比视觉球大，球视觉居中 → 视觉球落在面板中心）
+    const bw = bubbleWin.getBounds();
+    bubbleWin.setPosition(
+      Math.round(from.x + (from.width - bw.width) / 2),
+      Math.round(from.y + (from.height - bw.height) / 2),
+    );
   }
   const to = bubbleWin.getBounds();
   panelState = 'morphing_out';
@@ -486,8 +495,13 @@ function layoutToasts() {
     Math.min(b ? Math.round(b.x + b.width / 2 - TOAST_W / 2) : disp.x + 40,
              disp.x + disp.width - TOAST_W - 4));
   const above = b ? (b.y - 20 >= disp.y + 4) : true;
+  // 球视觉顶部（窗口比视觉球大：core 44px 居中，四周留白）
+  const ballTop = b ? b.y + Math.round((b.height - 44) / 2) : 0;
+  const ballBottom = b ? ballTop + 44 : 0;
   // 游标：above → 下一个气泡的底部位置；否则 → 下一个气泡的顶部位置
-  let cursor = above ? (b ? b.y - 10 : disp.y + 40 + 110) : (b ? b.y + b.height + 10 : disp.y + 40);
+  let cursor = above
+    ? (b ? ballTop - 10 : disp.y + 40 + 110)
+    : (b ? ballBottom + 10 : disp.y + 40);
   for (const win of toastWins) {
     if (win.isDestroyed()) continue;
     const h = win.getBounds().height;
