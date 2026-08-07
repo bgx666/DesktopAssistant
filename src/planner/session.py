@@ -949,12 +949,20 @@ class PlannerSession:
             with self.buffer_lock:
                 # 过滤"无话可说"的空回复（无文本且无工具调用）：
                 # 心跳允许留空，空 AI 消息不落 buffer（避免污染后续上下文）
-                self.recent_buffer = [
+                filtered = [
                     m for m in final_messages
                     if not (getattr(m, "type", None) == "ai"
                             and not str(getattr(m, "content", "") or "").strip()
                             and not getattr(m, "tool_calls", None))
                 ]
+                # 生成期间新追加的消息不能被 final_messages 回写覆盖：
+                # 输入是 buffer 快照，期间到达的玩家消息（语音/打字）必须保留，
+                # 交由下一轮生成处理（pending_response 已由 enqueue 置位）
+                in_ids = {getattr(m, "id", None) or id(m) for m in input_msgs}
+                extra = [m for m in self.recent_buffer
+                         if (getattr(m, "id", None) or id(m)) not in in_ids
+                         and getattr(m, "type", None) == "human"]
+                self.recent_buffer = filtered + extra
             self._reorder_node_messages()
         # 兜底心跳：LLM 没调 heartbeat → 按对话/沉默节奏自适应
         if not heartbeat_called:

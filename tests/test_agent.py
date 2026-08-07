@@ -528,6 +528,40 @@ def test_player_message_carries_gap_hint(data_root):
         s.close()
 
 
+def test_message_during_generation_not_lost(data_root):
+    """生成期间到达的玩家消息不被 final_messages 回写覆盖（语音偶发丢失根因）。"""
+    import threading
+    import time as _time
+    from planner.llm import MockChatModel
+
+    class _SlowMock(MockChatModel):
+        def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+            _time.sleep(0.4)   # 拉长生成窗口，暴露竞态
+            return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+
+    s = PlannerSession(data_root, mock=True)
+    try:
+        s.set_chat_model(_SlowMock(session=s))
+        s._player_worker = lambda: None   # 禁掉 enqueue 的生成线程（手动控制时序）
+        # 心跳生成开始（后台线程）
+        s._receive("（系统：心跳到了，请主动和用户说话。）", trigger=True)
+        s.pending_response = False
+        t = threading.Thread(target=s._generate_response, args=("heartbeat",))
+        t.start()
+        _time.sleep(0.05)                # 确保生成已开始（输入快照已取）
+        # 生成进行中：玩家语音消息到达
+        s.enqueue_player_message("语音内容测试")
+        t.join(15)
+        assert not t.is_alive(), "生成线程未结束"
+        human_contents = [str(m.content) for m in s.recent_buffer
+                          if getattr(m, "type", "") == "human"]
+        assert any("语音内容测试" in c for c in human_contents), (
+            "生成中到达的玩家消息被回写覆盖丢失"
+        )
+    finally:
+        s.close()
+
+
 def test_gap_hint_not_shown_in_history(data_root):
     """间隔提示在"对你说："之前 → /history 切分后不显示。"""
     s = PlannerSession(data_root, mock=True)
