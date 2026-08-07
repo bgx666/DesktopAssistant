@@ -2,11 +2,17 @@
 // 用法：const stop = await window.mic.begin();
 //       按住说话结束：const wav = await stop();       // Uint8Array 或 null
 //       取消：await stop(true);                       // 丢弃录音
+//
+// 关键设计：麦克风流常驻（init 一次后不再释放）。实测 getUserMedia
+// 每次启动 0.4~1.3s，而 MediaRecorder 创建 0ms——保持流常驻后，
+// 每次录音几乎零延迟，变红即开录，不会丢说话内容。
 (() => {
   'use strict';
 
   const SR = 16000;
   let audioCtx = null;
+  let sharedStream = null;    // 常驻麦克风流（应用生命周期内不释放）
+  let streamPromise = null;   // init 幂等（并发调用共享同一个初始化）
 
   async function getCtx() {
     if (!audioCtx) {
@@ -15,16 +21,36 @@
     return audioCtx;
   }
 
+  // 确保常驻流就绪（幂等；失败可重试）
+  function init() {
+    if (!streamPromise) {
+      streamPromise = navigator.mediaDevices.getUserMedia({ audio: true })
+        .then((s) => {
+          sharedStream = s;
+          return s;
+        })
+        .catch((err) => {
+          streamPromise = null;   // 失败后允许下次重试
+          throw err;
+        });
+    }
+    return streamPromise;
+  }
+
+  function isReady() {
+    return !!sharedStream;
+  }
+
   async function begin() {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const stream = await init();   // 常驻流：首次启动 0.4~1.3s，之后 ~0ms
     const rec = new MediaRecorder(stream);
     const chunks = [];
     rec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
     rec.start();
-    // 返回停止函数：stop() → wav bytes（Promise）；stop(true) → 取消
+    // 返回停止函数：stop() → wav bytes（Promise）；stop(true) → 取消。
+    // 流不释放（常驻），下次录音零启动延迟。
     return (cancel) => new Promise((resolve) => {
       rec.onstop = async () => {
-        try { stream.getTracks().forEach((t) => t.stop()); } catch { /* 忽略 */ }
         if (cancel) { resolve(null); return; }
         try {
           const blob = new Blob(chunks, { type: rec.mimeType || 'audio/webm' });
@@ -75,5 +101,5 @@
     return new Uint8Array(buffer);
   }
 
-  window.mic = { begin };
+  window.mic = { begin, init, isReady };
 })();

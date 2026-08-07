@@ -1,10 +1,10 @@
 // bubble.js —— 悬浮球：单击显示最近回复 / 长按说话 / 拖拽 / 右键菜单
 // 交互约定：
 // - 左键按住 <150ms 松开（单击）→ 显示模型最近回答的一条消息（气泡）
-// - 左键按住 ≥150ms → 进入语音输入（立即变红），松开发送
+// - 左键按住 ≥150ms → 进入语音输入（变红即开录，麦克风流常驻零延迟），松开发送
 // - 移动 ≥6px → 拖动球（取消录音）；右键 → 菜单（不变）
-// 说明：麦克风初始化（getUserMedia）实测 0.4~1.3s，按下时即预启动（异步），
-// 判定触发立即变红（不等麦克风），就绪后自动开录——反馈与录音都尽量提前。
+// 说明：getUserMedia 实测首次 1.3s / 之后 0.4~0.6s，MediaRecorder 0ms——
+// mic.js 保持常驻流，录音几乎零延迟；变红与录音同步（流未就绪不提前变红）。
 (() => {
   'use strict';
 
@@ -32,7 +32,8 @@
       winX = pos.x;
       winY = pos.y;
     });
-    // 预启动麦克风（异步初始化；松开早于就绪 → 丢弃）
+    // 预启动麦克风（异步初始化；松开早于就绪 → 丢弃）。
+    // 常驻流就绪后 begin() 即 resolve，录音与 mousedown 几乎同步开始。
     micPromise = window.mic.begin().then((stop) => {
       if (!dragging) { stop(true); return null; }
       micStop = stop;
@@ -41,11 +42,18 @@
       micStop = null;
       return null;
     });
-    // 150ms 未松开 → 判定为长按：立即变红（不等麦克风就绪）
+    // 150ms 未松开 → 判定为长按：变红提示（与录音同步，不丢语音）
     pressTimer = setTimeout(() => {
       pressTimer = null;
       longPress = true;
-      core.classList.add('recording');
+      if (window.mic.isReady()) {
+        core.classList.add('recording');   // 常驻流就绪：判定即变红，录音已在录
+      } else {
+        // 流未就绪（首次冷启动）：等就绪后再变红（此时才真正开录）
+        micPromise.then(() => {
+          if (longPress) core.classList.add('recording');
+        });
+      }
     }, 150);
   });
 
