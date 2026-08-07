@@ -52,10 +52,7 @@ html, body {
   font-size: 13px;
   line-height: 1.5;
   color: #2b2f38;
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
+  white-space: pre-wrap;      /* 完整显示，长文本自动撑高（窗口随内容自适应） */
   word-break: break-word;
 }
 

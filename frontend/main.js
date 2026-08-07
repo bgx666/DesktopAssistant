@@ -404,8 +404,8 @@ function killBackend() {
 // 从悬浮球上方由下往上堆叠（新消息在最下面、旧的被顶上去）；
 // 每个气泡生存 TOAST_MS 后自动消失；点击气泡展开面板。
 const TOAST_W = 280;
-const TOAST_H = 110;
-const TOAST_MS = 20000;                 // 每个气泡生存 20 秒
+const TOAST_H = 110;                 // 初始高度（内容多高窗口自适应多高）
+const TOAST_MS = 20000;              // 每个气泡生存 20 秒
 
 let toastWins = [];                     // 堆叠的气泡窗口（[0] 最靠近球=最新）
 
@@ -459,7 +459,8 @@ function clearAllToasts() {
 }
 
 // 堆叠布局：从悬浮球上方由下往上排（[0] 最新、最靠近球），
-// 球上方放不下时改在球下方往下排；全程夹在工作区内
+// 球上方放不下时改在球下方往下排；全程夹在工作区内。
+// 高度按各窗口实际高度动态累积（长文本气泡自适应撑高）。
 function layoutToasts() {
   if (!toastWins.length) return;
   const b = bubbleWin && !bubbleWin.isDestroyed() ? bubbleWin.getBounds() : null;
@@ -469,18 +470,18 @@ function layoutToasts() {
   const x = Math.max(disp.x + 4,
     Math.min(b ? Math.round(b.x + b.width / 2 - TOAST_W / 2) : disp.x + 40,
              disp.x + disp.width - TOAST_W - 4));
-  const above = b ? (b.y - TOAST_H - 10 >= disp.y + 4) : true;
-  const baseY = above
-    ? (b ? b.y - TOAST_H - 10 : disp.y + 40)
-    : (b ? b.y + b.height + 10 : disp.y + 40);
-  const step = TOAST_H + 6;
+  const above = b ? (b.y - 20 >= disp.y + 4) : true;   // 球上方至少留首个气泡空间
+  // 游标：above → 下一个气泡的底部位置；否则 → 下一个气泡的顶部位置
+  let cursor = above ? (b ? b.y - 10 : disp.y + 40 + 110) : (b ? b.y + b.height + 10 : disp.y + 40);
   for (let i = 0; i < toastWins.length; i++) {
     const win = toastWins[i];
     if (win.isDestroyed()) continue;
+    const h = win.getBounds().height;
+    const top = above ? cursor - h : cursor;
     const wy = Math.max(disp.y + 4,
-      Math.min(above ? baseY - i * step : baseY + i * step,
-               disp.y + disp.height - TOAST_H - 4));
-    win.setBounds({ x, y: wy, width: TOAST_W, height: TOAST_H });
+      Math.min(top, disp.y + disp.height - h - 4));
+    win.setBounds({ x, y: wy, width: TOAST_W, height: h });
+    cursor = above ? top - 6 : cursor + h + 6;
   }
 }
 
@@ -599,6 +600,16 @@ ipcMain.on('typing-state', (e, typing) => {
 // （nudge 端点保留供未来使用，前端入口已移除）
 ipcMain.handle('get-panel-state', () => panelState);
 ipcMain.on('toast-show', (e, text) => showToast(text));
+// 气泡内容高度 → 窗口自适应（完整显示长文本，不做省略号）
+ipcMain.on('toast-resize', (e, h) => {
+  const win = BrowserWindow.fromWebContents(e.sender);
+  if (!win || win.isDestroyed()) return;
+  const nh = Math.max(60, Math.min(480, Math.round(h)));
+  const b = win.getBounds();
+  if (Math.abs(b.height - nh) < 2) return;
+  win.setBounds({ x: b.x, y: b.y, width: TOAST_W, height: nh });
+  layoutToasts();
+});
 ipcMain.on('toast-click', (e) => {
   // 点击气泡 → 销毁该气泡并展开面板（其余气泡也清掉）
   const win = BrowserWindow.fromWebContents(e.sender);
