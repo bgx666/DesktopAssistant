@@ -20,12 +20,12 @@ html, body {
   justify-content: center;
 }
 
-/* 中心圆：扁平赛博朋克霓虹青（无阴影无渐变），细白描边 */
+/* 中心圆：低饱和柔青（赛博配色降饱和），细白描边 */
 #core {
   width: 44px;
   height: 44px;
   border-radius: 50%;
-  background: #00e5ff;
+  background: #4fd0c5;
   border: 1px solid rgba(255, 255, 255, 0.4);
   box-shadow: none;
   position: relative;
@@ -35,9 +35,9 @@ html, body {
 #core:hover { transform: scale(1.05); }
 #core:active { transform: scale(0.96); }
 
-/* 录音中（按住说话）：状态点紫色脉冲（赛博朋克），雷达环三色随声音伸缩 */
+/* 录音中（按住说话）：状态点柔紫脉冲，雷达环低饱和三色随声音伸缩 */
 #core.recording #status-dot {
-  background: #b026ff;
+  background: #a99ae8;
   animation: pulse 0.9s infinite;
 }
 
@@ -65,11 +65,11 @@ html, body {
 }
 /* 雷达轮辐（中心到边缘的淡辐射线，增强雷达图感） */
 #ring-spokes line {
-  stroke: rgba(0, 240, 255, 0.3);
+  stroke: rgba(111, 216, 207, 0.3);
   stroke-width: 1;
 }
 
-/* 状态点（球心居中，对称）：在线霓虹青 / 思考中品红脉冲 / 离线红 / 录音紫脉冲（赛博朋克） */
+/* 状态点（球心居中，对称）：在线偏绿（与圆环区分）/ 思考中柔粉脉冲 / 离线红 / 录音柔紫脉冲 */
 #status-dot {
   position: absolute;
   left: 50%;
@@ -78,13 +78,13 @@ html, body {
   height: 18px;
   margin: -9px 0 0 -9px;
   border-radius: 50%;
-  background: #00e5ff;
+  background: #74d89c;
   border: 2px solid #fff;
   box-sizing: border-box;
   z-index: 1;
 }
 #status-dot.thinking {
-  background: #ff2e97;
+  background: #e08fc0;
   animation: pulse 0.9s infinite;
 }
 #status-dot.offline {

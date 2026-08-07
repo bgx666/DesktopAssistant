@@ -28,7 +28,7 @@
   const RING_CX = 50, RING_CY = 50; // 视图中心（100×100 视口，与球心重合）
   const RING_R = 21;                // 球边缘半径（球 44px → 半径 22，贴边微缩）
   const RING_AMP = 5;               // 音量波动幅度
-  const CYBER_COLORS = ['#00f0ff', '#ff2e97', '#b026ff'];  // 赛博朋克：霓虹青/品红/紫
+  const CYBER_COLORS = ['#6fd8cf', '#e59cc0', '#a99ae8'];  // 低饱和赛博：柔青/柔粉/柔紫
   let ringRaf = null;
   let ringEdges = [];
   let ringPts = [];
