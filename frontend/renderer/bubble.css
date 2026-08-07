@@ -96,7 +96,7 @@ html, body {
   z-index: 1;
 }
 #status-dot.thinking {
-  background: #e08fc0;
+  background: #4da6ff;
   animation: pulse 0.9s infinite;
 }
 #status-dot.offline {
