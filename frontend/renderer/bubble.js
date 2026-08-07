@@ -27,6 +27,7 @@
   const RING_N = 12;                // 顶点数
   const RING_CX = 50, RING_CY = 50; // 视图中心（100×100 视口，与球心重合）
   const RING_R = 21;                // 最大半径（球边缘）
+  const CYBER_COLORS = ['#6fd8cf', '#e59cc0', '#a99ae8'];  // 低饱和赛博：柔青/柔粉/柔紫
   let ringRaf = null;
   let ringEdges = [];
   let ringPts = [];
