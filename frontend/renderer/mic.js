@@ -56,7 +56,7 @@
           const blob = new Blob(chunks, { type: rec.mimeType || 'audio/webm' });
           const buf = await (await getCtx()).decodeAudioData(await blob.arrayBuffer());
           const samples = resampleTo16k(buf);
-          if (!samples || samples.length < SR * 0.3) { resolve(null); return; }
+          if (!samples || samples.length < SR * 0.5) { resolve(null); return; }   // <500ms 视为无效
           resolve(encodeWav(samples));
         } catch {
           resolve(null);

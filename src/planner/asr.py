@@ -153,7 +153,7 @@ class AsrClient:
         if not self._enabled:
             return None
         waveform = wav_to_float32(wav_bytes)
-        if waveform is None or len(waveform) < _TARGET_SR * 0.3:  # 太短（<0.3s）无意义
+        if waveform is None or len(waveform) < _TARGET_SR * 0.5:  # 太短（<0.5s）无意义
             return None
         with self._lock:
             model = self._model
