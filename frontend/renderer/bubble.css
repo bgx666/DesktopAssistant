@@ -35,17 +35,25 @@ html, body {
 #core:hover { transform: scale(1.05); }
 #core:active { transform: scale(0.96); }
 
-/* 左上角高光点：球内部（圆环内）的小白点，模拟受光；
-   7px 尺寸外移避开中心状态点（右缘/下缘与 18px 状态点不重叠），且不出球界 */
+/* 高光点：绕球心匀速旋转（保持当前半径 ≈13√2 ≈ 18.4px），起始角度每次随机 */
 #core::before {
   content: "";
   position: absolute;
-  left: 22%;
-  top: 19%;
+  left: 50%;
+  top: 50%;
   width: 7px;
   height: 7px;
+  margin: -3.5px 0 0 -3.5px;
   border-radius: 50%;
   background: rgba(255, 255, 255, 0.7);
+  /* 先平移到球心左上 13,13（距球心 18.4px），原点设回球心 → 绕球心旋转 */
+  transform: translate(13px, -13px) rotate(0deg);
+  transform-origin: -13px 13px;
+  animation: orbit 8s linear infinite;
+  animation-delay: var(--orbit-delay, 0s);
+}
+@keyframes orbit {
+  to { transform: translate(13px, -13px) rotate(360deg); }
 }
 
 /* 录音中（按住说话）：状态点柔紫脉冲，雷达环低饱和三色随声音伸缩 */

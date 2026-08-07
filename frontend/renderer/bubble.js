@@ -10,6 +10,9 @@
 
   const core = document.getElementById('core');
 
+  // 高光点绕球心旋转：每次启动随机起始角度（负 delay 使动画从随机位置开始）
+  document.documentElement.style.setProperty('--orbit-delay', (-Math.random() * 8).toFixed(2) + 's');
+
   // ── 手动拖拽（不用 -webkit-app-region，透明窗口上它吞点击事件）──
   let dragging = false;
   let startX = 0, startY = 0;
