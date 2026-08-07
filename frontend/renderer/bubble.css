@@ -37,11 +37,11 @@ html, body {
 }
 #core:active { transform: scale(0.96); }
 
-/* 录音中（按住说话）：球保持蓝色渐变，中间状态点变红脉冲（整体不再变红）；
-   球外音量环随声音伸缩（见 #sound-ring） */
+/* 录音中（按住说话）：球保持蓝色渐变，中间状态点变青脉冲（初音青，不紧张）；
+   球外音量环同色系随声音伸缩（见 #sound-ring） */
 #core.recording #status-dot {
-  background: #ff6b81;
-  box-shadow: 0 0 12px rgba(255, 107, 129, 0.9), 0 1px 4px rgba(0, 0, 0, 0.2);
+  background: #39c5bb;
+  box-shadow: 0 0 8px rgba(57, 197, 187, 0.7);
   animation: pulse 0.9s infinite;
 }
 
@@ -60,13 +60,13 @@ html, body {
 #sound-ring.active { opacity: 1; }
 #ring-line {
   fill: none;
-  stroke: #ff8fa3;
+  stroke: #7deee3;
   stroke-width: 2;
   stroke-linejoin: round;
   stroke-linecap: round;
 }
 #ring-points circle {
-  fill: #ff8fa3;
+  fill: #7deee3;
 }
 
 /* 状态点（球心居中，对称）：在线绿 / 思考中蓝脉冲 / 离线红 / 录音红 */
