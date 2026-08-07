@@ -1022,8 +1022,6 @@ class PlannerSession:
         if mtype == "ai" and getattr(m, "tool_calls", None):
             for tc in m.tool_calls:
                 name = tc.get("name", "?")
-                if name == "heartbeat":
-                    continue   # 心跳收尾不算工具动作，不展示
                 try:
                     args = tc.get("args", {})
                 except Exception:

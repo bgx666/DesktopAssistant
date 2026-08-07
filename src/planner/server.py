@@ -144,11 +144,9 @@ class _Handler(BaseHTTPRequestHandler):
                 elif role == "ai":
                     if content:
                         msgs.append({"role": "assistant", "content": content})
-                    # 历史工具调用卡片（与实时事件一致：heartbeat 不展示）
+                    # 历史工具调用卡片（与实时事件一致）
                     for tc in (getattr(m, "tool_calls", None) or []):
                         name = tc.get("name", "?")
-                        if name == "heartbeat":
-                            continue
                         msgs.append({"role": "tool_call", "id": tc.get("id", ""),
                                      "name": name, "args": tc.get("args", {})})
                 elif role == "tool":

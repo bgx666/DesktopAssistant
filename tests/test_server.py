@@ -109,7 +109,7 @@ def test_undo_endpoint(backend):
 
 
 def test_history_contains_tool_cards(backend):
-    """历史消息应包含工具调用卡片（tool_call + tool_result，heartbeat 除外）。"""
+    """历史消息应包含工具调用卡片（tool_call + tool_result，含 heartbeat 定时唤醒）。"""
     _, base = backend
     r = _post(base, "/chat", {"message": "帮我安排学习计划"})
     assert r["ok"] is True
@@ -124,7 +124,6 @@ def test_history_contains_tool_cards(backend):
     # 每个 tool_call 都有对应 id 的 tool_result（工具已完成）
     for c in calls:
         assert any(rr["id"] == c["id"] for rr in results), "tool_call 应有对应 tool_result"
-        assert c["name"] != "heartbeat", "heartbeat 不展示"
     assert any(rr.get("content") for rr in results), "工具结果应有内容"
 
 

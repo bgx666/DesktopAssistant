@@ -271,12 +271,18 @@
 
   // 工具卡片（实时转圈 / 历史已完成共用）：addToolCard 创建，
   // setToolResult 填充结果。
+  // 工具显示名映射（英文工具名 → 中文展示）
+  const TOOL_DISPLAY = { heartbeat: '设置定时唤醒' };
+  function toolDisplayName(name) {
+    return TOOL_DISPLAY[name] || name;
+  }
+
   function addToolCard(name, args, id, done) {
     const card = document.createElement('div');
     card.className = done ? 'tool-card done' : 'tool-card running';
     const argsText = args ? JSON.stringify(args, null, 1) : '';
     card.innerHTML = `
-      <div class="tool-head">${done ? '<span class="tool-check">✓</span>' : '<span class="tool-spinner"></span>正在执行 '}${escapeHtml(name)}</div>
+      <div class="tool-head">${done ? '<span class="tool-check">✓</span>' : '<span class="tool-spinner"></span>正在执行 '}${escapeHtml(toolDisplayName(name))}</div>
       <div class="tool-detail">
         ${argsText ? `<div class="tool-sec">参数</div><pre class="tool-pre">${escapeHtml(argsText)}</pre>` : ''}
         <div class="tool-sec">结果</div><pre class="tool-pre tool-result">…</pre>

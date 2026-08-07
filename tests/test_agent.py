@@ -37,11 +37,11 @@ def test_player_message_creates_task(data_root):
             by_id.setdefault(e["msg_id"], []).append(e["content"])
         joined = "".join("".join(v) for v in by_id.values())
         assert joined == texts[0]["content"], "流式拼接应与完整文本一致"
-        # 工具调用卡片事件：tool_call 在前、tool_result 在后（heartbeat 不展示）
+        # 工具调用卡片事件：tool_call 在前、tool_result 在后（含 heartbeat 定时唤醒）
         tool_calls = [e for e in events if e["type"] == "tool_call"]
         tool_results = [e for e in events if e["type"] == "tool_result"]
         assert tool_calls, "应有 tool_call 事件"
-        assert all(e["name"] != "heartbeat" for e in tool_calls)
+        assert any(e["name"] == "heartbeat" for e in tool_calls), "heartbeat 也应展示卡片"
         assert len(tool_results) >= len(tool_calls)
         for tc in tool_calls:
             assert any(r["id"] == tc["id"] for r in tool_results), "tool_result 应对应 tool_call"
