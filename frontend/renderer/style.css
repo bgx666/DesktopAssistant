@@ -312,13 +312,26 @@ body {
 .undo-btn:hover { color: var(--danger); background: rgba(255, 107, 129, 0.10); }
 .undo-btn:disabled { opacity: 0.3; cursor: default; }
 @keyframes msgIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
-#input-bar { display: flex; gap: 8px; padding-top: 10px; }
+#input-bar {
+  display: flex;
+  flex-direction: column;   /* 输入框独占一行，按钮第二行右对齐（不再挤压输入框） */
+  gap: 6px;
+  padding-top: 10px;
+}
+
+/* 第二行：停止（条件显示）| 🎤 | 发送，右对齐（停止出现时其余按钮不跳动） */
+#input-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+}
 
 /* ── 回到最新消息按钮（向上翻历史时出现）── */
 #jump-bottom {
   position: absolute;
   right: 14px;
-  bottom: 56px;                       /* input-bar 上方 */
+  bottom: 118px;                      /* 输入区上方（两行布局：输入框 + 按钮行） */
   width: 34px; height: 34px;
   border: 1px solid var(--line);
   border-radius: 50%;
