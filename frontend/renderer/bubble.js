@@ -1,4 +1,4 @@
-// bubble.js —— 悬浮球：纯 JS 拖拽 + 点击弹面板 + 右键菜单（状态由主进程推送）
+// bubble.js —— 悬浮球：纯 JS 拖拽 + 单击说话/双击弹面板 + 右键菜单（状态由主进程推送）
 (() => {
   'use strict';
 
@@ -10,6 +10,7 @@
   let startX = 0, startY = 0;
   let winX = 0, winY = 0;
   let lastMoveX = 0, lastMoveY = 0;
+  let clickTimer = null;   // 单击延迟 300ms 等双击：双击时不触发"说话"
 
   core.addEventListener('mousedown', async (e) => {
     if (e.button !== 0) return;
@@ -38,9 +39,27 @@
     dragging = false;
     const dx = e.screenX - startX;
     const dy = e.screenY - startY;
-    if (Math.abs(dx) < 6 && Math.abs(dy) < 6) {
-      window.planner.togglePanel(); // 原地点击 → 弹出/收起面板
+    if (Math.abs(dx) >= 6 || Math.abs(dy) >= 6) return;
+    // 原地点击：先等 300ms 看是否构成双击
+    // （双击的第一击也走这里：timer 已存在 → 清掉等待第二击，不触发说话）
+    if (clickTimer) {
+      clearTimeout(clickTimer);
+      clickTimer = null;
+      return;
     }
+    clickTimer = setTimeout(() => {
+      clickTimer = null;
+      window.planner.bubbleNudge(); // 单击 → 让 AI 主动说一句（气泡显示）
+    }, 300);
+  });
+
+  // 双击 → 放大窗口（变形展开面板）
+  core.addEventListener('dblclick', (e) => {
+    if (clickTimer) {
+      clearTimeout(clickTimer);
+      clickTimer = null;
+    }
+    window.planner.togglePanel();
   });
 
   // 右键 → 菜单（打开小助 / 切换免打扰 / 退出）

@@ -582,6 +582,10 @@ function toggleDndFromMain() {
 
 // ── IPC：渲染进程 ↔ 主进程 ──────────────────────────────────
 ipcMain.on('toggle-panel', () => togglePanel());
+// 单击悬浮球 → 让 AI 主动说一句（气泡显示，不放大窗口）
+ipcMain.on('bubble-nudge', () => {
+  fetch(BACKEND_URL + '/nudge', { method: 'POST', signal: AbortSignal.timeout(3000) }).catch(() => {});
+});
 ipcMain.handle('get-panel-state', () => panelState);
 ipcMain.on('toast-show', (e, text) => showToast(text));
 ipcMain.on('toast-click', (e) => {

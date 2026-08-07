@@ -78,7 +78,7 @@ class PlannerSession:
         self._generating: bool = False
         self._inbox: list[BaseMessage] = []
         self.pending_response: bool = False
-        self.current_trigger: str = "player"   # player | heartbeat | scheduled
+        self.current_trigger: str = "player"   # player | heartbeat | scheduled | nudge
 
         # 对外状态
         self.thinking: bool = False

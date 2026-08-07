@@ -43,7 +43,7 @@ class PlannerState(AgentState):
 class DndGuardMiddleware(AgentMiddleware):
     """before_agent：免打扰时段内，自主触发（非玩家消息）→ 跳 end。
 
-    玩家消息永远不受限（用户主动找你肯定要回）。
+    玩家消息与 nudge（用户主动戳悬浮球）永远不受限——用户主动交互肯定要回。
     """
 
     def __init__(self, session) -> None:
@@ -52,7 +52,7 @@ class DndGuardMiddleware(AgentMiddleware):
 
     @hook_config(can_jump_to=["end"])
     def before_agent(self, state: PlannerState, runtime: Runtime) -> dict | None:
-        if self.session.in_dnd() and self.session.current_trigger != "player":
+        if self.session.in_dnd() and self.session.current_trigger not in ("player", "nudge"):
             _logger.info("[dnd] 免打扰时段，跳过自主触发")
             self.session.push_log("（免打扰时段，暂不打扰。）")
             return {"jump_to": "end"}
