@@ -1,7 +1,7 @@
 // bubble.js —— 悬浮球：单击显示最近回复 / 长按说话 / 拖拽 / 右键菜单
 // 交互约定：
-// - 左键按住 <100ms 松开（单击）→ 显示模型最近回答的一条消息（气泡）
-// - 左键按住 ≥100ms → 进入语音输入（变红脉冲），松开发送
+// - 左键按住 <50ms 松开（单击）→ 显示模型最近回答的一条消息（气泡）
+// - 左键按住 ≥50ms → 进入语音输入（变红脉冲），松开发送
 // - 移动 ≥6px → 拖动球（取消录音）；右键 → 菜单（不变）
 (() => {
   'use strict';
@@ -13,7 +13,7 @@
   let startX = 0, startY = 0;
   let winX = 0, winY = 0;
   let lastMoveX = 0, lastMoveY = 0;
-  let pressTimer = null;     // 100ms 长按判定定时器
+  let pressTimer = null;     // 50ms 长按判定定时器
   let longPress = false;     // 已进入长按（录音）状态
   let micStop = null;        // 录音停止函数（录制中）
   let micPromise = null;     // begin() 的 Promise（松开时还没准备好）
@@ -30,7 +30,7 @@
       winX = pos.x;
       winY = pos.y;
     });
-    // 100ms 未松开 → 判定为长按：开始录音
+    // 50ms 未松开 → 判定为长按：开始录音
     pressTimer = setTimeout(() => {
       pressTimer = null;
       longPress = true;
@@ -47,7 +47,7 @@
       } catch {
         micPromise = null;
       }
-    }, 100);
+    }, 50);
   });
 
   function cancelMic() {
