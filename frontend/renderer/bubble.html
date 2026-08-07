@@ -10,9 +10,10 @@
 <body>
   <!-- 悬浮球：单击看最近回复 / 长按说话（点变青 + 球边缘雷达波形）/ 拖拽 / 右键菜单 -->
   <div id="ball">
-    <div id="core" title="单击：看小助最近说了什么；长按：说话；右键：放大/免打扰/退出">
+    <div id="core" title="单击：看小助最近说了什么；长按：说话；拖文件到这里：挂载后语音一起发送；右键：更多">
       <span id="status-dot"></span>
       <span id="badge" class="hidden"></span>
+      <span id="file-badge" class="hidden"></span>
     </div>
     <!-- 录音雷达环：12 顶点 12 边形（赛博朋克青/品红/紫三色边），盖在球上层 -->
     <svg id="sound-ring" viewBox="0 0 100 100">
@@ -24,6 +25,7 @@
   <!-- 语音播报（气泡朗读）：audio 事件设 src 播放 -->
   <audio id="tts-audio" hidden></audio>
   <script src="mic.js"></script>
+  <script src="fileDrop.js"></script>
   <script src="bubble.js"></script>
 </body>
 </html>

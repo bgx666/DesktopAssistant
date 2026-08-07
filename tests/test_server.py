@@ -4,6 +4,7 @@ import json
 import threading
 import time
 import urllib.request
+from pathlib import Path
 
 import pytest
 
@@ -273,6 +274,90 @@ def test_init_exposes_asr(backend):
     session.asr = SimpleNamespace(enabled=True, ready=False)
     d = _get(base, "/init")
     assert d["asr"] == {"enabled": True, "ready": False}
+
+
+def test_chat_with_files_injection(backend):
+    """/chat 带 files → 注入消息含附件（text 内容直注 / image OCR / doc 解析落盘）。"""
+    import io as _io
+    import wave as _wave
+
+    session, base = backend
+    _get(base, "/dequeue")
+
+    # 1) text：内容直注
+    r = _post(base, "/chat", {
+        "message": "看看这个",
+        "files": [{"name": "a.txt", "path": "D:\\x\\a.txt", "kind": "text", "content": "文件内容ABC"}],
+    })
+    assert r["ok"]
+    deadline = time.time() + 8
+    while time.time() < deadline:
+        m = next((x for x in session.recent_buffer
+                  if getattr(x, "type", "") == "human" and "文件内容ABC" in str(x.content)), None)
+        if m:
+            break
+        time.sleep(0.1)
+    assert m is not None, "text 附件内容应注入"
+    assert "【拖入的文件】" in str(m.content)
+    _get(base, "/dequeue")
+
+    # 2) image：OCR 提取（mock OcrClient）
+    class _FakeOcr:
+        def recognize_path(self, path):
+            return "图片上的文字"
+
+    session.asr = session.asr  # noqa: B018 保持引用
+    import planner.session as _sm
+    orig_ocr = _sm._global_ocr if hasattr(_sm, "_global_ocr") else None
+    # 直接替换 session 上的注入路径：monkeypatch ocr 全局单例
+    import planner.ocr as _ocr_mod
+    fake_ocr = _FakeOcr()
+    monkeypatch_ocr = None
+    try:
+        _ocr_mod._global = fake_ocr
+        r = _post(base, "/chat", {
+            "message": "",
+            "files": [{"name": "p.png", "path": "D:\\x\\p.png", "kind": "image"}],
+        })
+        assert r["ok"]
+        deadline = time.time() + 8
+        m2 = None
+        while time.time() < deadline:
+            m2 = next((x for x in session.recent_buffer
+                       if getattr(x, "type", "") == "human" and "图片上的文字" in str(x.content)), None)
+            if m2:
+                break
+            time.sleep(0.1)
+        assert m2 is not None, "image 附件应 OCR 注入"
+        assert "【图片 OCR 识别文字】" in str(m2.content)
+    finally:
+        _ocr_mod._global = None
+
+    # 3) doc：解析落盘 + 预览（monkeypatch fileparse）
+    import planner.fileparse as _fp
+    real_parse = _fp.parse_file
+    real_save = _fp.save_attachment_text
+    try:
+        _fp.parse_file = lambda path: "解析出的文档内容"
+        _fp.save_attachment_text = lambda root, src, text: Path(root) / "attachments" / "fake.txt"
+        r = _post(base, "/chat", {
+            "message": "",
+            "files": [{"name": "r.pdf", "path": "D:\\x\\r.pdf", "kind": "doc"}],
+        })
+        assert r["ok"]
+        deadline = time.time() + 8
+        m3 = None
+        while time.time() < deadline:
+            m3 = next((x for x in session.recent_buffer
+                       if getattr(x, "type", "") == "human" and "解析出的文档内容" in str(x.content)), None)
+            if m3:
+                break
+            time.sleep(0.1)
+        assert m3 is not None, "doc 附件应解析注入"
+        assert "read_file" in str(m3.content)
+    finally:
+        _fp.parse_file = real_parse
+        _fp.save_attachment_text = real_save
 
 
 def test_toggle_mock(backend):

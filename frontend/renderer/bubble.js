@@ -241,11 +241,14 @@
       });
       const d = await r.json();
       if (d.ok && d.text) {
+        // 语音文本 + 全局挂载文件一起发送；发送后清空挂载
+        const mounted = await window.planner.getMounted();
         await fetch(base + '/chat', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ message: d.text }),
+          body: JSON.stringify({ message: d.text, files: mounted }),
         });
+        if (mounted && mounted.length) window.planner.clearMounted();
       }
     } catch { /* 静默 */ }
   });
@@ -273,7 +276,31 @@
     } catch { /* 后端不可用：静默 */ }
   }
 
-  // 右键 → 菜单（放大 / 切换免打扰 / 退出）
+  // ── 拖拽文件挂载：拖到球上松手 → 主进程挂载（不立即发送，语音时合并发送）──
+  document.addEventListener('dragover', (e) => {
+    e.preventDefault();                       // 必须，否则 Chromium 拒绝 drop
+    core.classList.add('drop-target');
+  });
+  document.addEventListener('dragleave', () => {
+    core.classList.remove('drop-target');
+  });
+  document.addEventListener('drop', async (e) => {
+    e.preventDefault();
+    core.classList.remove('drop-target');
+    if (!e.dataTransfer || !e.dataTransfer.files || !e.dataTransfer.files.length) return;
+    const files = await window.fileDrop.handleFiles(e.dataTransfer.files);
+    if (files.length) window.planner.mountFiles(files);
+  });
+
+  // 挂载文件数徽标（右上角蓝色小方块）
+  const fileBadge = document.getElementById('file-badge');
+  window.planner.onMountedChanged((list) => {
+    const n = (list || []).length;
+    fileBadge.classList.toggle('hidden', !n);
+    fileBadge.textContent = n > 9 ? '9+' : n;
+  });
+
+  // 右键 → 菜单（放大 / 免打扰 / 清除挂载文件 / 退出）
   core.addEventListener('contextmenu', (e) => {
     e.preventDefault();
     window.planner.bubbleMenu();

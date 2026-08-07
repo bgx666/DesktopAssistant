@@ -124,4 +124,27 @@ html, body {
   text-align: center;
   box-sizing: border-box;
 }
+/* 挂载文件数徽标（右上角蓝色小方块） */
+#file-badge {
+  position: absolute;
+  right: -3px;
+  top: -3px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 3px;
+  border-radius: 8px;
+  background: #5fb8d6;
+  border: 2px solid #fff;
+  color: #fff;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 11px;
+  text-align: center;
+  box-sizing: border-box;
+}
+/* 拖拽悬停：球描边加粗高亮 */
+#core.drop-target {
+  border: 2px solid #fff;
+  box-shadow: 0 0 0 3px rgba(95, 184, 214, 0.6);
+}
 .hidden { display: none !important; }

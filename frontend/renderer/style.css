@@ -213,6 +213,75 @@ body {
 
 /* ── 聊天 ── */
 #messages { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 9px; padding-bottom: 8px; }
+
+/* 已挂载文件条（对话框上方）：拖入的文件，发送时自动附带 */
+#mounted-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  padding: 6px 10px;
+  margin-bottom: 8px;
+  border: 1px dashed rgba(95, 184, 214, 0.55);
+  border-radius: 10px;
+  background: rgba(95, 184, 214, 0.08);
+  font-size: 12px;
+  flex: none;
+}
+#mounted-bar.hidden { display: none; }
+.mb-label { font-size: 12px; }
+.mb-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 8px;
+  border-radius: 8px;
+  background: #fff;
+  border: 1px solid rgba(95, 184, 214, 0.4);
+  color: #2b2f38;
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mb-x {
+  border: none;
+  background: transparent;
+  color: #999;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  padding: 0 2px;
+}
+.mb-x:hover { color: var(--danger); }
+.mb-clear {
+  margin-left: auto;
+  border: none;
+  background: transparent;
+  color: var(--text-soft);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 2px 4px;
+}
+.mb-clear:hover { color: var(--danger); }
+
+/* 拖拽悬停遮罩：松手添加文件提示 */
+body.drop-overlay::after {
+  content: "松手添加文件";
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  font-weight: 600;
+  color: #2b6f8f;
+  background: rgba(95, 184, 214, 0.18);
+  border: 2px dashed rgba(95, 184, 214, 0.8);
+  border-radius: 10px;
+  z-index: 999;
+  pointer-events: none;
+}
 .msg {
   max-width: 82%;
   display: flex;

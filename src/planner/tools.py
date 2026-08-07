@@ -418,10 +418,30 @@ def build_tools(session) -> list[BaseTool]:
             head_info += "，如需继续可用 start 参数读取后续部分"
         return f"{head_info}：\n{chunk}"
 
+    @tool(parse_docstring=True)
+    def capture_screen() -> str:
+        """截取当前主屏的屏幕截图，用 OCR 识别屏幕上的文字并返回。
+
+        用户让你"看一下屏幕 / 看看我正在做什么 / 屏幕上有什么"时使用。
+        只返回识别出的文字（不包含图片本身），来源标注为屏幕截图。
+        """
+        import mss
+
+        from .ocr import ocr_png_from_screen
+        try:
+            with mss.MSS() as sct:
+                shot = sct.grab(sct.monitors[1])   # 主屏
+            text = ocr_png_from_screen(shot)
+            if not text:
+                return "（屏幕截图已获取，但 OCR 未识别到文字）"
+            return f"【屏幕截图 OCR 识别文字】\n{text}"
+        except Exception as exc:
+            return f"（屏幕截图失败：{exc}）"
+
     return [create_task, break_down_task, list_tasks, get_task, heartbeat,
             mark_plan_done, set_do_not_disturb, reschedule, update_task_status,
             get_next_actions, prioritize, explore_memory_tree,
-            list_dir, read_file]
+            list_dir, read_file, capture_screen]
 
 
 def all_tool_schemas() -> list[dict]:

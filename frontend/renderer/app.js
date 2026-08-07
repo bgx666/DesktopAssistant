@@ -122,12 +122,65 @@
     syncTypingState();                       // 清空输入 → 退出"正在输入"状态
     $('#send').disabled = true;
     try {
-      const r = await post('/chat', { message: text });
+      // 发送时自动附带全局挂载文件（拖入的文件），发送后清空
+      const mounted = await window.planner.getMounted();
+      const r = await post('/chat', { message: text, files: mounted });
+      if (mounted && mounted.length) window.planner.clearMounted();
       addMessage(text, 'user', r.msg_id || null);
     } catch (err) {
       addMessage('（连接后端失败，稍后重试）', 'log');
     }
     $('#send').disabled = false;
+  });
+
+  // ── 拖拽文件挂载：拖到面板任意处 → 主进程挂载（对话框上方文件条显示）──
+  const mountedBar = $('#mounted-bar');
+  let dropOverlayTimer = null;
+  document.addEventListener('dragover', (e) => {
+    e.preventDefault();                       // 必须，否则 Chromium 拒绝 drop
+    document.body.classList.add('drop-overlay');
+    if (dropOverlayTimer) { clearTimeout(dropOverlayTimer); dropOverlayTimer = null; }
+  });
+  document.addEventListener('dragleave', () => {
+    if (!dropOverlayTimer) {
+      dropOverlayTimer = setTimeout(() => {
+        document.body.classList.remove('drop-overlay');
+        dropOverlayTimer = null;
+      }, 120);
+    }
+  });
+  document.addEventListener('drop', async (e) => {
+    e.preventDefault();
+    document.body.classList.remove('drop-overlay');
+    if (dropOverlayTimer) { clearTimeout(dropOverlayTimer); dropOverlayTimer = null; }
+    if (!e.dataTransfer || !e.dataTransfer.files || !e.dataTransfer.files.length) return;
+    const files = await window.fileDrop.handleFiles(e.dataTransfer.files);
+    if (files.length) window.planner.mountFiles(files);
+  });
+
+  // 对话框上方"已挂载文件"条：📎 名称列表 + 逐个移除 + 清除
+  window.planner.onMountedChanged((list) => {
+    const files = list || [];
+    mountedBar.classList.toggle('hidden', !files.length);
+    if (!files.length) { mountedBar.textContent = ''; return; }
+    mountedBar.innerHTML = '<span class="mb-label">📎</span>';
+    files.forEach((f, i) => {
+      const chip = document.createElement('span');
+      chip.className = 'mb-chip';
+      chip.textContent = f.name || '未命名';
+      chip.title = f.path || '';
+      const x = document.createElement('button');
+      x.className = 'mb-x';
+      x.textContent = '×';
+      x.addEventListener('click', () => window.planner.removeMounted(i));
+      chip.appendChild(x);
+      mountedBar.appendChild(chip);
+    });
+    const clearBtn = document.createElement('button');
+    clearBtn.className = 'mb-clear';
+    clearBtn.textContent = '清除';
+    clearBtn.addEventListener('click', () => window.planner.clearMounted());
+    mountedBar.appendChild(clearBtn);
   });
 
   // ── 语音输入（按住说话）：识别结果填入输入框 ──

@@ -616,6 +616,39 @@ function toggleDndFromMain() {
 }
 
 // ── IPC：渲染进程 ↔ 主进程 ──────────────────────────────────
+// 全局挂载文件（拖拽上传）：主进程单点持有，两窗口（悬浮球/面板）共享，
+// 变更即广播——球显示文件数徽标、面板显示对话框上方文件条。
+let mountedFiles = [];
+
+function broadcastMounted() {
+  try {
+    if (bubbleWin && !bubbleWin.isDestroyed()) {
+      bubbleWin.webContents.send('mounted-files', mountedFiles);
+    }
+    if (panelWin && !panelWin.isDestroyed()) {
+      panelWin.webContents.send('mounted-files', mountedFiles);
+    }
+  } catch { /* 窗口销毁中忽略 */ }
+}
+
+ipcMain.on('mount-files', (e, files) => {
+  const list = Array.isArray(files) ? files : [];
+  if (!list.length) return;
+  mountedFiles = mountedFiles.concat(list);
+  broadcastMounted();
+});
+ipcMain.on('clear-mounted', () => {
+  if (!mountedFiles.length) return;
+  mountedFiles = [];
+  broadcastMounted();
+});
+ipcMain.on('remove-mounted', (e, index) => {
+  if (typeof index === 'number' && index >= 0 && index < mountedFiles.length) {
+    mountedFiles.splice(index, 1);
+    broadcastMounted();
+  }
+});
+ipcMain.handle('get-mounted', () => mountedFiles);
 ipcMain.on('toggle-panel', () => togglePanel());
 // 输入框状态同步：非空 = 正在输入（模型生成前提示，临时注入不落库）
 ipcMain.on('typing-state', (e, typing) => {
@@ -714,12 +747,21 @@ ipcMain.on('move-bubble', (e, x, y) => {
   }
 });
 ipcMain.on('quit-app', () => doQuit());ipcMain.on('bubble-menu', (e) => {
-  const menu = Menu.buildFromTemplate([
+  const items = [
     { label: '放大', click: () => togglePanel() },
     { label: '切换免打扰', click: () => toggleDndFromMain() },
-    { type: 'separator' },
-    { label: '退出', click: () => doQuit() },
-  ]);
+  ];
+  if (mountedFiles.length) {
+    items.push({
+      label: `清除已挂载文件（${mountedFiles.length}）`,
+      click: () => {
+        mountedFiles = [];
+        broadcastMounted();
+      },
+    });
+  }
+  items.push({ type: 'separator' }, { label: '退出', click: () => doQuit() });
+  const menu = Menu.buildFromTemplate(items);
   menu.popup({ window: bubbleWin });
 });
 

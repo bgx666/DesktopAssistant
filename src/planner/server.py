@@ -166,10 +166,11 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/chat":
             body = self._read_json_body()
             message = str(body.get("message", "")).strip()
-            if not message:
+            files = body.get("files") if isinstance(body.get("files"), list) else None
+            if not message and not files:
                 self._send_json({"ok": False, "error": "bad_request"}, status=400)
                 return
-            msg_id = self.session.enqueue_player_message(message)
+            msg_id = self.session.enqueue_player_message(message, files)
             self._send_json({"ok": True, "msg_id": msg_id})
         elif path == "/undo":
             body = self._read_json_body()

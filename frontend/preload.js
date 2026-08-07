@@ -1,10 +1,20 @@
 // preload.js —— 渲染进程桥（悬浮球 + 变形面板共用）
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 contextBridge.exposeInMainWorld('planner', {
   platform: process.platform,
   // 后端地址（release 版经 PLANNER_URL 指向独立端口）
   apiBase: process.env.PLANNER_URL || 'http://127.0.0.1:18771',
+  // 拖拽文件：取本地绝对路径（Electron 37：File.path 已移除，用 webUtils）
+  getPathForFile: (file) => {
+    try { return webUtils.getPathForFile(file); } catch { return ''; }
+  },
+  // 全局挂载文件（主进程持有，两窗口共享）
+  mountFiles: (files) => ipcRenderer.send('mount-files', files),
+  clearMounted: () => ipcRenderer.send('clear-mounted'),
+  removeMounted: (index) => ipcRenderer.send('remove-mounted', index),
+  getMounted: () => ipcRenderer.invoke('get-mounted'),
+  onMountedChanged: (cb) => ipcRenderer.on('mounted-files', (e, list) => cb(list)),
   // 悬浮球
   togglePanel: () => ipcRenderer.send('toggle-panel'),
   bubbleMenu: () => ipcRenderer.send('bubble-menu'),

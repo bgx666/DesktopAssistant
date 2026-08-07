@@ -749,13 +749,16 @@ class PlannerSession:
             return f"{s // 60} 分 {s % 60} 秒"
         return f"{s // 3600} 小时 {(s % 3600) // 60} 分钟"
 
-    def enqueue_player_message(self, message: str) -> str:
+    def enqueue_player_message(self, message: str, files: list | None = None) -> str:
         """注入玩家消息并立即触发回复生成。返回该消息的 id（撤销按钮用）。
 
         用户说话 = 活跃状态：重置挂起的旧心跳（避免"1 小时后才醒来"的残留），
         设对话默认短心跳并清零沉默计数；生成中 LLM 会再调 heartbeat 覆盖。
         消息附带「距上次说话 X」——让 AI 感知对话节奏（间隔信息放在
         "对你说："之前，/history 切分时丢弃，对话框不显示）。
+
+        files：拖入挂载的文件 [{name, path, kind, content?}]，按 kind 分流注入
+        （text 内容直注 / doc 解析落盘+预览 / image OCR 提取 / 其他仅路径）。
         """
         now = _now()
         self._cancel_heartbeat()
@@ -765,12 +768,51 @@ class PlannerSession:
         if self._last_player_message_at is not None:
             gap_hint = f"（距上次说话 {self._fmt_gap((now - self._last_player_message_at).total_seconds())}）"
         self._last_player_message_at = now
+        text = message or "请结合我给你的文件回答。"
+        attachments = self._render_attachments(files) if files else ""
         msg = self._receive(
-            f"[{now.strftime('%H:%M')}]{gap_hint} {PLAYER_NAME}对你说：{message}", trigger=True)
-        self._save_log("user", message)
+            f"[{now.strftime('%H:%M')}]{gap_hint} {PLAYER_NAME}对你说：{text}{attachments}",
+            trigger=True)
+        self._save_log("user", message or "（拖入文件）")
         self._wake_event.set()
         threading.Thread(target=self._player_worker, name="planner-player", daemon=True).start()
         return getattr(msg, "id", None) or ""
+
+    def _render_attachments(self, files: list) -> str:
+        """按 kind 分流注入挂载文件（标注来源；失败降级为仅路径）。"""
+        from .fileparse import parse_file, save_attachment_text
+
+        parts = []
+        for f in files:
+            name = str(f.get("name") or "未命名")
+            path = str(f.get("path") or "")
+            kind = str(f.get("kind") or "other")
+            content = f.get("content")
+            loc = f"「{path}」" if path else ""
+            if kind == "text" and content:
+                parts.append(f"- 文本文件 {name}{loc}：\n{content}")
+            elif kind == "doc":
+                parsed = parse_file(path)
+                if parsed:
+                    txt = save_attachment_text(self.data_root, path, parsed)
+                    preview = parsed[: 8000]
+                    parts.append(
+                        f"- 文档 {name}{loc}：已解析，文本存于 {txt}。"
+                        f"预览：\n{preview}\n（完整内容请用 read_file 工具读取该 txt）")
+                else:
+                    parts.append(f"- 文档 {name}{loc}：（解析失败或不支持此格式，仅提供文件名）")
+            elif kind == "image":
+                from .ocr import _global_client as _ocr_global
+                text = _ocr_global().recognize_path(path)
+                if text:
+                    parts.append(f"- 图片 {name}{loc}：【图片 OCR 识别文字】\n{text}")
+                else:
+                    parts.append(f"- 图片 {name}{loc}：（OCR 未能识别出文字）")
+            else:
+                parts.append(f"- 文件 {name}{loc}")
+        if not parts:
+            return ""
+        return "\n\n【拖入的文件】\n" + "\n\n".join(parts)
 
     def undo_message(self, msg_id: str) -> dict:
         """撤销：从 buffer 删除该玩家消息及其后的所有对话。
