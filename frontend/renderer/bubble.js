@@ -125,7 +125,7 @@
   });
 
   // 单击 → 依次显示历史回复（第 1 次最新、第 2 次倒数第二…，循环）
-  // 气泡自然堆叠：旧气泡继续显示到生命周期结束（更久远的在上方）
+  // 气泡按"距最新偏移"排序堆叠：越久远的越靠上（从上方落下）
   let replyOffset = 0;   // 距最新的偏移：0=最新
   async function showLastReply() {
     try {
@@ -134,9 +134,10 @@
       const replies = (d.messages || []).filter((m) => m.role === 'assistant' && m.content);
       if (!replies.length) { replyOffset = 0; return; }
       if (replyOffset >= replies.length) replyOffset = 0;   // 到头循环回最新
-      const m = replies[replies.length - 1 - replyOffset];
-      replyOffset++;
-      window.planner.showToast(m.content);
+      const off = replyOffset;
+      const m = replies[replies.length - 1 - off];
+      replyOffset = off + 1;
+      window.planner.showToast(m.content, off);
     } catch { /* 后端不可用：静默 */ }
   }
 

@@ -14,7 +14,7 @@ contextBridge.exposeInMainWorld('planner', {
   getPanelPos: () => ipcRenderer.invoke('get-panel-pos'),
   getPanelState: () => ipcRenderer.invoke('get-panel-state'),
   // 气泡窗
-  showToast: (text) => ipcRenderer.send('toast-show', text),
+  showToast: (text, offset) => ipcRenderer.send('toast-show', { text, offset: offset || 0 }),
   onToastText: (cb) => ipcRenderer.on('toast-text', (e, data) => cb(data)),
   toastClick: () => ipcRenderer.send('toast-click'),
   toastResize: (h) => ipcRenderer.send('toast-resize', h),

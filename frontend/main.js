@@ -409,7 +409,7 @@ const TOAST_MS = 30000;              // 每个气泡生存 30 秒
 
 let toastWins = [];                     // 堆叠的气泡窗口（[0] 最靠近球=最新）
 
-function createToastWin(text) {
+function createToastWin(text, offset = 0) {
   const win = new BrowserWindow({
     width: TOAST_W,
     height: TOAST_H,
@@ -427,6 +427,7 @@ function createToastWin(text) {
       nodeIntegration: false,
     },
   });
+  win._toastOffset = offset;   // 距最新偏移（0=最新）；决定堆叠位置：越旧越靠上
   win.loadFile(path.join(__dirname, 'renderer', 'toast.html'));
   win.setAlwaysOnTop(true, 'pop-up-menu');
   const timer = setTimeout(() => destroyToastWin(win), TOAST_MS);
@@ -442,7 +443,10 @@ function createToastWin(text) {
     win.showInactive();   // 不抢焦点
     layoutToasts();
   });
-  toastWins.unshift(win);   // 新气泡在最下面（靠近球），旧气泡被顶上去
+  // 有序插入：toastWins 保持按 offset 升序（[0] 最新贴球，越旧越靠上）
+  const idx = toastWins.findIndex((w) => (w._toastOffset || 0) > offset);
+  if (idx < 0) toastWins.push(win);
+  else toastWins.splice(idx, 0, win);
   layoutToasts();
 }
 
@@ -485,10 +489,10 @@ function layoutToasts() {
   }
 }
 
-function showToast(text) {
+function showToast(text, offset = 0) {
   if (quitting || panelState !== 'hidden') return;   // 面板展开时不需要气泡
   if (!text || !String(text).trim()) return;
-  createToastWin(String(text).trim());
+  createToastWin(String(text).trim(), offset);
 }
 
 // ── 托盘 ────────────────────────────────────────────────────
@@ -599,7 +603,11 @@ ipcMain.on('typing-state', (e, typing) => {
 // 单击悬浮球 = 按住说话：录音识别在 bubble.js 直接走后端，主进程无需中转
 // （nudge 端点保留供未来使用，前端入口已移除）
 ipcMain.handle('get-panel-state', () => panelState);
-ipcMain.on('toast-show', (e, text) => showToast(text));
+ipcMain.on('toast-show', (e, payload) => {
+  // {text, offset}：offset = 距最新偏移（单击翻历史时越久远越靠上）
+  const p = (typeof payload === 'string') ? { text: payload } : (payload || {});
+  showToast(p.text, p.offset || 0);
+});
 // 气泡内容高度 → 窗口自适应（完整显示长文本，不做省略号）
 ipcMain.on('toast-resize', (e, h) => {
   const win = BrowserWindow.fromWebContents(e.sender);
