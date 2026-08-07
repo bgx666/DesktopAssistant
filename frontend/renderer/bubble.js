@@ -135,12 +135,15 @@
     if (Math.abs(dx - lastMoveX) < 2 && Math.abs(dy - lastMoveY) < 2) return;
     lastMoveX = dx;
     lastMoveY = dy;
-    // 位移超过 6px：放弃单击/说话，改为拖动
-    if (pressTimer && (Math.abs(dx) >= 6 || Math.abs(dy) >= 6)) {
-      clearTimeout(pressTimer);
-      pressTimer = null;
+    // 位移超过 6px：放弃单击/长按说话，改为拖动（无论麦克风是否已就绪，
+    // 都立即退出录音态——红点/波形环/录音一并取消，拖动中不残留特效）
+    if (Math.abs(dx) >= 6 || Math.abs(dy) >= 6) {
+      if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
+      if (longPress || micStop) {
+        longPress = false;
+        cancelMic();
+      }
     }
-    if (micStop && (Math.abs(dx) >= 6 || Math.abs(dy) >= 6)) cancelMic();
     window.planner.moveBubble(winX + dx, winY + dy);
   });
 
