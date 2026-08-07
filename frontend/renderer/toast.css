@@ -56,6 +56,28 @@ html, body {
   word-break: break-word;
 }
 
+/* 轻量 markdown（与面板聊天区一致的渲染样式） */
+#toast-text strong { font-weight: 700; }
+#toast-text code {
+  background: rgba(91, 124, 250, 0.12);
+  border-radius: 4px;
+  padding: 1px 4px;
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 12px;
+}
+#toast-text .md-code {
+  background: rgba(43, 47, 56, 0.06);
+  border: 1px solid rgba(43, 47, 56, 0.08);
+  border-radius: 6px;
+  padding: 6px 8px;
+  margin: 4px 0 0;
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-x: auto;
+  white-space: pre;
+}
+
 /* 小三角：指向悬浮球（默认气泡在球上方，箭头朝下） */
 #toast-arrow {
   position: absolute;

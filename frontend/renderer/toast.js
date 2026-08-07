@@ -4,7 +4,8 @@
 
   window.planner.onToastText(({ text, above }) => {
     const el = document.getElementById('toast-text');
-    el.textContent = text;
+    // 轻量 markdown 渲染（加粗/行内代码/代码块），不再显示原始 ** 符号
+    el.innerHTML = window.md.render(text);
     document.getElementById('toast').classList.toggle('above', !!above);
     // 文本渲染后测量实际高度 → 通知主进程调整窗口（内容多高窗口就多高；
     // offsetHeight 不受入场动画 transform 缩放影响）
