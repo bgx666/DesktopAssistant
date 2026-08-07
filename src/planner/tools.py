@@ -562,11 +562,13 @@ _WEB_HEADERS = {
 # 机构/专有名词后缀：搜索时自动加引号，防止"四川大学"被拆成"四川"+"大学"
 _ENTITY_RE = None
 
-
 def _quote_entity_names(query: str) -> str:
     """把机构名（xx大学/学院/公司…）用引号包成整体词。
 
-    "四川大学 校历" → '"四川大学" 校历'，避免必应拆词后省份/百科结果霸屏。
+    只在机构名后面是空格或结尾时加引号（如"四川大学 校历" → '"四川大学" 校历'）——
+    防止必应拆词后省份/百科结果霸屏；
+    连续短语（"四川大学校历"）保持原样，与用户手动搜索行为一致，
+    搜索引擎本身能正确处理连续短语。
     """
     import re as _re
 
@@ -577,7 +579,8 @@ def _quote_entity_names(query: str) -> str:
         suffixes = ("大学|学院|研究院|研究所|中学|高中|公司|集团|医院|政府|"
                     "博物馆|出版社|交易所|银行")
         _ENTITY_RE = _re.compile(
-            rf"([\u4e00-\u9fa5A-Za-z0-9]{{2,12}}?(?:{suffixes}))")
+            rf"([\u4e00-\u9fa5A-Za-z0-9]{{2,12}}?(?:{suffixes}))(?=\s|$)")
+
     q = str(query).strip()
     if not q:
         return q

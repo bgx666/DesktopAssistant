@@ -51,7 +51,7 @@ def test_web_search_success(monkeypatch):
 
 
 def test_web_search_quotes_entity_names(monkeypatch):
-    """机构名自动加引号：'四川大学 校历' → '"四川大学" 校历'，防拆词泛化到省份。"""
+    """带空格时机构名自动加引号；连续短语（用户手动搜索行为）保持原样。"""
     calls = {}
 
     class _FakeResp:
@@ -69,7 +69,7 @@ def test_web_search_quotes_entity_names(monkeypatch):
     tools["web_search"].invoke({"query": "四川大学 校历"})
     assert calls["params"]["q"] == '"四川大学" 校历'
     tools["web_search"].invoke({"query": "四川大学教务处"})
-    assert calls["params"]["q"] == '"四川大学"教务处'
+    assert calls["params"]["q"] == "四川大学教务处", "连续短语保持原样"
     # 已带引号/非机构名不动
     tools["web_search"].invoke({"query": '"北京大学" 招生'})
     assert calls["params"]["q"] == '"北京大学" 招生'
@@ -79,11 +79,11 @@ def test_web_search_quotes_entity_names(monkeypatch):
 
 def test_quote_entity_names_direct():
     q = tools_mod._quote_entity_names("南京大学校历")
-    assert q == '"南京大学"校历'
+    assert q == "南京大学校历", "连续短语不加引号"
     q2 = tools_mod._quote_entity_names("清华大学 计算机系")
     assert q2 == '"清华大学" 计算机系'
     q3 = tools_mod._quote_entity_names("成都市天气")
-    assert "成都" not in q3 or q3 == "成都市天气", "非机构名不应被引号包住"
+    assert q3 == "成都市天气", "非机构名不应被引号包住"
 
 
 def test_extract_links():
