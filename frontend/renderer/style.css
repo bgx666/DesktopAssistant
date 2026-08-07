@@ -130,7 +130,7 @@ body {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 10px 12px;
+  padding: 10px 0 10px 12px;      /* 右缘无内边距：缩小按钮贴窗口右上角 */
   background: rgba(255, 255, 255, 0.78);
   backdrop-filter: blur(14px);
   -webkit-backdrop-filter: blur(14px);
@@ -148,20 +148,23 @@ body {
 #status { flex: 1; text-align: right; font-size: 11px; color: var(--text-soft); display: flex; justify-content: flex-end; align-items: center; gap: 8px; }
 #thinking { color: var(--primary); }
 #ctx-tokens.warn { color: var(--danger); }
-#titlebar-btns { display: flex; gap: 4px; }
+#titlebar-btns { display: flex; align-self: stretch; }   /* 撑满标题栏高度 */
 #titlebar-btns button {
   border: none; background: transparent; color: var(--text-soft);
   font-size: 12px; padding: 3px 8px; border-radius: 8px; cursor: pointer;
   transition: background 0.15s, color 0.15s;
 }
 #titlebar-btns button:hover { background: rgba(91, 124, 250, 0.1); color: var(--primary); }
-/* 缩小（收起）按钮：勿扰按钮已移出标题栏，无误触风险，加大点击区域 */
+/* 缩小（收起）按钮：贴右上角、撑满标题栏高度的大点击区（勿扰已移出，无误触风险） */
 #btn-fold {
-  font-size: 20px;
-  padding: 4px 16px;
-  border-radius: 10px;
-  line-height: 1.2;
+  width: 52px;
+  height: 100%;
+  border-radius: 0;                 /* 直角贴边，像系统窗口关闭按钮 */
+  font-size: 22px;
+  padding: 0;
+  line-height: 1;
 }
+#btn-fold:hover { background: rgba(255, 107, 129, 0.12); color: #e5484d; }
 
 /* ── Tab ── */
 #tabs {
