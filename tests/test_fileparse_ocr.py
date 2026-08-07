@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+import mss as mss_mod
 import pytest
 
 import planner.fileparse as fp_mod
@@ -114,3 +115,57 @@ def test_ocr_recognize_path(monkeypatch, tmp_path):
     c = ocr_mod.OcrClient()
     assert c.recognize_path(str(f)) == "OK"
     assert c.recognize_path(str(tmp_path / "missing.png")) is None
+
+
+# ── capture_screen 工具 ───────────────────────────────────
+
+def test_capture_screen_tool(monkeypatch):
+    """capture_screen 工具：mss 截屏 → OCR 文字；无文字/异常有降级返回。"""
+    from planner.tools import build_tools
+
+    class _FakeShot:
+        pass
+
+    class _FakeSct:
+        def __init__(self):
+            self.monitors = [None, "MAIN"]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def grab(self, monitor):
+            return _FakeShot()
+
+    monkeypatch.setattr(mss_mod, "MSS", _FakeSct)
+    monkeypatch.setattr("planner.ocr.ocr_png_from_screen",
+                        lambda shot: "屏幕上的一段文字")
+    tools = {t.name: t for t in build_tools(None)}
+    assert "capture_screen" in tools
+    res = tools["capture_screen"].invoke({})
+    assert "屏幕截图" in res and "屏幕上的一段文字" in res
+
+    # 未识别到文字 → 降级提示
+    monkeypatch.setattr("planner.ocr.ocr_png_from_screen", lambda shot: None)
+    res2 = tools["capture_screen"].invoke({})
+    assert "未识别到文字" in res2
+
+    # 截屏异常 → 降级
+    class _BoomSct:
+        def __init__(self):
+            self.monitors = [None, "MAIN"]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def grab(self, monitor):
+            raise RuntimeError("screen busy")
+
+    monkeypatch.setattr(mss_mod, "MSS", _BoomSct)
+    res3 = tools["capture_screen"].invoke({})
+    assert "屏幕截图失败" in res3

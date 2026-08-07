@@ -277,15 +277,24 @@
   }
 
   // ── 拖拽文件挂载：拖到球上松手 → 主进程挂载（不立即发送，语音时合并发送）──
-  document.addEventListener('dragover', (e) => {
-    e.preventDefault();                       // 必须，否则 Chromium 拒绝 drop
+  // dragenter/dragleave 计数（而非仅 dragleave）：避免在子元素间移动时高亮闪烁
+  let dragDepth = 0;
+  document.addEventListener('dragenter', (e) => {
+    e.preventDefault();
+    dragDepth++;
     core.classList.add('drop-target');
   });
-  document.addEventListener('dragleave', () => {
-    core.classList.remove('drop-target');
+  document.addEventListener('dragover', (e) => {
+    e.preventDefault();                       // 必须，否则 Chromium 拒绝 drop
+  });
+  document.addEventListener('dragleave', (e) => {
+    e.preventDefault();
+    dragDepth = Math.max(0, dragDepth - 1);
+    if (dragDepth === 0) core.classList.remove('drop-target');
   });
   document.addEventListener('drop', async (e) => {
     e.preventDefault();
+    dragDepth = 0;
     core.classList.remove('drop-target');
     if (!e.dataTransfer || !e.dataTransfer.files || !e.dataTransfer.files.length) return;
     const files = await window.fileDrop.handleFiles(e.dataTransfer.files);

@@ -10,7 +10,7 @@
     'sh', 'bat', 'ps1', 'c', 'cpp', 'h', 'hpp', 'java', 'go', 'rs', 'rb', 'php',
     'kt', 'swift', 'vue', 'svelte', 'gitignore', 'env', 'properties', 'reg',
   ]);
-  const DOC_EXT = new Set(['pdf', 'docx']);
+  const DOC_EXT = new Set(['pdf', 'docx', 'doc']);   // .doc 老格式也走 doc 分支（后端提示不支持）
   const IMAGE_EXT = new Set(['png', 'jpg', 'jpeg', 'bmp', 'gif', 'webp', 'tiff', 'ico']);
   const MAX_TEXT_BYTES = 32 * 1024;   // 与后端约定：≤32KB 文本前端直读
 
