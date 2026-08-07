@@ -32,12 +32,12 @@
       winX = pos.x;
       winY = pos.y;
     });
-    // 预启动麦克风（异步初始化；松开早于就绪 → 丢弃）。
-    // 常驻流就绪后 begin() 即 resolve，录音与 mousedown 几乎同步开始。
+    // 预启动麦克风（异步初始化）。就绪后总是挂载录音停止函数——
+    // 即使判定后已松开（长按但麦克风就绪较慢）也不能丢弃：
+    // 丢弃只由单击/拖动路径的 cancelMic() 负责，保证长按语音不丢。
     micPromise = window.mic.begin().then((stop) => {
-      if (!dragging) { stop(true); return null; }
       micStop = stop;
-      return null;
+      return stop;          // 交给 mouseup 长按路径取用（就绪晚于松开时）
     }).catch(() => {
       micStop = null;
       return null;
