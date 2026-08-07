@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld('planner', {
   apiBase: process.env.PLANNER_URL || 'http://127.0.0.1:18771',
   // 悬浮球
   togglePanel: () => ipcRenderer.send('toggle-panel'),
+  bubbleMenu: () => ipcRenderer.send('bubble-menu'),
   setTyping: (typing) => ipcRenderer.send('typing-state', typing),
   moveBubble: (x, y) => ipcRenderer.send('move-bubble', x, y),
   getBubblePos: () => ipcRenderer.invoke('get-bubble-pos'),
