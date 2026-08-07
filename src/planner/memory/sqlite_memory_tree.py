@@ -6,8 +6,7 @@
   BaseChatModel 发起，树只负责存储与查询；
 - 保留 nodes/buffer_state 表结构与全部查询/写入接口语义。
 
-压缩策略常量与 xiaob/yaya 对齐：LEAF_SIZE=20、BRANCHING_FACTOR=3、
-LEVEL_COMPACT_THRESHOLD=6。
+压缩策略常量：LEAF_SIZE=20、BRANCHING_FACTOR=4（每层 ≥8 个节点时取前 4 个合并）。
 """
 
 from __future__ import annotations
@@ -20,8 +19,8 @@ from pathlib import Path
 from typing import Any
 
 LEAF_SIZE = 20
-BRANCHING_FACTOR = 3
-LEVEL_COMPACT_THRESHOLD = 6
+BRANCHING_FACTOR = 4
+LEVEL_COMPACT_THRESHOLD = 8
 
 _CREATE_TABLES = """
 CREATE TABLE IF NOT EXISTS nodes (
