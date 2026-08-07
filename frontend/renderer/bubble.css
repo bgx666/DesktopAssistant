@@ -35,6 +35,18 @@ html, body {
 #core:hover { transform: scale(1.05); }
 #core:active { transform: scale(0.96); }
 
+/* 左上角高光点：球内部（圆环内）的小白点，模拟受光 */
+#core::before {
+  content: "";
+  position: absolute;
+  left: 26%;
+  top: 24%;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.7);
+}
+
 /* 录音中（按住说话）：状态点柔紫脉冲，雷达环低饱和三色随声音伸缩 */
 #core.recording #status-dot {
   background: #a99ae8;
