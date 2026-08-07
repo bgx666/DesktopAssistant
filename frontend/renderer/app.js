@@ -159,12 +159,14 @@
   });
 
   // 对话框上方"已挂载文件"条：📎 名称列表 + 逐个移除 + 清除
-  window.planner.onMountedChanged((list) => {
-    const files = list || [];
-    mountedBar.classList.toggle('hidden', !files.length);
-    if (!files.length) { mountedBar.textContent = ''; return; }
+  // 渲染逻辑独立成函数：既响应实时广播，也支持展开时主动拉取
+  // （悬浮球形态挂载时面板窗口未创建，收不到广播，展开后需主动同步）
+  function renderMountedBar(files) {
+    const list = files || [];
+    mountedBar.classList.toggle('hidden', !list.length);
+    if (!list.length) { mountedBar.textContent = ''; return; }
     mountedBar.innerHTML = '<span class="mb-label">📎</span>';
-    files.forEach((f, i) => {
+    list.forEach((f, i) => {
       const chip = document.createElement('span');
       chip.className = 'mb-chip';
       chip.textContent = f.name || '未命名';
@@ -181,7 +183,8 @@
     clearBtn.textContent = '清除';
     clearBtn.addEventListener('click', () => window.planner.clearMounted());
     mountedBar.appendChild(clearBtn);
-  });
+  }
+  window.planner.onMountedChanged(renderMountedBar);
 
   // ── 语音输入（按住说话）：识别结果填入输入框 ──
   const micBtn = $('#btn-mic');
@@ -555,6 +558,8 @@
   // 主进程通知：面板变形展开完成 → 重新加载历史（含隐藏期间的气泡消息）
   window.planner.onPanelShown(() => {
     loadHistory(true);
+    // 主动同步挂载文件（悬浮球形态挂载时本窗口未创建，收不到广播）
+    window.planner.getMounted().then(renderMountedBar).catch(() => {});
     // 展开完成：聚焦输入框，可直接打字
     setTimeout(() => { try { $('#input').focus(); } catch { /* 忽略 */ } }, 80);
   });
