@@ -568,3 +568,36 @@ def test_gap_hint_persists_across_restart(data_root):
         assert "2 小时" in c, f"应显示离线时长: {c}"
     finally:
         s2.close()
+
+
+def test_heartbeat_may_stay_silent_with_empty_reply(data_root):
+    """心跳无话可说（空回复）→ 不冒泡、buffer 不留空 AI 消息。"""
+    from langchain_core.messages import AIMessage
+    from planner.llm import MockChatModel
+
+    class _SilentMock(MockChatModel):
+        """心跳类系统消息 → 空回复；玩家消息走原脚本。"""
+
+        def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+            last = self._last_user_content(messages)
+            if last.startswith(("（", "[", "【")):
+                return self._make_result("")
+            return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+
+    s = PlannerSession(data_root, mock=True)
+    try:
+        s.set_chat_model(_SilentMock(session=s))
+        _drive_generation(s, "（系统：心跳到了，请主动和用户说话。如果此刻实在没什么想说的，可以不说。）", "heartbeat")
+        events = s.drain_events()
+        assert not any(e["type"] == "text" for e in events), "空回复不应冒泡 text 事件"
+        # 心跳注入消息之外，buffer 不应残留空 AI 消息
+        assert not any(
+            getattr(m, "type", None) == "ai"
+            and not str(getattr(m, "content", "") or "").strip()
+            for m in s.recent_buffer
+        ), "空 AI 消息不应落 buffer"
+        # 玩家消息仍正常回复
+        _drive_generation(s, "在吗？", "player")
+        assert any(e["type"] == "text" for e in s.drain_events())
+    finally:
+        s.close()

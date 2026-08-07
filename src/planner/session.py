@@ -501,7 +501,8 @@ class PlannerSession:
         self.schedule_heartbeat(minutes, note)
         self._save_buffer_state()   # 立即落盘：退出/中断后重开恢复新计时而非旧值
         text = (f"（系统：心跳到了，请主动和用户说话。{note + '。' if note else ''}"
-                f"可以看看用户的任务进度，提醒用户该做的事。）")
+                f"可以看看用户的任务进度，提醒用户该做的事。"
+                f"如果此刻实在没什么想说的，可以不说——回复内容留空即可。）")
         self._receive(text, trigger=True)
         self._spawn_worker("heartbeat")
 
@@ -657,7 +658,8 @@ class PlannerSession:
             self.schedule_heartbeat(minutes, note)
             self._save_buffer_state()   # 立即落盘：退出/中断后重开恢复新计时
             text = (f"（系统：心跳到了，请主动和用户说话。{note + '。' if note else ''}"
-                    f"可以看看用户的任务进度，提醒用户该做的事。）")
+                    f"可以看看用户的任务进度，提醒用户该做的事。"
+                    f"如果此刻实在没什么想说的，可以不说——回复内容留空即可。）")
             self._receive(text, trigger=True)
             self._spawn_worker("heartbeat")
 
@@ -909,7 +911,14 @@ class PlannerSession:
             return
         if final_messages:
             with self.buffer_lock:
-                self.recent_buffer = list(final_messages)
+                # 过滤"无话可说"的空回复（无文本且无工具调用）：
+                # 心跳允许留空，空 AI 消息不落 buffer（避免污染后续上下文）
+                self.recent_buffer = [
+                    m for m in final_messages
+                    if not (getattr(m, "type", None) == "ai"
+                            and not str(getattr(m, "content", "") or "").strip()
+                            and not getattr(m, "tool_calls", None))
+                ]
             self._reorder_node_messages()
         # 兜底心跳：LLM 没调 heartbeat → 按对话/沉默节奏自适应
         if not heartbeat_called:
