@@ -173,6 +173,13 @@ function createPanel() {
       panelWin.webContents.send(m.kind === 'in' ? 'morph-in' : 'morph-out', { from: m.from, to: m.to });
     }
   });
+  // 面板处于焦点时按 Esc → 缩小（变形收回）
+  panelWin.webContents.on('before-input-event', (event, input) => {
+    if (input.type === 'keyDown' && input.key === 'Escape' && panelState === 'shown') {
+      event.preventDefault();
+      morphOut();
+    }
+  });
   // 收起面板只通过界面上的「—」按钮（hide-panel IPC）→ 变形收回。
   // 不监听 blur/点击外部（用户明确：点击其他位置不缩小）。
   panelWin.on('close', (e) => {
