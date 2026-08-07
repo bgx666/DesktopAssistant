@@ -405,7 +405,7 @@ function killBackend() {
 // 每个气泡生存 TOAST_MS 后自动消失；点击气泡展开面板。
 const TOAST_W = 280;
 const TOAST_H = 110;                 // 初始高度（内容多高窗口自适应多高）
-const TOAST_MS = 20000;              // 每个气泡生存 20 秒
+const TOAST_MS = 30000;              // 每个气泡生存 30 秒
 
 let toastWins = [];                     // 堆叠的气泡窗口（[0] 最靠近球=最新）
 
