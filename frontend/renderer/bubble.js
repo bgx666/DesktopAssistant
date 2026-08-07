@@ -20,6 +20,41 @@
   let micStop = null;        // 录音停止函数（麦克风就绪后赋值）
   let micPromise = null;     // begin() 的 Promise（预启动，可能未就绪）
 
+  // ── 录音音量环：AnalyserNode 实时音量 → 12 条线 scaleY 伸缩 ──
+  const ring = document.getElementById('sound-ring');
+  const ringSpans = [...ring.querySelectorAll('span')];
+  let ringRaf = null;
+
+  function startSoundRing() {
+    if (ringRaf) return;
+    window.mic.getAnalyser().then((analyser) => {
+      if (!analyser || !longPress) return;
+      const data = new Uint8Array(analyser.frequencyBinCount);
+      ring.classList.add('active');
+      const step = () => {
+        if (!longPress) { stopSoundRing(); return; }
+        analyser.getByteFrequencyData(data);
+        let sum = 0;
+        for (let i = 0; i < 48; i++) sum += data[i];          // 低频段平均音量
+        const vol = sum / (48 * 255);
+        const t = Date.now() / 140;
+        ringSpans.forEach((s, i) => {
+          const wave = vol * (0.55 + 0.45 * Math.sin(t + i * 0.85));
+          const scale = 0.4 + wave * 2.4;                     // 0.4 ~ 2.8 倍伸缩
+          s.style.transform = `rotate(${i * 30}deg) scaleY(${scale.toFixed(3)})`;
+        });
+        ringRaf = requestAnimationFrame(step);
+      };
+      ringRaf = requestAnimationFrame(step);
+    });
+  }
+
+  function stopSoundRing() {
+    if (ringRaf) { cancelAnimationFrame(ringRaf); ringRaf = null; }
+    ring.classList.remove('active');
+    ringSpans.forEach((s, i) => { s.style.transform = `rotate(${i * 30}deg) scaleY(1)`; });
+  }
+
   core.addEventListener('mousedown', (e) => {
     if (e.button !== 0) return;
     dragging = true;
@@ -42,23 +77,18 @@
       micStop = null;
       return null;
     });
-    // 150ms 未松开 → 判定为长按：变红提示（与录音同步，不丢语音）
+    // 150ms 未松开 → 判定为长按：点变红 + 启动音量环（与录音同步，不丢语音）
     pressTimer = setTimeout(() => {
       pressTimer = null;
       longPress = true;
-      if (window.mic.isReady()) {
-        core.classList.add('recording');   // 常驻流就绪：判定即变红，录音已在录
-      } else {
-        // 流未就绪（首次冷启动）：等就绪后再变红（此时才真正开录）
-        micPromise.then(() => {
-          if (longPress) core.classList.add('recording');
-        });
-      }
+      core.classList.add('recording');
+      startSoundRing();
     }, 150);
   });
 
   function cancelMic() {
     core.classList.remove('recording');
+    stopSoundRing();
     if (micStop) {
       const s = micStop;
       micStop = null;
@@ -94,6 +124,7 @@
     const dy = e.screenY - startY;
     const isClick = Math.abs(dx) < 6 && Math.abs(dy) < 6;
     core.classList.remove('recording');
+    stopSoundRing();
     if (!isClick) {
       if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
       cancelMic();

@@ -8,8 +8,14 @@
   <link rel="stylesheet" href="bubble.css" />
 </head>
 <body>
-  <!-- 悬浮球：单击看最近回复 / 长按说话 / 拖拽 / 右键菜单 -->
+  <!-- 悬浮球：单击看最近回复 / 长按说话（点变红 + 音量动态环）/ 拖拽 / 右键菜单 -->
   <div id="ball">
+    <!-- 录音音量环：12 条线条围绕球，随音量伸缩（录音中显示） -->
+    <div id="sound-ring">
+      <span></span><span></span><span></span><span></span>
+      <span></span><span></span><span></span><span></span>
+      <span></span><span></span><span></span><span></span>
+    </div>
     <div id="core" title="单击：看小助最近说了什么；长按：说话；右键：放大/免打扰/退出">
       <span id="status-dot"></span>
       <span id="badge" class="hidden"></span>

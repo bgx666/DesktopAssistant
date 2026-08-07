@@ -41,6 +41,25 @@
     return !!sharedStream;
   }
 
+  // 音量分析器（常驻流挂载一次）：录音可视化用（动态环随音量跳动）
+  let analyserNode = null;
+  async function getAnalyser() {
+    if (!sharedStream) return null;
+    if (!analyserNode) {
+      try {
+        const ctx = await getCtx();
+        if (ctx.state === 'suspended') { try { await ctx.resume(); } catch { /* 忽略 */ } }
+        const src = ctx.createMediaStreamSource(sharedStream);
+        analyserNode = ctx.createAnalyser();
+        analyserNode.fftSize = 256;
+        src.connect(analyserNode);
+      } catch {
+        return null;
+      }
+    }
+    return analyserNode;
+  }
+
   async function begin() {
     const stream = await init();   // 常驻流：首次启动 0.4~1.3s，之后 ~0ms
     const rec = new MediaRecorder(stream);
@@ -101,5 +120,5 @@
     return new Uint8Array(buffer);
   }
 
-  window.mic = { begin, init, isReady };
+  window.mic = { begin, init, isReady, getAnalyser };
 })();
