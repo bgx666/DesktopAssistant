@@ -44,10 +44,9 @@ FALLBACK_HEARTBEAT_MINUTES = _config.PLANNER_FALLBACK_MINUTES
 MAX_WORKER_ROUNDS = 3            # 生成期间到达的新消息最多再补 N 轮
 DEFAULT_WAKE_MINUTES = 30        # 首次启动/未调度时的默认唤醒间隔
 
-# 心跳节奏自适应：
-# - 对话中（用户刚说话/在聊）→ 短心跳，随时跟进（秒级）
-# - 用户沉默（自主唤醒多次没人理）→ 每次心跳逐渐加长，避免烦人
-DIALOG_HEARTBEAT_MINUTES = 0.33  # 对话默认心跳（用户刚说话后，≈20 秒）
+# 心跳节奏：分钟级定时任务（一人一句，无秒级短心跳）
+# - 用户说话后不重置心跳（保持原定时，AI 不主动插话）
+# - 沉默时每次心跳逐步加长，避免烦人
 SILENT_ESCALATE_STEP = 10        # 沉默时每次心跳加长的分钟数
 SILENT_ESCALATE_MAX = 120        # 沉默加长上限
 
@@ -323,11 +322,12 @@ class PlannerSession:
         self._wake_event.set()
 
     def _next_silent_minutes(self) -> float:
-        """按沉默次数计算下次心跳分钟数：对话 0.33 → 沉默逐步加长 → 上限 120。"""
+        """按沉默次数计算下次心跳分钟数：10 起步 → 沉默逐步加长 → 上限 120。"""
+        base = float(_config.PLANNER_HEARTBEAT_MIN_MINUTES)   # 10 分钟
         if self._heartbeat_silent_count <= 0:
-            return DIALOG_HEARTBEAT_MINUTES
+            return base
         return min(SILENT_ESCALATE_MAX,
-                   DIALOG_HEARTBEAT_MINUTES + self._heartbeat_silent_count * SILENT_ESCALATE_STEP)
+                   base + self._heartbeat_silent_count * SILENT_ESCALATE_STEP)
 
     def heartbeat_dict(self) -> dict:
         with self.buffer_lock:
@@ -535,9 +535,8 @@ class PlannerSession:
         # 保底沿用原心跳间隔
         self.schedule_heartbeat(minutes, note)
         self._save_buffer_state()   # 立即落盘：退出/中断后重开恢复新计时而非旧值
-        text = (f"（系统：心跳到了，请主动和用户说话。{note + '。' if note else ''}"
-                f"可以看看用户的任务进度，提醒用户该做的事。"
-                f"如果此刻实在没什么想说的，可以不说——回复内容留空即可。）")
+        text = (f"（系统：定时任务到点，主动和用户说说话。{note + '。' if note else ''}"
+                f"可以看看用户的任务进度，提醒用户该做的事，说说你的想法。）")
         self._receive(text, trigger=True)
         self._spawn_worker("heartbeat")
 
@@ -692,9 +691,8 @@ class PlannerSession:
             # 保底沿用原心跳间隔，避免"重置感"
             self.schedule_heartbeat(minutes, note)
             self._save_buffer_state()   # 立即落盘：退出/中断后重开恢复新计时
-            text = (f"（系统：心跳到了，请主动和用户说话。{note + '。' if note else ''}"
-                    f"可以看看用户的任务进度，提醒用户该做的事。"
-                    f"如果此刻实在没什么想说的，可以不说——回复内容留空即可。）")
+            text = (f"（系统：定时任务到点，主动和用户说说话。{note + '。' if note else ''}"
+                    f"可以看看用户的任务进度，提醒用户该做的事，说说你的想法。）")
             self._receive(text, trigger=True)
             self._spawn_worker("heartbeat")
 
@@ -752,8 +750,8 @@ class PlannerSession:
     def enqueue_player_message(self, message: str, files: list | None = None) -> str:
         """注入玩家消息并立即触发回复生成。返回该消息的 id（撤销按钮用）。
 
-        用户说话 = 活跃状态：重置挂起的旧心跳（避免"1 小时后才醒来"的残留），
-        设对话默认短心跳并清零沉默计数；生成中 LLM 会再调 heartbeat 覆盖。
+        用户说话 = 活跃状态：清零沉默计数（有回应）。
+        **不重置心跳**：一人一句——AI 回答后保持原有定时，不主动插话。
         消息附带「距上次说话 X」——让 AI 感知对话节奏（间隔信息放在
         "对你说："之前，/history 切分时丢弃，对话框不显示）。
 
@@ -761,9 +759,7 @@ class PlannerSession:
         （text 内容直注 / doc 解析落盘+预览 / image OCR 提取 / 其他仅路径）。
         """
         now = _now()
-        self._cancel_heartbeat()
         self._heartbeat_silent_count = 0
-        self.schedule_heartbeat(DIALOG_HEARTBEAT_MINUTES)
         gap_hint = ""
         if self._last_player_message_at is not None:
             gap_hint = f"（距上次说话 {self._fmt_gap((now - self._last_player_message_at).total_seconds())}）"
@@ -838,10 +834,8 @@ class PlannerSession:
             self._msg_counter = max(0, self._msg_counter - len(removed))
             self._repair_buffer()
         _logger.info("[undo] 撤销 %d 条对话（从消息 %s 起）", len(removed), msg_id)
-        # 撤销 = 用户介入 = 活跃：重置心跳，保存状态，通知前端
-        self._cancel_heartbeat()
+        # 撤销 = 用户介入 = 活跃：清零沉默计数，不重置心跳（一人一句），保存状态
         self._heartbeat_silent_count = 0
-        self.schedule_heartbeat(DIALOG_HEARTBEAT_MINUTES)
         self._save_buffer_state()
         self.push_event({"type": "log", "text": f"已撤销 {len(removed)} 条对话"})
         self.push_plan_update()

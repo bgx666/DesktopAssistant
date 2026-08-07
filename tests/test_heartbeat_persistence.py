@@ -45,7 +45,7 @@ def test_heartbeat_expired_while_offline_triggers_on_start(data_root, monkeypatc
         assert calls == ["heartbeat"], f"到期应触发: {calls}"
         content = "\n".join(
             m.content for m in s2.recent_buffer if getattr(m, "type", "") == "human")
-        assert "心跳到了" in content, "补唤醒文案应是指令式而非角色扮演"
+        assert "定时任务到点" in content, "补唤醒文案应是指令式而非角色扮演"
         assert "你醒" not in content, "不应出现'你醒了'这类角色扮演文案"
     finally:
         s2.close()
@@ -116,14 +116,14 @@ def test_fire_heartbeat_leaves_scheduled_next(data_root, monkeypatch):
 def test_startup_trigger_keeps_original_interval(data_root, monkeypatch):
     """启动补唤醒的保底沿用原心跳间隔（而非固定 60 分钟）。
 
-    回归：短心跳（如 1 分钟）离线过期后重开，补唤醒保底应为原间隔，
+    回归：短心跳（如 15 分钟）离线过期后重开，补唤醒保底应为原间隔，
     否则显示"60 分钟后醒来"造成重置感。
     """
     calls = []
     monkeypatch.setattr(PlannerSession, "_spawn_worker", lambda self, t: calls.append(t))
     s1 = PlannerSession(data_root, mock=True)
     try:
-        s1.schedule_heartbeat(2, "两分钟节奏")       # 原间隔 2 分钟
+        s1.schedule_heartbeat(15, "十五分钟节奏")      # 原间隔 15 分钟
         s1._next_heartbeat_at = time.time() - 60     # 已过期
         s1._save_buffer_state()
     finally:
@@ -132,9 +132,9 @@ def test_startup_trigger_keeps_original_interval(data_root, monkeypatch):
     s2 = PlannerSession(data_root, mock=True)        # 重启 → 补唤醒
     try:
         assert calls == ["heartbeat"], "到期应触发"
-        # 保底沿用原间隔：next ≈ now + 2 分钟（而非 60 分钟）
+        # 保底沿用原间隔：next ≈ now + 15 分钟（而非 60 分钟）
         remain = s2._next_heartbeat_at - time.time()
-        assert 60 < remain < 180, f"保底应≈原间隔 2 分钟，实际 {remain:.0f} 秒"
+        assert 800 < remain < 1000, f"保底应≈原间隔 15 分钟，实际 {remain:.0f} 秒"
     finally:
         s2.close()
 

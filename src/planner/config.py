@@ -37,8 +37,8 @@ PLANNER_PORT: int = int(os.getenv("PLANNER_PORT", "18771"))
 PLANNER_MOCK_LLM: bool = os.getenv("PLANNER_MOCK_LLM", "").strip().lower() in ("1", "true", "yes", "on")
 
 # 心跳护栏：LLM 自主决定心跳间隔，clamp 到 [PLANNER_HEARTBEAT_MIN, MAX] 分钟
-# （支持小数分钟：0.17 ≈ 10 秒，聊天场景可用秒级短心跳）
-PLANNER_HEARTBEAT_MIN_MINUTES: float = float(os.getenv("PLANNER_HEARTBEAT_MIN_MINUTES", "0.17"))
+# 心跳是分钟级定时任务（一人一句，不再秒级短心跳）
+PLANNER_HEARTBEAT_MIN_MINUTES: float = float(os.getenv("PLANNER_HEARTBEAT_MIN_MINUTES", "10"))
 PLANNER_HEARTBEAT_MAX_MINUTES: int = int(os.getenv("PLANNER_HEARTBEAT_MAX_MINUTES", "720"))
 
 # 免打扰默认窗口（24h 制闭区间 [start, end)，跨天处理）

@@ -104,11 +104,11 @@ def test_heartbeat_clamp_in_tool(data_root):
     s = PlannerSession(data_root, mock=True)
     try:
         tools = {t.name: t for t in build_tools(s)}
-        # 秒级心跳：0.2 分钟（12 秒）有效
+        # 分钟级下限：0.2（12 秒）被拉高到最小 10 分钟
         r = tools["heartbeat"].invoke({"minutes": 0.2})
-        assert abs(s._heartbeat_minutes - 0.2) < 1e-6
-        assert "12 秒" in r
-        # 下限护栏 ≈10 秒：0 被拉高到 0.17
+        assert abs(s._heartbeat_minutes - _config.PLANNER_HEARTBEAT_MIN_MINUTES) < 1e-6
+        assert "10 分钟" in r
+        # 下限护栏：0 被拉高到最小
         tools["heartbeat"].invoke({"minutes": 0})
         assert abs(s._heartbeat_minutes - _config.PLANNER_HEARTBEAT_MIN_MINUTES) < 1e-6
         tools["heartbeat"].invoke({"minutes": 100000})
@@ -234,17 +234,15 @@ def test_memory_tree_wired_to_session(data_root):
     finally:
         s.close()
 
-def test_player_message_resets_heartbeat(data_root):
-    """用户说话 → 取消旧长心跳、设对话短心跳、清零沉默计数。"""
-    from planner.session import DIALOG_HEARTBEAT_MINUTES
+def test_player_message_does_not_reset_heartbeat(data_root):
+    """用户说话 → 不重置心跳（一人一句）：旧定时保留、沉默计数清零。"""
     s = PlannerSession(data_root, mock=True)
     try:
-        s.schedule_heartbeat(120)          # 模拟旧的长心跳
+        s.schedule_heartbeat(120)          # 模拟已有的长心跳
         assert s.heartbeat_dict()["in_minutes"] > 60
         s.enqueue_player_message("我回来了")
-        # 心跳被重置为对话默认短间隔（秒级）
-        hb = s.heartbeat_dict()
-        assert 0 < hb["in_seconds"] <= DIALOG_HEARTBEAT_MINUTES * 60 + 2
+        # 心跳保持原定时（不被重置为短间隔）
+        assert s.heartbeat_dict()["in_minutes"] > 60
         assert s._heartbeat_silent_count == 0
     finally:
         s.close()
@@ -252,14 +250,16 @@ def test_player_message_resets_heartbeat(data_root):
 
 def test_silent_escalation(data_root):
     """连续自主唤醒用户没反应 → 心跳逐步加长（10 → 20 → … → 120 上限）。"""
-    from planner.session import DIALOG_HEARTBEAT_MINUTES, SILENT_ESCALATE_MAX, SILENT_ESCALATE_STEP
+    from planner import config as _config
+    from planner.session import SILENT_ESCALATE_MAX, SILENT_ESCALATE_STEP
+    base = float(_config.PLANNER_HEARTBEAT_MIN_MINUTES)
     s = PlannerSession(data_root, mock=True)
     try:
-        assert s._next_silent_minutes() == DIALOG_HEARTBEAT_MINUTES
+        assert s._next_silent_minutes() == base
         s._heartbeat_silent_count = 1
-        assert s._next_silent_minutes() == DIALOG_HEARTBEAT_MINUTES + SILENT_ESCALATE_STEP
+        assert s._next_silent_minutes() == base + SILENT_ESCALATE_STEP
         s._heartbeat_silent_count = 5
-        assert s._next_silent_minutes() == DIALOG_HEARTBEAT_MINUTES + 5 * SILENT_ESCALATE_STEP
+        assert s._next_silent_minutes() == base + 5 * SILENT_ESCALATE_STEP
         s._heartbeat_silent_count = 99
         assert s._next_silent_minutes() == SILENT_ESCALATE_MAX
     finally:

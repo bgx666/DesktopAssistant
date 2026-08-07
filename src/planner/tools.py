@@ -199,9 +199,10 @@ def build_tools(session) -> list[BaseTool]:
 
     @tool(args_schema=HeartbeatInput)
     def heartbeat(minutes: float, note: str = "") -> str:
-        """做完事、回答完用户之后必须调用它停下来。它会让你在指定时间后再醒来查看情况。不调用你会一直想事情、停不下来。
+        """设置下次定时唤醒（定时任务）的时间，然后停下来休息。到点后你会醒来检查任务进度、主动和用户说话。
 
-        聊天中可以用秒级短心跳（0.2 = 12 秒）主动跟进；长时间无事时用较长间隔。"""
+        心跳是分钟级定时任务：minutes 最小 10 分钟（10~720）。
+        用户说话后不要重置心跳——保持你原来定的时间，等用户说话你再回答（一人一句）。"""
         session.set_heartbeat_state(float(minutes), str(note))
         return f"（我先歇 {session._fmt_duration(float(minutes))}，{note or '到点再醒'}。）"
 
