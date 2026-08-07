@@ -20,13 +20,13 @@ html, body {
   justify-content: center;
 }
 
-/* 中心圆：纯扁平初音青（无渐变模拟光照、无投影/高光阴影），细白描边 */
+/* 中心圆：扁平赛博朋克霓虹青（无阴影无渐变），细白描边 */
 #core {
   width: 44px;
   height: 44px;
   border-radius: 50%;
-  background: #39c5bb;
-  border: 1px solid rgba(255, 255, 255, 0.35);
+  background: #00e5ff;
+  border: 1px solid rgba(255, 255, 255, 0.4);
   box-shadow: none;
   position: relative;
   cursor: pointer;
@@ -35,9 +35,9 @@ html, body {
 #core:hover { transform: scale(1.05); }
 #core:active { transform: scale(0.96); }
 
-/* 录音中（按住说话）：状态点亮青脉冲（初音系），雷达环同色系随声音伸缩 */
+/* 录音中（按住说话）：状态点紫色脉冲（赛博朋克），雷达环三色随声音伸缩 */
 #core.recording #status-dot {
-  background: #7deee3;
+  background: #b026ff;
   animation: pulse 0.9s infinite;
 }
 
@@ -54,23 +54,22 @@ html, body {
   transition: opacity 0.2s ease;
 }
 #sound-ring.active { opacity: 1; }
-#ring-line {
-  fill: none;
-  stroke: #7deee3;
+/* 12 边形边：颜色由 JS 按赛博三色循环设置（stroke 属性），宽度/圆角在此 */
+#ring-edges line {
   stroke-width: 2;
-  stroke-linejoin: round;
   stroke-linecap: round;
 }
+/* 顶点圆点：fill 由 JS 按边同色设置 */
 #ring-points circle {
-  fill: #7deee3;
+  fill: #00f0ff;
 }
 /* 雷达轮辐（中心到边缘的淡辐射线，增强雷达图感） */
 #ring-spokes line {
-  stroke: rgba(125, 238, 227, 0.35);
+  stroke: rgba(0, 240, 255, 0.3);
   stroke-width: 1;
 }
 
-/* 状态点（球心居中，对称）：在线初音青 / 思考中亮青脉冲 / 离线红 / 录音亮青（扁平无辉光） */
+/* 状态点（球心居中，对称）：在线霓虹青 / 思考中品红脉冲 / 离线红 / 录音紫脉冲（赛博朋克） */
 #status-dot {
   position: absolute;
   left: 50%;
@@ -79,13 +78,13 @@ html, body {
   height: 18px;
   margin: -9px 0 0 -9px;
   border-radius: 50%;
-  background: #39c5bb;
+  background: #00e5ff;
   border: 2px solid #fff;
   box-sizing: border-box;
   z-index: 1;
 }
 #status-dot.thinking {
-  background: #7deee3;
+  background: #ff2e97;
   animation: pulse 0.9s infinite;
 }
 #status-dot.offline {

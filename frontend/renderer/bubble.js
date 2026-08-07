@@ -20,16 +20,17 @@
   let micStop = null;        // 录音停止函数（麦克风就绪后赋值）
   let micPromise = null;     // begin() 的 Promise（预启动，可能未就绪）
 
-  // ── 录音雷达环：贴在蓝色球体边缘（半径 22）的闭合多边形波形——
-  //    48 顶点沿圆周、径向随音量起伏（雷达图效果），顶点连线 + 小圆点，
-  //    中心轮辐线增强雷达感；特效在球面上，中心点（状态点）被环包围 ──
+  // ── 录音雷达环：12 顶点 12 边形（雷达图效果）——
+  //    每顶点沿圆周、径向随音量起伏，边直线连接（直来直去），
+  //    赛博朋克三色循环描边（青/品红/紫）+ 顶点小圆点同色 ──
   const ring = document.getElementById('sound-ring');
-  const ringLine = document.getElementById('ring-line');
-  const RING_N = 48;                // 顶点数
+  const RING_N = 12;                // 顶点数
   const RING_CX = 50, RING_CY = 50; // 视图中心（100×100 视口，与球心重合）
   const RING_R = 21;                // 球边缘半径（球 44px → 半径 22，贴边微缩）
-  const RING_AMP = 5;               // 音量波动幅度（贴球边缘起伏）
+  const RING_AMP = 5;               // 音量波动幅度
+  const CYBER_COLORS = ['#00f0ff', '#ff2e97', '#b026ff'];  // 赛博朋克：霓虹青/品红/紫
   let ringRaf = null;
+  let ringEdges = [];
   let ringPts = [];
 
   function initRingSpokes() {
@@ -47,13 +48,29 @@
   }
   initRingSpokes();
 
+  function initRingEdges() {
+    const g = document.getElementById('ring-edges');
+    g.textContent = '';
+    ringEdges = [];
+    for (let i = 0; i < RING_N; i++) {
+      const l = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+      l.setAttribute('stroke', CYBER_COLORS[i % CYBER_COLORS.length]);
+      l.setAttribute('stroke-width', '2');
+      l.setAttribute('stroke-linecap', 'round');
+      g.appendChild(l);
+      ringEdges.push(l);
+    }
+  }
+  initRingEdges();
+
   function initRingPoints() {
     const g = document.getElementById('ring-points');
     g.textContent = '';
     ringPts = [];
     for (let i = 0; i < RING_N; i++) {
       const c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-      c.setAttribute('r', '1.6');
+      c.setAttribute('r', '1.8');
+      c.setAttribute('fill', CYBER_COLORS[i % CYBER_COLORS.length]);
       g.appendChild(c);
       ringPts.push(c);
     }
@@ -73,22 +90,29 @@
         for (let i = 0; i < 48; i++) sum += data[i];          // 低频段平均音量
         const vol = sum / (48 * 255);
         const t = Date.now() / 200;
-        // 多边形雷达波形：48 顶点分成 8 段，段内所有顶点同一半径（直线边）、
-        // 段间半径跳变（棱角）→ 8 边形数据区（雷达图效果，直来直去）
-        const SEGS = 8;
-        let pts = '';
+        // 12 顶点：每顶点独立半径（12 边形棱角，直来直去）
+        const coords = [];
         for (let i = 0; i < RING_N; i++) {
           const ang = (i / RING_N) * Math.PI * 2;
-          const seg = Math.floor((i / RING_N) * SEGS);
-          const wave = vol * (0.5 + 0.5 * Math.sin(t + seg * 0.9));  // 段内恒定
-          const r = RING_R - RING_AMP + wave * RING_AMP * 2;          // 径向起伏（球边缘内外）
-          const x = RING_CX + r * Math.cos(ang);
-          const y = RING_CY + r * Math.sin(ang);
-          pts += `${x.toFixed(1)},${y.toFixed(1)} `;
-          ringPts[i].setAttribute('cx', x.toFixed(1));
-          ringPts[i].setAttribute('cy', y.toFixed(1));
+          const wave = vol * (0.5 + 0.5 * Math.sin(t + i * 0.9));
+          const r = RING_R - RING_AMP + wave * RING_AMP * 2;
+          coords.push({
+            x: RING_CX + r * Math.cos(ang),
+            y: RING_CY + r * Math.sin(ang),
+          });
         }
-        ringLine.setAttribute('points', pts);
+        for (let i = 0; i < RING_N; i++) {
+          const a = coords[i];
+          const b = coords[(i + 1) % RING_N];
+          const e = ringEdges[i];
+          e.setAttribute('x1', a.x.toFixed(1));
+          e.setAttribute('y1', a.y.toFixed(1));
+          e.setAttribute('x2', b.x.toFixed(1));
+          e.setAttribute('y2', b.y.toFixed(1));
+          const p = ringPts[i];
+          p.setAttribute('cx', a.x.toFixed(1));
+          p.setAttribute('cy', a.y.toFixed(1));
+        }
         ringRaf = requestAnimationFrame(step);
       };
       ringRaf = requestAnimationFrame(step);
@@ -98,7 +122,10 @@
   function stopSoundRing() {
     if (ringRaf) { cancelAnimationFrame(ringRaf); ringRaf = null; }
     ring.classList.remove('active');
-    ringLine.removeAttribute('points');
+    ringEdges.forEach((e) => {
+      e.removeAttribute('x1'); e.removeAttribute('y1');
+      e.removeAttribute('x2'); e.removeAttribute('y2');
+    });
     ringPts.forEach((c) => { c.removeAttribute('cx'); c.removeAttribute('cy'); });
   }
 
