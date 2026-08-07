@@ -444,17 +444,20 @@ function createToastWin(text, offset = 0, history = false) {
     win.showInactive();   // 不抢焦点
     layoutToasts();
   });
-  // 堆叠位置：
-  // - 普通消息（小助主动说话）：贴在悬浮球旁边（新消息在最贴球处，旧的向上顶）
-  // - 历史消息（单击翻出）：从屏幕顶部开始往下排——先点的（较新历史）在最上，
-  //   更久远的依次落在下面（布局见 layoutToasts 分区）
+  // 堆叠位置（统一时间序：越往下越新，越往上越早）：
+  // - 普通消息（模型生成）：插到最底（贴球），旧气泡被顶上去
+  // - 历史消息（单击翻出，off=距最新偏移）：插到比它新的气泡之后——
+  //   第 1 次点击（off0 最近回复）在最底，之后点击的更早消息依次往上
   if (!history) {
     toastWins.unshift(win);
   } else {
-    // 历史区保持 offset 升序（数组顺序 = 从上到下：先点的在顶）
-    const idx = toastWins.findIndex((w) => w._isHistory && w._toastOffset > offset);
-    if (idx < 0) toastWins.push(win);
-    else toastWins.splice(idx, 0, win);
+    let idx = -1;
+    for (let i = toastWins.length - 1; i >= 0; i--) {
+      const w = toastWins[i];
+      if (w._isHistory && w._toastOffset < offset) { idx = i + 1; break; }
+      if (!w._isHistory) { idx = i + 1; break; }   // 普通消息更底 → 插到其后
+    }
+    toastWins.splice(idx < 0 ? toastWins.length : idx, 0, win);
   }
   layoutToasts();
 }
@@ -471,9 +474,8 @@ function clearAllToasts() {
   for (const w of wins) destroyToastWin(w);
 }
 
-// 堆叠布局（分区，两个方向互不干扰）：
-// - 普通消息区：悬浮球旁，最新贴球、旧气泡向上顶（或球下方时向下排）
-// - 历史消息区：从屏幕顶部（工作区顶）向下排，先点的在顶、更久远落在下面
+// 堆叠布局（统一时间序）：数组 [0] 最新贴球（最下），越往后越旧越靠上。
+// 高度按各窗口实际高度动态累积（长文本气泡自适应撑高）。
 function layoutToasts() {
   if (!toastWins.length) return;
   const b = bubbleWin && !bubbleWin.isDestroyed() ? bubbleWin.getBounds() : null;
@@ -484,28 +486,16 @@ function layoutToasts() {
     Math.min(b ? Math.round(b.x + b.width / 2 - TOAST_W / 2) : disp.x + 40,
              disp.x + disp.width - TOAST_W - 4));
   const above = b ? (b.y - 20 >= disp.y + 4) : true;
-
-  // 普通消息区：游标从球旁出发（above：第一个气泡底部贴球上方 10px）
-  let cursor = above
-    ? (b ? b.y - 10 : disp.y + 40 + 110)
-    : (b ? b.y + b.height + 10 : disp.y + 40);
+  // 游标：above → 下一个气泡的底部位置；否则 → 下一个气泡的顶部位置
+  let cursor = above ? (b ? b.y - 10 : disp.y + 40 + 110) : (b ? b.y + b.height + 10 : disp.y + 40);
   for (const win of toastWins) {
-    if (win.isDestroyed() || win._isHistory) continue;
+    if (win.isDestroyed()) continue;
     const h = win.getBounds().height;
     const top = above ? cursor - h : cursor;
-    const wy = Math.max(disp.y + 4, Math.min(top, disp.y + disp.height - h - 4));
+    const wy = Math.max(disp.y + 4,
+      Math.min(top, disp.y + disp.height - h - 4));
     win.setBounds({ x, y: wy, width: TOAST_W, height: h });
     cursor = above ? top - 6 : cursor + h + 6;
-  }
-
-  // 历史消息区：从工作区顶部向下排（数组顺序 = offset 升序 = 先点的在顶）
-  let hCursor = disp.y + 4;
-  for (const win of toastWins) {
-    if (win.isDestroyed() || !win._isHistory) continue;
-    const h = win.getBounds().height;
-    const wy = Math.min(hCursor, disp.y + disp.height - h - 4);
-    win.setBounds({ x, y: wy, width: TOAST_W, height: h });
-    hCursor += h + 6;
   }
 }
 
