@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta http-equiv="Content-Security-Policy"
-        content="default-src 'self'; connect-src http://127.0.0.1:*; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:;" />
+        content="default-src 'self'; connect-src http://127.0.0.1:*; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:; media-src http://127.0.0.1:*;" />
   <title>小助</title>
   <link rel="stylesheet" href="bubble.css" />
 </head>
@@ -15,6 +15,8 @@
       <span id="badge" class="hidden"></span>
     </div>
   </div>
+  <!-- 语音播报（气泡朗读）：audio 事件设 src 播放 -->
+  <audio id="tts-audio" hidden></audio>
   <script src="bubble.js"></script>
 </body>
 </html>

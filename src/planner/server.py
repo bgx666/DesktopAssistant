@@ -94,6 +94,24 @@ class _Handler(BaseHTTPRequestHandler):
         elif path == "/next":
             # 动态待办队列（按紧急度排序）
             self._send_json({"ok": True, "queue": self.session.db.list_pending()})
+        elif path.startswith("/tts/"):
+            # 合成音频下载（仅限 tts 目录内的 32 位 hex + .mp3，防路径穿越）
+            name = path[len("/tts/"):]
+            import re as _re
+            if not _re.fullmatch(r"[0-9a-f]{32}\.mp3", name):
+                self._send_json({"ok": False, "error": "not_found"}, status=404)
+                return
+            audio_file = self.session.tts.tts_dir / name
+            if not audio_file.is_file():
+                self._send_json({"ok": False, "error": "not_found"}, status=404)
+                return
+            body = audio_file.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "audio/mpeg")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(body)
         elif path == "/history":
             # 对话历史（渲染聊天区用）：玩家消息 / 小助回复 / 工具卡片，
             # 以及压缩节点（role=memory，早期对话的记忆摘要，显示在对话框顶部）

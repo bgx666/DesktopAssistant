@@ -533,9 +533,13 @@ async function pollDequeue() {
     pendingEvents.push(...events);
     if (pendingEvents.length > 60) pendingEvents.splice(0, pendingEvents.length - 60);
     if (panelState === 'hidden') {
-      // 悬浮球形态：文本事件冒气泡
+      // 悬浮球形态：文本事件冒气泡；audio 事件 → 气泡窗口播放（只读气泡）
       for (const ev of events) {
-        if (ev.type === 'text' && ev.content) showToast(ev.content);
+        if (ev.type === 'text' && ev.content) {
+          showToast(ev.content);
+        } else if (ev.type === 'audio' && ev.url && bubbleWin && !bubbleWin.isDestroyed()) {
+          bubbleWin.webContents.send('audio', ev.url);
+        }
       }
     } else if (panelLoaded && panelWin && !panelWin.isDestroyed()) {
       // 面板展开：推给面板渲染（含 morphing_in/out，事件顺序保持）

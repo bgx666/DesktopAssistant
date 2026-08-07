@@ -56,14 +56,15 @@ Invoke-RobocopyMirror (Join-Path $DevRoot "src") (Join-Path $AppDir "src") @("/X
 Invoke-RobocopyMirror (Join-Path $DevRoot "frontend") (Join-Path $AppDir "frontend") @("/XD", "node_modules")
 Copy-Item (Join-Path $DevRoot "pyproject.toml") $AppDir -Force
 
-# ── 4. venv（可编辑安装：代码复制即更新，零重装开销）────────
+# ── 4. venv（可编辑安装：代码复制即更新；每次构建同步依赖，新依赖自动进 release）──
 if (-not (Test-Path $venvPythonExe)) {
     Write-Host "[build] 首次创建 venv..."
     & $MinicondaPython -m venv $VenvDir
     if ($LASTEXITCODE -ne 0) { throw "venv 创建失败" }
-    & $venvPythonExe -m pip install -e $AppDir
-    if ($LASTEXITCODE -ne 0) { throw "pip install 失败" }
 }
+Write-Host "[build] 同步依赖（pip install -e）..."
+& $venvPythonExe -m pip install -e $AppDir
+if ($LASTEXITCODE -ne 0) { throw "pip install 失败" }
 
 # ── 5. frontend 依赖（首次 npm install，electron 已缓存则快）─
 if (-not (Test-Path (Join-Path $AppDir "frontend\node_modules"))) {

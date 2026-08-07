@@ -195,6 +195,24 @@ def test_dequeue_drains(backend):
     assert False, "事件未 drain 空"
 
 
+def test_tts_endpoint(backend):
+    """GET /tts/{name} 返回音频字节；非法名/不存在 → 404。"""
+    session, base = backend
+    name = "a" * 32 + ".mp3"
+    session.tts.tts_dir.mkdir(parents=True, exist_ok=True)
+    (session.tts.tts_dir / name).write_bytes(b"MP3DATA")
+    with urllib.request.urlopen(base + "/tts/" + name, timeout=5) as r:
+        assert r.status == 200
+        assert r.read() == b"MP3DATA"
+    from urllib.error import HTTPError
+    for bad in ("x.mp3", "a" * 31 + ".mp3", "b" * 32 + ".wav", "..%2Fpasswd"):
+        try:
+            urllib.request.urlopen(base + "/tts/" + bad, timeout=5)
+            assert False, f"非法名 {bad} 应 404"
+        except HTTPError as e:
+            assert e.code == 404
+
+
 def test_toggle_mock(backend):
     _, base = backend
     r = _post(base, "/toggle_mock")

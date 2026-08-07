@@ -29,6 +29,7 @@ from .llm import MockChatModel, build_chat_model
 from .memory.sqlite_memory_tree import SQLiteMemoryTree
 from .middleware import SUMMARIZE_TRIGGER_MESSAGES as _SUMMARIZE_TRIGGER
 from .store.tasks_db import TasksDb
+from .tts import TtsClient
 
 _logger = logging.getLogger("planner.session")
 
@@ -66,6 +67,14 @@ class PlannerSession:
         # 存储
         self.db = TasksDb(self.data_root / "planner.db")
         self.memory_tree: SQLiteMemoryTree | None = None
+
+        # 语音合成（整句，只读气泡；未配置 key 时静默关闭）
+        self.tts = TtsClient(
+            _config.PLANNER_TTS_API_KEY,
+            _config.PLANNER_TTS_MODEL,
+            _config.PLANNER_TTS_VOICE,
+            self.data_root,
+        )
 
         # 对话状态
         self.recent_buffer: list[BaseMessage] = []
@@ -213,6 +222,21 @@ class PlannerSession:
 
     def push_text(self, content: str) -> None:
         self.push_event({"type": "text", "content": content, "from": CHARACTER_ID})
+
+    def _maybe_speak(self, text: str) -> None:
+        """完整文本收束后后台合成语音（气泡朗读）。
+
+        只发 audio 事件，播放与否由主进程按面板状态决定（悬浮球形态才播）；
+        失败/未配置 key 静默忽略，不影响生成。
+        """
+        if not getattr(self, "tts", None) or not self.tts.enabled:
+            return
+        if not text or not str(text).strip():
+            return
+        self.tts.synthesize_async(
+            str(text),
+            lambda url: url and self.push_event({"type": "audio", "url": url}),
+        )
 
     def push_log(self, text: str) -> None:
         self.push_event({"type": "log", "text": text})
@@ -909,6 +933,7 @@ class PlannerSession:
                         full_text = "".join(current_chunks)
                         self.push_text(full_text)
                         self._save_log("assistant", full_text)
+                        self._maybe_speak(full_text)
                         current_chunks = []
                         current_msg_id = None
         except Exception as exc:

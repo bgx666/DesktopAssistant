@@ -85,4 +85,14 @@
     badge.textContent = overdue > 9 ? '9+' : overdue;
   }
   window.planner.onState(applyState);
+
+  // ── 语音播报（气泡朗读）：收到 audio 事件 → 播放（新消息打断旧播放）──
+  const ttsAudio = document.getElementById('tts-audio');
+  window.planner.onAudio((url) => {
+    if (!url) return;
+    try {
+      ttsAudio.src = window.planner.apiBase + url;
+      ttsAudio.play().catch(() => { /* 播放失败静默 */ });
+    } catch { /* 忽略 */ }
+  });
 })();

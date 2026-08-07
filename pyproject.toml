@@ -9,6 +9,7 @@ dependencies = [
     "langchain-openai>=1.4",
     "langgraph>=1.0",
     "python-dotenv",
+    "dashscope>=1.26.4",
 ]
 
 [project.optional-dependencies]
