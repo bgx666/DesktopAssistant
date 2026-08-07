@@ -39,6 +39,17 @@ html, body {
 }
 #core:active { transform: scale(0.96); }
 
+/* 录音中（按住说话）：红色脉冲 */
+#core.recording {
+  background: radial-gradient(circle at 32% 28%, #ff9aa8, #ff6b81 55%, #e5484d);
+  box-shadow: 0 0 0 4px rgba(255, 107, 129, 0.25), 0 4px 18px rgba(255, 107, 129, 0.55);
+  animation: mic-pulse 1.1s ease-in-out infinite;
+}
+@keyframes mic-pulse {
+  0%, 100% { box-shadow: 0 0 0 4px rgba(255, 107, 129, 0.22), 0 4px 18px rgba(255, 107, 129, 0.5); }
+  50% { box-shadow: 0 0 0 10px rgba(255, 107, 129, 0), 0 4px 18px rgba(255, 107, 129, 0.55); }
+}
+
 /* 球心小光点 */
 #core::after {
   content: "";

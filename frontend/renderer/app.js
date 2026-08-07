@@ -130,6 +130,59 @@
     $('#send').disabled = false;
   });
 
+  // ── 语音输入（按住说话）：识别结果填入输入框 ──
+  const micBtn = $('#btn-mic');
+  let micStop = null;
+  let micActive = false;
+  (async () => {
+    try {
+      const r = await fetch(window.planner.apiBase + '/init', { signal: AbortSignal.timeout(4000) });
+      const d = await r.json();
+      if (d.asr && d.asr.enabled) micBtn.classList.remove('hidden');
+    } catch { /* 后端不可用时不显示 */ }
+  })();
+  micBtn.addEventListener('mousedown', async (e) => {
+    if (micActive) return;
+    try {
+      micStop = await window.mic.begin();
+      micActive = true;
+      micBtn.classList.add('recording');
+    } catch {
+      micBtn.title = '无法访问麦克风';
+    }
+  });
+  micBtn.addEventListener('mouseup', () => finishMic(false));
+  micBtn.addEventListener('mouseleave', () => finishMic(true));   // 拖开取消
+  async function finishMic(cancel) {
+    if (!micActive) return;
+    micActive = false;
+    micBtn.classList.remove('recording');
+    const stop = micStop;
+    micStop = null;
+    if (!stop) return;
+    const wav = await stop(cancel);
+    if (!wav) return;
+    try {
+      const r = await fetch(window.planner.apiBase + '/asr', {
+        method: 'POST',
+        headers: { 'Content-Type': 'audio/wav' },
+        body: wav,
+        signal: AbortSignal.timeout(60000),
+      });
+      const d = await r.json();
+      if (d.ok && d.text) {
+        input.value = (input.value ? input.value + ' ' : '') + d.text;
+        input.focus();
+        autoResizeInput();
+        syncTypingState();
+      } else {
+        micBtn.title = '识别失败（模型下载中？）';
+      }
+    } catch {
+      micBtn.title = '识别失败（后端不可用）';
+    }
+  }
+
   // ── 标题栏拖拽（仅 titlebar 本体，按钮区域除外）────────
   (function setupTitlebarDrag() {
     const bar = $('#titlebar');

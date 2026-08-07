@@ -10,6 +10,9 @@ dependencies = [
     "langgraph>=1.0",
     "python-dotenv",
     "dashscope>=1.26.4",
+    "funasr-onnx>=0.4.2",
+    "onnxruntime>=1.18",
+    "modelscope>=1.18",
 ]
 
 [project.optional-dependencies]

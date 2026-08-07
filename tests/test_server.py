@@ -213,6 +213,68 @@ def test_tts_endpoint(backend):
             assert e.code == 404
 
 
+def test_asr_endpoint(backend):
+    """POST /asr（wav 二进制）→ 识别文本；识别失败 → 502；空 body → 400。"""
+    import struct
+    import io as _io
+    import wave as _wave
+
+    session, base = backend
+
+    class _FakeAsr:
+        enabled = True
+        ready = True
+
+        def __init__(self):
+            self.last = None
+
+        def recognize(self, wav_bytes):
+            self.last = wav_bytes
+            return "你好，小助。"
+
+    fake = _FakeAsr()
+    session.asr = fake
+
+    buf = _io.BytesIO()
+    with _wave.open(buf, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(16000)
+        wf.writeframes(struct.pack("<8000h", *([100] * 8000)))
+    body = buf.getvalue()
+
+    req = urllib.request.Request(base + "/asr", data=body,
+                                 headers={"Content-Type": "audio/wav"})
+    with urllib.request.urlopen(req, timeout=10) as r:
+        d = json.loads(r.read().decode("utf-8"))
+    assert d == {"ok": True, "text": "你好，小助。"}
+    assert fake.last == body
+
+    # 识别失败 → 502
+    session.asr = type("F", (), {"recognize": lambda self, b: None, "enabled": True})()
+    from urllib.error import HTTPError
+    try:
+        urllib.request.urlopen(urllib.request.Request(base + "/asr", data=body), timeout=10)
+        assert False, "识别失败应 502"
+    except HTTPError as e:
+        assert e.code == 502
+    # 空 body → 400
+    try:
+        urllib.request.urlopen(urllib.request.Request(base + "/asr", data=b""), timeout=10)
+        assert False, "空 body 应 400"
+    except HTTPError as e:
+        assert e.code == 400
+
+
+def test_init_exposes_asr(backend):
+    """/init 暴露 asr.enabled/ready，前端据此决定是否显示语音入口。"""
+    from types import SimpleNamespace
+    session, base = backend
+    session.asr = SimpleNamespace(enabled=True, ready=False)
+    d = _get(base, "/init")
+    assert d["asr"] == {"enabled": True, "ready": False}
+
+
 def test_toggle_mock(backend):
     _, base = backend
     r = _post(base, "/toggle_mock")

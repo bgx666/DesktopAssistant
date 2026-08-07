@@ -25,6 +25,7 @@ from pathlib import Path
 from langchain_core.messages import BaseMessage, HumanMessage, ToolMessage
 
 from . import config as _config
+from .asr import AsrClient
 from .llm import MockChatModel, build_chat_model
 from .memory.sqlite_memory_tree import SQLiteMemoryTree
 from .middleware import SUMMARIZE_TRIGGER_MESSAGES as _SUMMARIZE_TRIGGER
@@ -75,6 +76,9 @@ class PlannerSession:
             _config.PLANNER_TTS_VOICE,
             self.data_root,
         )
+
+        # 语音输入（SenseVoiceSmall-onnx 本地识别；依赖缺失时静默关闭）
+        self.asr = AsrClient()
 
         # 对话状态
         self.recent_buffer: list[BaseMessage] = []

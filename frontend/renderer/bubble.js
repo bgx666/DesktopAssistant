@@ -1,28 +1,49 @@
-// bubble.js —— 悬浮球：纯 JS 拖拽 + 单击说话 + 右键菜单（状态由主进程推送）
+// bubble.js —— 悬浮球：按住说话（录音→识别→直接发送）/ 拖拽 / 右键菜单
+// 交互约定：左键按住 <6px = 按住说话（松开发送）；移动 ≥6px = 拖动球（取消录音）
 (() => {
   'use strict';
 
   const core = document.getElementById('core');
 
   // ── 手动拖拽（不用 -webkit-app-region，透明窗口上它吞点击事件）──
-  // mousedown 记录起点 → mousemove 移动窗口 → mouseup 时位移 < 6px 视为点击
   let dragging = false;
   let startX = 0, startY = 0;
   let winX = 0, winY = 0;
   let lastMoveX = 0, lastMoveY = 0;
-  let clickTimer = null;   // 单击延迟 300ms 等双击：双击时不触发"说话"
+  let micStop = null;        // 录音停止函数（录制中）
+  let micPromise = null;     // begin() 的 Promise（超短按：mouseup 时还没准备好）
 
-  core.addEventListener('mousedown', async (e) => {
+  core.addEventListener('mousedown', (e) => {
     if (e.button !== 0) return;
     dragging = true;
     startX = e.screenX;
     startY = e.screenY;
     lastMoveX = 0;
     lastMoveY = 0;
-    const pos = await window.planner.getBubblePos();
-    winX = pos.x;
-    winY = pos.y;
+    window.planner.getBubblePos().then((pos) => {
+      winX = pos.x;
+      winY = pos.y;
+    });
+    // 按住说话：异步拿麦克风；期间已松开（超短按）→ 直接结束并交还 wav
+    micPromise = window.mic.begin().then((stop) => {
+      if (!dragging) return stop();          // 已松开：立即结束，拿 wav
+      micStop = stop;
+      core.classList.add('recording');
+      return null;
+    }).catch(() => {
+      micStop = null;
+      return null;
+    });
   });
+
+  function cancelMic() {
+    if (micStop) {
+      const s = micStop;
+      micStop = null;
+      core.classList.remove('recording');
+      s(true);                               // 取消（丢弃录音）
+    }
+  }
 
   document.addEventListener('mousemove', (e) => {
     if (!dragging) return;
@@ -31,37 +52,54 @@
     if (Math.abs(dx - lastMoveX) < 2 && Math.abs(dy - lastMoveY) < 2) return;
     lastMoveX = dx;
     lastMoveY = dy;
+    // 位移超过 6px：放弃说话，改为拖动
+    if (micStop && (Math.abs(dx) >= 6 || Math.abs(dy) >= 6)) cancelMic();
     window.planner.moveBubble(winX + dx, winY + dy);
   });
 
-  document.addEventListener('mouseup', (e) => {
+  document.addEventListener('mouseup', async (e) => {
     if (!dragging) return;
     dragging = false;
     const dx = e.screenX - startX;
     const dy = e.screenY - startY;
-    if (Math.abs(dx) >= 6 || Math.abs(dy) >= 6) return;
-    // 原地点击：先等 300ms 看是否构成双击
-    // （双击的第一击也走这里：timer 已存在 → 清掉等待第二击，不触发说话）
-    if (clickTimer) {
-      clearTimeout(clickTimer);
-      clickTimer = null;
+    const isClick = Math.abs(dx) < 6 && Math.abs(dy) < 6;
+    core.classList.remove('recording');
+    if (!isClick) {
+      cancelMic();
+      micPromise = null;
       return;
     }
-    clickTimer = setTimeout(() => {
-      clickTimer = null;
-      window.planner.bubbleNudge(); // 单击 → 让 AI 主动说一句（气泡显示）
-    }, 300);
-  });
-
-  // 双击：无操作（放大走右键菜单）——只清掉单击的延迟说话，避免双击触发两句
-  core.addEventListener('dblclick', (e) => {
-    if (clickTimer) {
-      clearTimeout(clickTimer);
-      clickTimer = null;
+    // 按住说话结束：识别 → 直接发送
+    const stop = micStop;
+    micStop = null;
+    let wav = null;
+    if (stop) {
+      wav = await stop(false);
+    } else if (micPromise) {
+      wav = await micPromise;                // 超短按路径
     }
+    micPromise = null;
+    if (!wav) return;
+    try {
+      const base = window.planner.apiBase;
+      const r = await fetch(base + '/asr', {
+        method: 'POST',
+        headers: { 'Content-Type': 'audio/wav' },
+        body: wav,
+        signal: AbortSignal.timeout(60000),
+      });
+      const d = await r.json();
+      if (d.ok && d.text) {
+        await fetch(base + '/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message: d.text }),
+        });
+      }
+    } catch { /* 静默 */ }
   });
 
-  // 右键 → 菜单（打开小助 / 切换免打扰 / 退出）
+  // 右键 → 菜单（放大 / 切换免打扰 / 退出）
   core.addEventListener('contextmenu', (e) => {
     e.preventDefault();
     window.planner.bubbleMenu();

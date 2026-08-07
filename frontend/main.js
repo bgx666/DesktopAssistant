@@ -1,7 +1,7 @@
 ﻿// main.js —— Electron 悬浮球主进程
 // 悬浮球（常驻置顶，可拖拽） + 对话面板（点击球"变形"展开，失焦"变形"收回）
 
-const { app, BrowserWindow, Tray, Menu, nativeImage, screen, ipcMain } = require('electron');
+const { app, BrowserWindow, Tray, Menu, nativeImage, screen, ipcMain, session } = require('electron');
 const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
@@ -595,10 +595,8 @@ ipcMain.on('typing-state', (e, typing) => {
     signal: AbortSignal.timeout(3000),
   }).catch(() => {});
 });
-// 单击悬浮球 → 让 AI 主动说一句（气泡显示，不放大窗口）
-ipcMain.on('bubble-nudge', () => {
-  fetch(BACKEND_URL + '/nudge', { method: 'POST', signal: AbortSignal.timeout(3000) }).catch(() => {});
-});
+// 单击悬浮球 = 按住说话：录音识别在 bubble.js 直接走后端，主进程无需中转
+// （nudge 端点保留供未来使用，前端入口已移除）
 ipcMain.handle('get-panel-state', () => panelState);
 ipcMain.on('toast-show', (e, text) => showToast(text));
 ipcMain.on('toast-click', (e) => {
@@ -689,6 +687,10 @@ if (!gotSingleLock) {
     togglePanel();
   });
   app.whenReady().then(async () => {
+    // 麦克风权限：语音输入（getUserMedia）放行
+    session.defaultSession.setPermissionRequestHandler((wc, permission, callback) => {
+      callback(permission === 'media');
+    });
     createBubble();
     createTray();
     ensureBackend(); // 后端不在线则自动拉起

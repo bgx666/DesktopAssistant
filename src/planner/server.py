@@ -77,6 +77,8 @@ class _Handler(BaseHTTPRequestHandler):
                 "mode": self.session.mode,
                 "char": {"name": CHARACTER_ID, "display_name": DISPLAY_NAME},
                 "state": self.session.state_dict(),
+                "asr": {"enabled": self.session.asr.enabled,
+                        "ready": self.session.asr.ready},
             })
         elif path == "/state":
             self._send_json({"ok": True, "state": self.session.state_dict()})
@@ -227,6 +229,17 @@ class _Handler(BaseHTTPRequestHandler):
             self.session._receive(f"[{now}] {PLAYER_NAME}戳了戳你，想看看你在忙什么。", trigger=True)
             self.session._spawn_worker("nudge")
             self._send_json({"ok": True})
+        elif path == "/asr":
+            # 语音输入：body = 16k/16bit/mono wav 二进制 → 识别文本
+            length = int(self.headers.get("Content-Length") or 0)
+            if length <= 0 or length > 20 * 1024 * 1024:
+                self._send_json({"ok": False, "error": "bad_request"}, status=400)
+                return
+            text = self.session.asr.recognize(self.rfile.read(length))
+            if text is None:
+                self._send_json({"ok": False, "error": "asr_unavailable"}, status=502)
+                return
+            self._send_json({"ok": True, "text": text})
         elif path == "/toggle_mock":
             mode = self.session.toggle_mock()
             self._send_json({"ok": True, "mode": mode})

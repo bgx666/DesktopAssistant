@@ -364,6 +364,27 @@ body {
 #send:hover { transform: translateY(-1px); box-shadow: 0 6px 16px rgba(91, 124, 250, 0.4); }
 #send:active { transform: translateY(0); }
 #send:disabled { opacity: 0.5; }
+/* 语音输入按钮（按住说话，识别后填入输入框） */
+#btn-mic {
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  width: 42px;
+  cursor: pointer;
+  font-size: 14px;
+  background: var(--glass-strong);
+  transition: transform 0.15s, border-color 0.2s, background 0.2s;
+  flex: none;
+}
+#btn-mic:hover { border-color: var(--primary-2); }
+#btn-mic.recording {
+  background: rgba(255, 87, 107, 0.18);
+  border-color: rgba(255, 87, 107, 0.6);
+  animation: mic-pulse 1.2s ease-in-out infinite;
+}
+@keyframes mic-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(255, 87, 107, 0.35); }
+  50% { box-shadow: 0 0 0 6px rgba(255, 87, 107, 0); }
+}
 /* 停止按钮（生成中显示，输入框旁） */
 #btn-stop {
   border: 1px solid rgba(255, 107, 129, 0.45);
