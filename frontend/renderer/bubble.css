@@ -49,28 +49,31 @@ html, body {
   animation: pulse 0.9s infinite;
 }
 
-/* ── 录音音量环：12 条线围绕球，随音量伸缩（JS 驱动 scaleY）── */
+/* ── 录音音量环：SVG 折线波形环（顶点连线 + 小圆点，径向随音量起伏）── */
+#ball { position: relative; }   /* SVG 绝对定位基准（此前缺失导致环中心偏移） */
+
 #sound-ring {
   position: absolute;
   inset: 0;
+  width: 100%;
+  height: 100%;
   pointer-events: none;
-}
-#sound-ring span {
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  width: 3px;
-  height: 12px;
-  margin: -6px 0 0 -1.5px;
-  border-radius: 2px;
-  background: #ff6b81;
-  box-shadow: 0 0 6px rgba(255, 107, 129, 0.6);
-  /* 原点在球边缘（球半径 22 - 线高一半 6 = 16px 上方）：scaleY 向外伸缩 */
-  transform-origin: center -16px;
   opacity: 0;
   transition: opacity 0.2s ease;
 }
-#sound-ring.active span { opacity: 1; }
+#sound-ring.active { opacity: 1; }
+#ring-line {
+  fill: none;
+  stroke: #ff6b81;
+  stroke-width: 2;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  filter: drop-shadow(0 0 4px rgba(255, 107, 129, 0.55));
+}
+#ring-points circle {
+  fill: #ff6b81;
+  filter: drop-shadow(0 0 3px rgba(255, 107, 129, 0.7));
+}
 
 /* 状态点（球心居中，对称）：在线绿 / 思考中蓝脉冲 / 离线红 */
 #status-dot {

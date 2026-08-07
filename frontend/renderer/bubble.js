@@ -20,10 +20,29 @@
   let micStop = null;        // 录音停止函数（麦克风就绪后赋值）
   let micPromise = null;     // begin() 的 Promise（预启动，可能未就绪）
 
-  // ── 录音音量环：AnalyserNode 实时音量 → 12 条线 scaleY 伸缩 ──
+  // ── 录音音量环：SVG 折线波形——一圈顶点沿圆周分布、径向随音量起伏，
+  //    顶点连线成折线 + 每个顶点一个小圆点（"点朝向圆心"= 沿半径方向运动）──
   const ring = document.getElementById('sound-ring');
-  const ringSpans = [...ring.querySelectorAll('span')];
+  const ringLine = document.getElementById('ring-line');
+  const RING_N = 48;               // 顶点数
+  const RING_CX = 50, RING_CY = 50; // 视图中心（100×100 视口，与球心重合）
+  const RING_R = 30;               // 基础半径（球半径 22 外）
+  const RING_AMP = 9;              // 音量波动幅度
   let ringRaf = null;
+  let ringPts = [];
+
+  function initRingPoints() {
+    const g = document.getElementById('ring-points');
+    g.textContent = '';
+    ringPts = [];
+    for (let i = 0; i < RING_N; i++) {
+      const c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      c.setAttribute('r', '1.8');
+      g.appendChild(c);
+      ringPts.push(c);
+    }
+  }
+  initRingPoints();
 
   function startSoundRing() {
     if (ringRaf) return;
@@ -37,12 +56,19 @@
         let sum = 0;
         for (let i = 0; i < 48; i++) sum += data[i];          // 低频段平均音量
         const vol = sum / (48 * 255);
-        const t = Date.now() / 140;
-        ringSpans.forEach((s, i) => {
-          const wave = vol * (0.55 + 0.45 * Math.sin(t + i * 0.85));
-          const scale = 0.4 + wave * 2.4;                     // 0.4 ~ 2.8 倍伸缩
-          s.style.transform = `rotate(${i * 30}deg) scaleY(${scale.toFixed(3)})`;
-        });
+        const t = Date.now() / 160;
+        let pts = '';
+        for (let i = 0; i < RING_N; i++) {
+          const ang = (i / RING_N) * Math.PI * 2;
+          const wave = vol * (0.5 + 0.5 * Math.sin(t + i * 0.45));  // 相邻点相位差 → 波形
+          const r = RING_R - RING_AMP + wave * RING_AMP * 2;        // 径向起伏（朝向圆心）
+          const x = RING_CX + r * Math.cos(ang);
+          const y = RING_CY + r * Math.sin(ang);
+          pts += `${x.toFixed(1)},${y.toFixed(1)} `;
+          ringPts[i].setAttribute('cx', x.toFixed(1));
+          ringPts[i].setAttribute('cy', y.toFixed(1));
+        }
+        ringLine.setAttribute('points', pts);
         ringRaf = requestAnimationFrame(step);
       };
       ringRaf = requestAnimationFrame(step);
@@ -52,7 +78,8 @@
   function stopSoundRing() {
     if (ringRaf) { cancelAnimationFrame(ringRaf); ringRaf = null; }
     ring.classList.remove('active');
-    ringSpans.forEach((s, i) => { s.style.transform = `rotate(${i * 30}deg) scaleY(1)`; });
+    ringLine.removeAttribute('points');
+    ringPts.forEach((c) => { c.removeAttribute('cx'); c.removeAttribute('cy'); });
   }
 
   core.addEventListener('mousedown', (e) => {
