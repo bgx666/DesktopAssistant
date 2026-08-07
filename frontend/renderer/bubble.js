@@ -124,18 +124,19 @@
     } catch { /* 静默 */ }
   });
 
-  // 单击 → 取最近一条 assistant 回复，以气泡形式显示
+  // 单击 → 依次显示历史回复（第 1 次最新、第 2 次倒数第二…，循环）
+  // 气泡自然堆叠：旧气泡继续显示到生命周期结束（更久远的在上方）
+  let replyOffset = 0;   // 距最新的偏移：0=最新
   async function showLastReply() {
     try {
       const r = await fetch(window.planner.apiBase + '/history', { signal: AbortSignal.timeout(5000) });
       const d = await r.json();
-      const msgs = d.messages || [];
-      for (let i = msgs.length - 1; i >= 0; i--) {
-        if (msgs[i].role === 'assistant' && msgs[i].content) {
-          window.planner.showToast(msgs[i].content);
-          return;
-        }
-      }
+      const replies = (d.messages || []).filter((m) => m.role === 'assistant' && m.content);
+      if (!replies.length) { replyOffset = 0; return; }
+      if (replyOffset >= replies.length) replyOffset = 0;   // 到头循环回最新
+      const m = replies[replies.length - 1 - replyOffset];
+      replyOffset++;
+      window.planner.showToast(m.content);
     } catch { /* 后端不可用：静默 */ }
   }
 
