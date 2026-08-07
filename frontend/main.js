@@ -9,7 +9,8 @@ const fs = require('fs');
 const BACKEND_URL = process.env.PLANNER_URL || 'http://127.0.0.1:18771';
 const PROJECT_ROOT = path.join(app.getAppPath(), '..');       // frontend/ → planner/
 const PYTHON = process.env.PLANNER_PYTHON || 'D:\\Miniconda3\\python.exe';
-const TRAY_ICON_FILE = path.join(__dirname, 'assets', 'tray.png');
+const TRAY_ICON_FILE = path.join(__dirname, 'assets', 'bubble_32.png');   // 悬浮窗同款托盘图标
+const APP_ICON_FILE = path.join(__dirname, 'assets', 'bubble.ico');      // 应用/快捷方式图标
 
 // 独立实例：release 版设 PLANNER_USER_DATA，避免与开发版共用 userData
 // （单实例锁、悬浮球位置等全部随之隔离，两个版本可同时运行）
@@ -124,6 +125,7 @@ function createBubble() {
     alwaysOnTop: true,
     skipTaskbar: true,
     show: false,
+    icon: APP_ICON_FILE,   // 窗口/任务栏图标（悬浮窗同款）
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
