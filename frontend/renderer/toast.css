@@ -36,14 +36,14 @@ html, body {
   width: 24px;
   height: 24px;
   border-radius: 50%;
-  background: radial-gradient(circle at 32% 28%, #8aa8ff, #5b7cfa 55%, #3f5fd6);
+  background: radial-gradient(circle at 32% 28%, #8ff0e8, #39c5bb 60%, #1fa89f);
   color: #fff;
   font-size: 12px;
   font-weight: 700;
   line-height: 24px;
   text-align: center;
   margin-top: 1px;
-  box-shadow: 0 2px 6px rgba(91, 124, 250, 0.4);
+  box-shadow: 0 2px 6px rgba(57, 197, 187, 0.45);
 }
 
 #toast-text {
