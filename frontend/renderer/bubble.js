@@ -143,7 +143,7 @@
   });
 
   // 单击 → 依次显示历史回复（第 1 次最新、第 2 次倒数第二…，循环）
-  // 气泡按"距最新偏移"排序堆叠：越久远的越靠上（从上方落下）
+  // 历史气泡从顶部开始向下堆叠（先点的在顶，更久远依次落在下面）
   // 若上一批气泡已过期消失（>气泡生命周期），重新从最新一条开始翻
   let replyOffset = 0;       // 距最新的偏移：0=最新
   let lastReplyAt = 0;       // 上次单击时间戳
@@ -161,7 +161,7 @@
       const off = replyOffset;
       const m = replies[replies.length - 1 - off];
       replyOffset = off + 1;
-      window.planner.showToast(m.content, off);
+      window.planner.showToast(m.content, off, true);
     } catch { /* 后端不可用：静默 */ }
   }
 

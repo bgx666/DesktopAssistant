@@ -409,7 +409,7 @@ const TOAST_MS = 30000;              // 每个气泡生存 30 秒
 
 let toastWins = [];                     // 堆叠的气泡窗口（[0] 最靠近球=最新）
 
-function createToastWin(text, offset = 0) {
+function createToastWin(text, offset = 0, history = false) {
   const win = new BrowserWindow({
     width: TOAST_W,
     height: TOAST_H,
@@ -427,7 +427,8 @@ function createToastWin(text, offset = 0) {
       nodeIntegration: false,
     },
   });
-  win._toastOffset = offset;   // 距最新偏移（0=最新）；决定堆叠位置：越旧越靠上
+  win._toastOffset = offset;   // 距最新偏移（0=最新）
+  win._isHistory = history;    // true=单击翻出的历史消息；false=小助主动说话
   win.loadFile(path.join(__dirname, 'renderer', 'toast.html'));
   win.setAlwaysOnTop(true, 'pop-up-menu');
   const timer = setTimeout(() => destroyToastWin(win), TOAST_MS);
@@ -443,10 +444,17 @@ function createToastWin(text, offset = 0) {
     win.showInactive();   // 不抢焦点
     layoutToasts();
   });
-  // 有序插入：toastWins 保持按 offset 升序（[0] 最新贴球，越旧越靠上）
-  const idx = toastWins.findIndex((w) => (w._toastOffset || 0) > offset);
-  if (idx < 0) toastWins.push(win);
-  else toastWins.splice(idx, 0, win);
+  // 堆叠位置：
+  // - 普通消息（小助主动说话）：贴在悬浮球下方/最靠近球（新消息在底，旧的向上顶）
+  // - 历史消息（单击翻出）：从顶部开始往下排——先点的（较新历史）在最上，
+  //   更久远的依次落在下面；越旧越接近普通气泡区
+  if (!history) {
+    toastWins.unshift(win);
+  } else {
+    const idx = toastWins.findIndex((w) => w._isHistory && w._toastOffset < offset);
+    if (idx < 0) toastWins.push(win);
+    else toastWins.splice(idx, 0, win);
+  }
   layoutToasts();
 }
 
@@ -489,10 +497,10 @@ function layoutToasts() {
   }
 }
 
-function showToast(text, offset = 0) {
+function showToast(text, offset = 0, history = false) {
   if (quitting || panelState !== 'hidden') return;   // 面板展开时不需要气泡
   if (!text || !String(text).trim()) return;
-  createToastWin(String(text).trim(), offset);
+  createToastWin(String(text).trim(), offset, history);
 }
 
 // ── 托盘 ────────────────────────────────────────────────────
@@ -604,9 +612,10 @@ ipcMain.on('typing-state', (e, typing) => {
 // （nudge 端点保留供未来使用，前端入口已移除）
 ipcMain.handle('get-panel-state', () => panelState);
 ipcMain.on('toast-show', (e, payload) => {
-  // {text, offset}：offset = 距最新偏移（单击翻历史时越久远越靠上）
+  // {text, offset, history}：history=单击翻出的历史消息（顶部向下堆叠），
+  // 否则为小助主动说话（贴球向上堆叠）
   const p = (typeof payload === 'string') ? { text: payload } : (payload || {});
-  showToast(p.text, p.offset || 0);
+  showToast(p.text, p.offset || 0, !!p.history);
 });
 // 气泡内容高度 → 窗口自适应（完整显示长文本，不做省略号）
 ipcMain.on('toast-resize', (e, h) => {
