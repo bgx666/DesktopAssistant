@@ -440,13 +440,107 @@ def build_tools(session) -> list[BaseTool]:
         except Exception as exc:
             return f"（屏幕截图失败：{exc}）"
 
+    @tool(parse_docstring=True)
+    def web_search(query: str, limit: int = 5) -> str:
+        """搜索互联网，返回相关网页的标题、链接和摘要。需要查最新信息、新闻、资料时使用。
+
+        Args:
+            query: 搜索关键词（可以带引号精确匹配）
+            limit: 返回结果数（1~8），默认 5
+        """
+        from urllib.parse import quote
+
+        import httpx
+
+        q = str(query).strip()
+        if not q:
+            return "（搜索关键词不能为空）"
+        limit = max(1, min(8, int(limit or 5)))
+        try:
+            r = httpx.get(
+                "https://www.bing.com/search",
+                params={"q": q, "count": str(limit)},
+                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/126.0 Safari/537.36"},
+                timeout=15,
+                follow_redirects=True,
+            )
+            r.raise_for_status()
+        except Exception as exc:
+            return f"（搜索失败：{exc}）"
+        items = _parse_bing_results(r.text, limit)
+        if not items:
+            return "（没有搜到结果，换个关键词试试）"
+        lines = [f"「{q}」搜索结果（{len(items)} 条）："]
+        for i, it in enumerate(items, 1):
+            lines.append(f"{i}. {it['title']}\n   {it['url']}\n   {it['snippet']}")
+        return "\n".join(lines)
+
+    @tool(parse_docstring=True)
+    def fetch_web(url: str, max_chars: int = 6000) -> str:
+        """抓取一个网页的正文文本（只读）。web_search 找到链接后用这个读取页面内容。
+
+        Args:
+            url: 网页地址（http/https 开头）
+            max_chars: 最多返回的字符数（1000~20000），默认 6000
+        """
+        import re as _re
+
+        import httpx
+
+        u = str(url).strip()
+        if not u.lower().startswith(("http://", "https://")):
+            return "（只支持 http/https 链接）"
+        max_chars = max(1000, min(20000, int(max_chars or 6000)))
+        try:
+            r = httpx.get(
+                u,
+                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/126.0 Safari/537.36"},
+                timeout=20,
+                follow_redirects=True,
+            )
+            r.raise_for_status()
+            html = r.text
+        except Exception as exc:
+            return f"（抓取失败：{exc}）"
+        # 去脚本/样式/标签 → 正文文本
+        text = _re.sub(r"(?is)<(script|style|noscript)[^>]*>.*?</\1>", " ", html)
+        text = _re.sub(r"(?s)<[^>]+>", " ", text)
+        text = _re.sub(r"\s+", " ", text).strip()
+        if not text:
+            return "（页面没有可读文本内容）"
+        return text[:max_chars] + ("\n…（内容已截断）" if len(text) > max_chars else "")
+
     return [create_task, break_down_task, list_tasks, get_task, heartbeat,
             mark_plan_done, set_do_not_disturb, reschedule, update_task_status,
             get_next_actions, prioritize, explore_memory_tree,
-            list_dir, read_file, capture_screen]
+            list_dir, read_file, capture_screen, web_search, fetch_web]
 
 
 def all_tool_schemas() -> list[dict]:
     """OpenAI function-calling schema 列表（测试/文档用）。"""
     from langchain_core.utils.function_calling import convert_to_openai_tool
     return [convert_to_openai_tool(t) for t in build_tools(None)]
+
+
+def _parse_bing_results(html: str, limit: int) -> list[dict]:
+    """解析必应搜索结果页 → [{title, url, snippet}]（容错：解析不到就返回空）。"""
+    import re as _re
+
+    items = []
+    # 结果块：<li class="b_algo">...</li>
+    for block in _re.findall(r'(?is)<li class="b_algo".*?</li>', html):
+        m_title = _re.search(r'(?is)<h2[^>]*>\s*<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>', block)
+        if not m_title:
+            m_title = _re.search(r'(?is)<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>', block)
+        if not m_title:
+            continue
+        url = m_title.group(1)
+        title = _re.sub(r"(?s)<[^>]+>", "", m_title.group(2)).strip()
+        if not title or not url.startswith("http"):
+            continue
+        m_snip = _re.search(r'(?is)<p[^>]*>(.*?)</p>', block)
+        snippet = _re.sub(r"(?s)<[^>]+>", "", m_snip.group(1)).strip() if m_snip else ""
+        items.append({"title": title[:120], "url": url[:300], "snippet": snippet[:300]})
+        if len(items) >= limit:
+            break
+    return items
