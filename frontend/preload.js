@@ -28,6 +28,7 @@ contextBridge.exposeInMainWorld('planner', {
   onToastText: (cb) => ipcRenderer.on('toast-text', (e, data) => cb(data)),
   toastClick: () => ipcRenderer.send('toast-click'),
   toastResize: (h) => ipcRenderer.send('toast-resize', h),
+  onToastsCleared: (cb) => ipcRenderer.on('toasts-cleared', () => cb()),
   onAudio: (cb) => ipcRenderer.on('audio', (e, url) => cb(url)),
   // 变形面板
   setPanelBounds: (b) => ipcRenderer.send('set-panel-bounds', b),

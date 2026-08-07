@@ -483,6 +483,12 @@ function clearAllToasts() {
   const wins = toastWins.slice();
   toastWins = [];
   for (const w of wins) destroyToastWin(w);
+  // 通知悬浮球：气泡已清空，下次单击重新从最近一条开始翻历史
+  try {
+    if (bubbleWin && !bubbleWin.isDestroyed()) {
+      bubbleWin.webContents.send('toasts-cleared');
+    }
+  } catch { /* 忽略 */ }
 }
 
 // 堆叠布局（统一时间序）：数组 [0] 最新贴球（最下），越往后越旧越靠上。

@@ -259,6 +259,8 @@
   let replyOffset = 0;       // 距最新的偏移：0=最新
   let lastReplyAt = 0;       // 上次单击时间戳
   const REPLY_LIFE_MS = 30000;   // 与主进程 TOAST_MS 一致（气泡 30 秒生存）
+  // 气泡被清空（右键"清除气泡"等）→ 重置偏移，下次单击从最近一条开始
+  window.planner.onToastsCleared(() => { replyOffset = 0; });
   async function showLastReply() {
     const now = Date.now();
     if (now - lastReplyAt > REPLY_LIFE_MS) replyOffset = 0;   // 旧气泡已过期 → 重新从最新
