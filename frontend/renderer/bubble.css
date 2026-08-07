@@ -20,27 +20,24 @@ html, body {
   justify-content: center;
 }
 
-/* 中心圆：初音未来青绿渐变 + 柔和单层阴影 */
+/* 中心圆：纯扁平初音青（无渐变模拟光照、无投影/高光阴影），细白描边 */
 #core {
   width: 44px;
   height: 44px;
   border-radius: 50%;
-  background: radial-gradient(circle at 32% 28%, #8ff0e8, #39c5bb 60%, #1fa89f);
-  box-shadow: 0 2px 8px rgba(57, 197, 187, 0.4), inset 0 1px 2px rgba(255, 255, 255, 0.5);
+  background: #39c5bb;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  box-shadow: none;
   position: relative;
   cursor: pointer;
-  transition: transform 0.15s ease, box-shadow 0.2s ease;
+  transition: transform 0.15s ease;
 }
-#core:hover {
-  transform: scale(1.05);
-  box-shadow: 0 3px 12px rgba(57, 197, 187, 0.5), inset 0 1px 2px rgba(255, 255, 255, 0.5);
-}
+#core:hover { transform: scale(1.05); }
 #core:active { transform: scale(0.96); }
 
 /* 录音中（按住说话）：状态点亮青脉冲（初音系），雷达环同色系随声音伸缩 */
 #core.recording #status-dot {
   background: #7deee3;
-  box-shadow: 0 0 8px rgba(125, 238, 227, 0.75);
   animation: pulse 0.9s infinite;
 }
 
@@ -73,7 +70,7 @@ html, body {
   stroke-width: 1;
 }
 
-/* 状态点（球心居中，对称）：在线初音青 / 思考中亮青脉冲 / 离线红 / 录音亮青 */
+/* 状态点（球心居中，对称）：在线初音青 / 思考中亮青脉冲 / 离线红 / 录音亮青（扁平无辉光） */
 #status-dot {
   position: absolute;
   left: 50%;
@@ -83,19 +80,16 @@ html, body {
   margin: -9px 0 0 -9px;
   border-radius: 50%;
   background: #39c5bb;
-  box-shadow: 0 0 6px rgba(57, 197, 187, 0.6);
   border: 2px solid #fff;
   box-sizing: border-box;
   z-index: 1;
 }
 #status-dot.thinking {
   background: #7deee3;
-  box-shadow: 0 0 8px rgba(125, 238, 227, 0.75);
   animation: pulse 0.9s infinite;
 }
 #status-dot.offline {
   background: #ff6b81;
-  box-shadow: 0 0 6px rgba(255, 107, 129, 0.6);
 }
 @keyframes pulse {
   50% { opacity: 0.45; transform: scale(1.25); }

@@ -73,13 +73,16 @@
         for (let i = 0; i < 48; i++) sum += data[i];          // 低频段平均音量
         const vol = sum / (48 * 255);
         const t = Date.now() / 160;
-        // 相位步进 = 2π×3 / N：整圈恰好 3 个完整波，首尾相位连续（闭合无缝）
-        const k = (Math.PI * 2 * 3) / RING_N;
+        // 三角波波形：整圈 3 个三角波（直线边 + 尖峰，雷达图"直来直去"感），
+        // 首尾相位连续天然闭合；尖峰随音量伸缩
+        const CYCLES = 3;
         let pts = '';
         for (let i = 0; i < RING_N; i++) {
           const ang = (i / RING_N) * Math.PI * 2;
-          const wave = vol * (0.5 + 0.5 * Math.sin(t + i * k));  // 相邻点相位差 → 波形
-          const r = RING_R - RING_AMP + wave * RING_AMP * 2;        // 径向起伏（球边缘内外）
+          const phase = ((ang / (Math.PI * 2)) * CYCLES + t / (Math.PI * 2)) % 1;
+          const tri = 1 - 2 * Math.abs(phase - 0.5);   // 三角波 0→1→0（尖峰）
+          const wave = vol * (0.3 + 0.7 * tri);
+          const r = RING_R - RING_AMP + wave * RING_AMP * 2;          // 径向起伏（球边缘内外）
           const x = RING_CX + r * Math.cos(ang);
           const y = RING_CY + r * Math.sin(ang);
           pts += `${x.toFixed(1)},${y.toFixed(1)} `;
