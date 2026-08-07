@@ -20,12 +20,12 @@ html, body {
   justify-content: center;
 }
 
-/* 中心圆：低饱和柔青（赛博配色降饱和），细白描边 */
+/* 中心圆：柔蓝（偏蓝），细白描边 */
 #core {
   width: 44px;
   height: 44px;
   border-radius: 50%;
-  background: #4fd0c5;
+  background: #5fb8d6;
   border: 1px solid rgba(255, 255, 255, 0.4);
   box-shadow: none;
   position: relative;
@@ -78,7 +78,7 @@ html, body {
   height: 18px;
   margin: -9px 0 0 -9px;
   border-radius: 50%;
-  background: #74d89c;
+  background: #6fd993;
   border: 2px solid #fff;
   box-sizing: border-box;
   z-index: 1;

@@ -26,9 +26,7 @@
   const ring = document.getElementById('sound-ring');
   const RING_N = 12;                // 顶点数
   const RING_CX = 50, RING_CY = 50; // 视图中心（100×100 视口，与球心重合）
-  const RING_R = 21;                // 球边缘半径（球 44px → 半径 22，贴边微缩）
-  const RING_AMP = 5;               // 音量波动幅度
-  const CYBER_COLORS = ['#6fd8cf', '#e59cc0', '#a99ae8'];  // 低饱和赛博：柔青/柔粉/柔紫
+  const RING_R = 21;                // 最大半径（球边缘）
   let ringRaf = null;
   let ringEdges = [];
   let ringPts = [];
@@ -90,12 +88,12 @@
         for (let i = 0; i < 48; i++) sum += data[i];          // 低频段平均音量
         const vol = sum / (48 * 255);
         const t = Date.now() / 200;
-        // 12 顶点：每顶点独立半径（12 边形棱角，直来直去）
+        // 12 顶点：半径从原点（中心）到圆环最外侧随音量伸缩（变化明显）
         const coords = [];
         for (let i = 0; i < RING_N; i++) {
           const ang = (i / RING_N) * Math.PI * 2;
           const wave = vol * (0.5 + 0.5 * Math.sin(t + i * 0.9));
-          const r = RING_R - RING_AMP + wave * RING_AMP * 2;
+          const r = wave * RING_R;   // 0 ~ 球边缘
           coords.push({
             x: RING_CX + r * Math.cos(ang),
             y: RING_CY + r * Math.sin(ang),
