@@ -444,23 +444,25 @@ def build_tools(session) -> list[BaseTool]:
     def web_search(query: str, limit: int = 5) -> str:
         """搜索互联网，返回相关网页的标题、链接和摘要。需要查最新信息、新闻、资料时使用。
 
+        搜索技巧：专有名词（大学/公司/机构名）会自动加引号精确匹配；找某站内容可在
+        关键词里写 site:域名（如 site:scu.edu.cn 校历）。
+
         Args:
-            query: 搜索关键词（可以带引号精确匹配）
+            query: 搜索关键词
             limit: 返回结果数（1~8），默认 5
         """
-        from urllib.parse import quote
-
         import httpx
 
         q = str(query).strip()
         if not q:
             return "（搜索关键词不能为空）"
+        q = _quote_entity_names(q)          # "四川大学" → 整体词，防止被拆成省份
         limit = max(1, min(8, int(limit or 5)))
         try:
             r = httpx.get(
                 "https://www.bing.com/search",
                 params={"q": q, "count": str(limit)},
-                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/126.0 Safari/537.36"},
+                headers=_WEB_HEADERS,
                 timeout=15,
                 follow_redirects=True,
             )
@@ -477,11 +479,13 @@ def build_tools(session) -> list[BaseTool]:
 
     @tool(parse_docstring=True)
     def fetch_web(url: str, max_chars: int = 6000) -> str:
-        """抓取一个网页的正文文本（只读）。web_search 找到链接后用这个读取页面内容。
+        """抓取一个网页的正文文本，并附上页面里的链接列表（可顺着链接继续找）。
+        web_search 找到链接后用它读取内容；页面正文里提到的内容如果不够，
+        从【页面链接】里挑相关链接再抓。
 
         Args:
             url: 网页地址（http/https 开头）
-            max_chars: 最多返回的字符数（1000~20000），默认 6000
+            max_chars: 最多返回的正文字符数（1000~20000），默认 6000
         """
         import re as _re
 
@@ -492,12 +496,7 @@ def build_tools(session) -> list[BaseTool]:
             return "（只支持 http/https 链接）"
         max_chars = max(1000, min(20000, int(max_chars or 6000)))
         try:
-            r = httpx.get(
-                u,
-                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/126.0 Safari/537.36"},
-                timeout=20,
-                follow_redirects=True,
-            )
+            r = httpx.get(u, headers=_WEB_HEADERS, timeout=20, follow_redirects=True)
             r.raise_for_status()
             html = r.text
         except Exception as exc:
@@ -508,7 +507,12 @@ def build_tools(session) -> list[BaseTool]:
         text = _re.sub(r"\s+", " ", text).strip()
         if not text:
             return "（页面没有可读文本内容）"
-        return text[:max_chars] + ("\n…（内容已截断）" if len(text) > max_chars else "")
+        out = text[:max_chars] + ("\n…（内容已截断）" if len(text) > max_chars else "")
+        # 附带页面链接（相对路径补全为绝对地址），供模型顺藤摸瓜
+        links = _extract_links(html, u, limit=20)
+        if links:
+            out += "\n\n【页面链接】\n" + "\n".join(f"- {t}：{href}" for t, href in links)
+        return out
 
     return [create_task, break_down_task, list_tasks, get_task, heartbeat,
             mark_plan_done, set_do_not_disturb, reschedule, update_task_status,
@@ -544,3 +548,80 @@ def _parse_bing_results(html: str, limit: int) -> list[dict]:
         if len(items) >= limit:
             break
     return items
+
+
+# 模拟浏览器请求头（降低被 412 反爬挡掉的概率）
+_WEB_HEADERS = {
+    "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                   "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,*/*;q=0.8",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    "Cache-Control": "no-cache",
+}
+
+# 机构/专有名词后缀：搜索时自动加引号，防止"四川大学"被拆成"四川"+"大学"
+_ENTITY_RE = None
+
+
+def _quote_entity_names(query: str) -> str:
+    """把机构名（xx大学/学院/公司…）用引号包成整体词。
+
+    "四川大学 校历" → '"四川大学" 校历'，避免必应拆词后省份/百科结果霸屏。
+    """
+    import re as _re
+
+    global _ENTITY_RE
+    if _ENTITY_RE is None:
+        # 只保留强机构后缀（大学/学院/公司/医院…），避免"科技/电子"等
+        # 通用词误伤普通文本（如"最新科技新闻"）
+        suffixes = ("大学|学院|研究院|研究所|中学|高中|公司|集团|医院|政府|"
+                    "博物馆|出版社|交易所|银行")
+        _ENTITY_RE = _re.compile(
+            rf"([\u4e00-\u9fa5A-Za-z0-9]{{2,12}}?(?:{suffixes}))")
+    q = str(query).strip()
+    if not q:
+        return q
+    # 已有引号的片段先占位，避免被重复加引号（""北京大学""）
+    quoted: list[str] = []
+    q = _re.sub(r'"[^"]+"',
+                lambda m: (quoted.append(m.group(0)), f"\x00{len(quoted) - 1}\x00")[1],
+                q)
+    q = _ENTITY_RE.sub(r'"\1"', q)
+    for i, s in enumerate(quoted):
+        q = q.replace(f"\x00{i}\x00", s)
+    return q
+
+
+def _extract_links(html: str, base_url: str, limit: int = 20) -> list[tuple[str, str]]:
+    """从 HTML 提取页面链接（相对路径补全为绝对地址），返回 [(锚文本, URL)]。
+
+    过滤导航噪音：锚文本过短（<2 字）或过长（>60 字）、纯符号链接、
+    javascript:/#/mailto/tel: 链接；按锚文本长度排序（短标题优先，像导航/栏目）。
+    """
+    import re as _re
+    from html import unescape as _unescape
+    from urllib.parse import urljoin
+
+    seen = set()
+    out: list[tuple[str, str]] = []
+    for m in _re.finditer(r'(?is)<a[^>]+href=["\']([^"\']+)["\'][^>]*>(.*?)</a>', html):
+        href = m.group(1).strip()
+        text = _re.sub(r"(?s)<[^>]+>", "", m.group(2)).strip()
+        text = _re.sub(r"\s+", " ", _unescape(text)).strip()
+        low = href.lower()
+        if low.startswith(("javascript:", "#", "mailto:", "tel:")):
+            continue
+        if not low.startswith(("http://", "https://")):
+            href = urljoin(base_url, href)      # 相对路径补全
+        if not href.startswith("http"):
+            continue
+        if not (2 <= len(text) <= 60):
+            continue
+        if href in seen:
+            continue
+        seen.add(href)
+        out.append((text, href))
+        if len(out) >= limit * 2:
+            break
+    out.sort(key=lambda x: len(x[0]))           # 短锚文本（栏目/导航）优先
+    return out[:limit]
