@@ -8,17 +8,18 @@
   <link rel="stylesheet" href="bubble.css" />
 </head>
 <body>
-  <!-- 悬浮球：单击看最近回复 / 长按说话（点变红 + 音量波形环）/ 拖拽 / 右键菜单 -->
+  <!-- 悬浮球：单击看最近回复 / 长按说话（点变青 + 球边缘雷达波形）/ 拖拽 / 右键菜单 -->
   <div id="ball">
-    <!-- 录音音量环：一圈折线波形（顶点连线 + 小圆点，径向随音量起伏，朝向圆心） -->
-    <svg id="sound-ring" viewBox="0 0 100 100">
-      <polyline id="ring-line" />
-      <g id="ring-points"></g>
-    </svg>
     <div id="core" title="单击：看小助最近说了什么；长按：说话；右键：放大/免打扰/退出">
       <span id="status-dot"></span>
       <span id="badge" class="hidden"></span>
     </div>
+    <!-- 录音雷达环：贴在蓝色球体边缘的闭合多边形波形（雷达图效果），盖在球上层 -->
+    <svg id="sound-ring" viewBox="0 0 100 100">
+      <g id="ring-spokes"></g>
+      <polygon id="ring-line" />
+      <g id="ring-points"></g>
+    </svg>
   </div>
   <!-- 语音播报（气泡朗读）：audio 事件设 src 播放 -->
   <audio id="tts-audio" hidden></audio>

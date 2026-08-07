@@ -45,7 +45,7 @@ html, body {
   animation: pulse 0.9s infinite;
 }
 
-/* ── 录音音量环：SVG 折线波形环（顶点连线 + 小圆点，径向随音量起伏）── */
+/* ── 录音雷达环：贴蓝色球体边缘的闭合多边形波形（雷达图效果）── */
 #ball { position: relative; }   /* SVG 绝对定位基准（此前缺失导致环中心偏移） */
 
 #sound-ring {
@@ -53,7 +53,7 @@ html, body {
   inset: 0;
   width: 100%;
   height: 100%;
-  pointer-events: none;
+  pointer-events: none;      /* 不挡点击，特效盖在球上 */
   opacity: 0;
   transition: opacity 0.2s ease;
 }
@@ -67,6 +67,11 @@ html, body {
 }
 #ring-points circle {
   fill: #7deee3;
+}
+/* 雷达轮辐（中心到边缘的淡辐射线，增强雷达图感） */
+#ring-spokes line {
+  stroke: rgba(125, 238, 227, 0.35);
+  stroke-width: 1;
 }
 
 /* 状态点（球心居中，对称）：在线绿 / 思考中蓝脉冲 / 离线红 / 录音红 */

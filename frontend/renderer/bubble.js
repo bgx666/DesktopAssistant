@@ -20,16 +20,32 @@
   let micStop = null;        // 录音停止函数（麦克风就绪后赋值）
   let micPromise = null;     // begin() 的 Promise（预启动，可能未就绪）
 
-  // ── 录音音量环：SVG 折线波形——一圈顶点沿圆周分布、径向随音量起伏，
-  //    顶点连线成折线 + 每个顶点一个小圆点（"点朝向圆心"= 沿半径方向运动）──
+  // ── 录音雷达环：贴在蓝色球体边缘（半径 22）的闭合多边形波形——
+  //    48 顶点沿圆周、径向随音量起伏（雷达图效果），顶点连线 + 小圆点，
+  //    中心轮辐线增强雷达感；特效在球面上，中心点（状态点）被环包围 ──
   const ring = document.getElementById('sound-ring');
   const ringLine = document.getElementById('ring-line');
-  const RING_N = 48;               // 顶点数
+  const RING_N = 48;                // 顶点数
   const RING_CX = 50, RING_CY = 50; // 视图中心（100×100 视口，与球心重合）
-  const RING_R = 30;               // 基础半径（球半径 22 外）
-  const RING_AMP = 9;              // 音量波动幅度
+  const RING_R = 21;                // 球边缘半径（球 44px → 半径 22，贴边微缩）
+  const RING_AMP = 5;               // 音量波动幅度（贴球边缘起伏）
   let ringRaf = null;
   let ringPts = [];
+
+  function initRingSpokes() {
+    const g = document.getElementById('ring-spokes');
+    g.textContent = '';
+    for (let i = 0; i < 8; i++) {
+      const ang = (i / 8) * Math.PI * 2;
+      const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+      line.setAttribute('x1', RING_CX);
+      line.setAttribute('y1', RING_CY);
+      line.setAttribute('x2', (RING_CX + RING_R * Math.cos(ang)).toFixed(1));
+      line.setAttribute('y2', (RING_CY + RING_R * Math.sin(ang)).toFixed(1));
+      g.appendChild(line);
+    }
+  }
+  initRingSpokes();
 
   function initRingPoints() {
     const g = document.getElementById('ring-points');
@@ -37,7 +53,7 @@
     ringPts = [];
     for (let i = 0; i < RING_N; i++) {
       const c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-      c.setAttribute('r', '1.8');
+      c.setAttribute('r', '1.6');
       g.appendChild(c);
       ringPts.push(c);
     }
@@ -61,7 +77,7 @@
         for (let i = 0; i < RING_N; i++) {
           const ang = (i / RING_N) * Math.PI * 2;
           const wave = vol * (0.5 + 0.5 * Math.sin(t + i * 0.45));  // 相邻点相位差 → 波形
-          const r = RING_R - RING_AMP + wave * RING_AMP * 2;        // 径向起伏（朝向圆心）
+          const r = RING_R - RING_AMP + wave * RING_AMP * 2;        // 径向起伏（球边缘内外）
           const x = RING_CX + r * Math.cos(ang);
           const y = RING_CY + r * Math.sin(ang);
           pts += `${x.toFixed(1)},${y.toFixed(1)} `;
