@@ -1,7 +1,7 @@
 // bubble.js —— 悬浮球：单击显示最近回复 / 长按说话 / 拖拽 / 右键菜单
 // 交互约定：
-// - 左键按住 <150ms 松开（单击）→ 显示模型最近回答的一条消息（气泡）
-// - 左键按住 ≥150ms → 进入语音输入（变红即开录，麦克风流常驻零延迟），松开发送
+// - 左键按住 <200ms 松开（单击）→ 显示模型最近回答的一条消息（气泡）
+// - 左键按住 ≥200ms → 进入语音输入（变红即开录，麦克风流常驻零延迟），松开发送
 // - 移动 ≥6px → 拖动球（取消录音）；右键 → 菜单（不变）
 // 说明：getUserMedia 实测首次 1.3s / 之后 0.4~0.6s，MediaRecorder 0ms——
 // mic.js 保持常驻流，录音几乎零延迟；变红与录音同步（流未就绪不提前变红）。
@@ -15,7 +15,7 @@
   let startX = 0, startY = 0;
   let winX = 0, winY = 0;
   let lastMoveX = 0, lastMoveY = 0;
-  let pressTimer = null;     // 150ms 长按判定定时器
+  let pressTimer = null;     // 200ms 长按判定定时器
   let longPress = false;     // 已进入长按（录音）状态
   let micStop = null;        // 录音停止函数（麦克风就绪后赋值）
   let micPromise = null;     // begin() 的 Promise（预启动，可能未就绪）
@@ -151,13 +151,13 @@
       micStop = null;
       return null;
     });
-    // 150ms 未松开 → 判定为长按：点变红 + 启动音量环（与录音同步，不丢语音）
+    // 200ms 未松开 → 判定为长按：点变红 + 启动音量环（与录音同步，不丢语音）
     pressTimer = setTimeout(() => {
       pressTimer = null;
       longPress = true;
       core.classList.add('recording');
       startSoundRing();
-    }, 150);
+    }, 200);
   });
 
   function cancelMic() {
