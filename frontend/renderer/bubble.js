@@ -72,16 +72,15 @@
         let sum = 0;
         for (let i = 0; i < 48; i++) sum += data[i];          // 低频段平均音量
         const vol = sum / (48 * 255);
-        const t = Date.now() / 160;
-        // 三角波波形：整圈 3 个三角波（直线边 + 尖峰，雷达图"直来直去"感），
-        // 首尾相位连续天然闭合；尖峰随音量伸缩
-        const CYCLES = 3;
+        const t = Date.now() / 200;
+        // 多边形雷达波形：48 顶点分成 8 段，段内所有顶点同一半径（直线边）、
+        // 段间半径跳变（棱角）→ 8 边形数据区（雷达图效果，直来直去）
+        const SEGS = 8;
         let pts = '';
         for (let i = 0; i < RING_N; i++) {
           const ang = (i / RING_N) * Math.PI * 2;
-          const phase = ((ang / (Math.PI * 2)) * CYCLES + t / (Math.PI * 2)) % 1;
-          const tri = 1 - 2 * Math.abs(phase - 0.5);   // 三角波 0→1→0（尖峰）
-          const wave = vol * (0.3 + 0.7 * tri);
+          const seg = Math.floor((i / RING_N) * SEGS);
+          const wave = vol * (0.5 + 0.5 * Math.sin(t + seg * 0.9));  // 段内恒定
           const r = RING_R - RING_AMP + wave * RING_AMP * 2;          // 径向起伏（球边缘内外）
           const x = RING_CX + r * Math.cos(ang);
           const y = RING_CY + r * Math.sin(ang);
