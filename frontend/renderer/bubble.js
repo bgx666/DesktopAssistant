@@ -1,8 +1,10 @@
 // bubble.js —— 悬浮球：单击显示最近回复 / 长按说话 / 拖拽 / 右键菜单
 // 交互约定：
-// - 左键按住 <50ms 松开（单击）→ 显示模型最近回答的一条消息（气泡）
-// - 左键按住 ≥50ms → 进入语音输入（变红脉冲），松开发送
+// - 左键按住 <150ms 松开（单击）→ 显示模型最近回答的一条消息（气泡）
+// - 左键按住 ≥150ms → 进入语音输入（立即变红），松开发送
 // - 移动 ≥6px → 拖动球（取消录音）；右键 → 菜单（不变）
+// 说明：麦克风初始化（getUserMedia）实测 0.4~1.3s，按下时即预启动（异步），
+// 判定触发立即变红（不等麦克风），就绪后自动开录——反馈与录音都尽量提前。
 (() => {
   'use strict';
 
@@ -13,10 +15,10 @@
   let startX = 0, startY = 0;
   let winX = 0, winY = 0;
   let lastMoveX = 0, lastMoveY = 0;
-  let pressTimer = null;     // 50ms 长按判定定时器
+  let pressTimer = null;     // 150ms 长按判定定时器
   let longPress = false;     // 已进入长按（录音）状态
-  let micStop = null;        // 录音停止函数（录制中）
-  let micPromise = null;     // begin() 的 Promise（松开时还没准备好）
+  let micStop = null;        // 录音停止函数（麦克风就绪后赋值）
+  let micPromise = null;     // begin() 的 Promise（预启动，可能未就绪）
 
   core.addEventListener('mousedown', (e) => {
     if (e.button !== 0) return;
@@ -30,32 +32,34 @@
       winX = pos.x;
       winY = pos.y;
     });
-    // 50ms 未松开 → 判定为长按：开始录音
+    // 预启动麦克风（异步初始化；松开早于就绪 → 丢弃）
+    micPromise = window.mic.begin().then((stop) => {
+      if (!dragging) { stop(true); return null; }
+      micStop = stop;
+      return null;
+    }).catch(() => {
+      micStop = null;
+      return null;
+    });
+    // 150ms 未松开 → 判定为长按：立即变红（不等麦克风就绪）
     pressTimer = setTimeout(() => {
       pressTimer = null;
       longPress = true;
-      try {
-        micPromise = window.mic.begin().then((stop) => {
-          if (!dragging) return stop();          // 已松开：立即结束，拿 wav
-          micStop = stop;
-          core.classList.add('recording');
-          return null;
-        }).catch(() => {
-          micStop = null;
-          return null;
-        });
-      } catch {
-        micPromise = null;
-      }
-    }, 50);
+      core.classList.add('recording');
+    }, 150);
   });
 
   function cancelMic() {
+    core.classList.remove('recording');
     if (micStop) {
       const s = micStop;
       micStop = null;
-      core.classList.remove('recording');
       s(true);                               // 取消（丢弃录音）
+    }
+    const p = micPromise;
+    micPromise = null;
+    if (p) {
+      p.then((s2) => { if (s2) s2(true); }).catch(() => {});   // 未就绪：就绪后立即丢弃
     }
   }
 
@@ -85,25 +89,31 @@
     if (!isClick) {
       if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
       cancelMic();
-      micPromise = null;
       return;
     }
     if (!longPress) {
-      // 单击：显示模型最近回答的一条消息
+      // 单击：取消麦克风，显示模型最近回答的一条消息
       if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
+      cancelMic();
       showLastReply();
       return;
     }
-    // 长按结束：识别 → 直接发送
-    const stop = micStop;
+    // 长按结束：等麦克风就绪 → 结束录音 → 识别 → 直接发送
+    const p = micPromise;
+    micPromise = null;
+    const s = micStop;
     micStop = null;
     let wav = null;
-    if (stop) {
-      wav = await stop(false);
-    } else if (micPromise) {
-      wav = await micPromise;                // 松开早于 begin() 完成
+    if (s) {
+      wav = await s(false);
+    } else if (p) {
+      try {
+        const s2 = await p;                  // 就绪前松开：拿到即结束（可能无录音）
+        wav = s2 ? await s2(false) : null;
+      } catch {
+        wav = null;
+      }
     }
-    micPromise = null;
     if (!wav) return;
     try {
       const base = window.planner.apiBase;
