@@ -1,7 +1,7 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="900" height="660" viewBox="0 0 900 660" font-family="Microsoft YaHei, PingFang SC, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="720" viewBox="0 0 1100 720" font-family="Microsoft YaHei, PingFang SC, sans-serif">
   <!-- 背景 -->
-  <rect x="0" y="0" width="900" height="660" fill="#ffffff"/>
-  <text x="450" y="30" text-anchor="middle" font-size="19" font-weight="bold" fill="#2b2f38">记忆树结构（3 层，2 合 1 简化示意）</text>
+  <rect x="0" y="0" width="1100" height="720" fill="#ffffff"/>
+  <text x="550" y="30" text-anchor="middle" font-size="19" font-weight="bold" fill="#2b2f38">记忆树结构（node{level}_{编号} 命名，与代码一致）</text>
 
   <!-- 定义：渐变 -->
   <defs>
@@ -18,139 +18,175 @@
 
   <!-- ══ 连线（子 → 父，正交）══ -->
   <g stroke="#9db8c9" stroke-width="1.6" fill="none">
-    <!-- L1 → 根 -->
-    <path d="M 450 118 L 450 150 L 285 150 L 285 196"/>
-    <path d="M 450 150 L 615 150 L 615 196"/>
+    <!-- L1 → L2 根 -->
+    <path d="M 155 264 L 155 150 L 285 150 L 285 118"/>
+    <path d="M 415 264 L 415 150 L 285 150"/>
     <!-- L0 → L1 -->
-    <path d="M 285 264 L 285 292 L 158 292 L 158 336"/>
-    <path d="M 285 292 L 412 292 L 412 336"/>
-    <path d="M 615 264 L 615 292 L 488 292 L 488 336"/>
-    <path d="M 615 292 L 742 292 L 742 336"/>
+    <path d="M 90 336 L 90 292 L 155 292 L 155 264"/>
+    <path d="M 220 336 L 220 292 L 155 292"/>
+    <path d="M 350 336 L 350 292 L 415 292 L 415 264"/>
+    <path d="M 480 336 L 480 292 L 415 292"/>
+    <path d="M 610 336 L 610 292 L 675 292 L 675 264"/>
+    <path d="M 740 336 L 740 292 L 675 292"/>
   </g>
 
   <!-- ══ Level 2：根 ══ -->
   <g>
-    <rect x="360" y="58" width="180" height="60" rx="12" fill="url(#gRoot)" stroke="#8f7fd6" stroke-width="1.2"/>
-    <text x="450" y="85" text-anchor="middle" font-size="13" fill="#fff" font-weight="bold">node2_001</text>
-    <text x="450" y="103" text-anchor="middle" font-size="10.5" fill="#eef2ff">整棵树的浓缩</text>
+    <rect x="205" y="58" width="160" height="60" rx="12" fill="url(#gRoot)" stroke="#8f7fd6" stroke-width="1.2"/>
+    <text x="285" y="85" text-anchor="middle" font-size="13" fill="#fff" font-weight="bold">node2_001</text>
+    <text x="285" y="103" text-anchor="middle" font-size="10" fill="#eef2ff">node1_001 + node1_002 合并</text>
   </g>
-  <text x="340" y="74" text-anchor="end" font-size="11" fill="#8fa8b8">Level 2</text>
+  <text x="187" y="78" text-anchor="end" font-size="11" fill="#8fa8b8">Level 2</text>
 
-  <!-- ══ Level 1：两个中间摘要 ══ -->
+  <!-- ══ Level 1：三个中间节点 ══ -->
   <g>
-    <rect x="215" y="196" width="140" height="68" rx="10" fill="url(#gMid)" stroke="#5fb8d6" stroke-width="1.2"/>
-    <text x="285" y="222" text-anchor="middle" font-size="12.5" fill="#fff" font-weight="bold">node1_001</text>
-    <text x="285" y="240" text-anchor="middle" font-size="10" fill="#eef6fc">2 片叶子 → 1 个摘要</text>
-    <rect x="545" y="196" width="140" height="68" rx="10" fill="url(#gMid)" stroke="#5fb8d6" stroke-width="1.2"/>
-    <text x="615" y="222" text-anchor="middle" font-size="12.5" fill="#fff" font-weight="bold">node1_002</text>
-    <text x="615" y="240" text-anchor="middle" font-size="10" fill="#eef6fc">2 片叶子 → 1 个摘要</text>
-  </g>
-  <text x="197" y="230" text-anchor="end" font-size="11" fill="#8fa8b8">Level 1</text>
+    <rect x="80" y="196" width="150" height="68" rx="10" fill="url(#gMid)" stroke="#5fb8d6" stroke-width="1.2"/>
+    <text x="155" y="222" text-anchor="middle" font-size="12.5" fill="#fff" font-weight="bold">node1_001</text>
+    <text x="155" y="240" text-anchor="middle" font-size="10" fill="#eef6fc">node0_001+002</text>
 
-  <!-- ══ Level 0：四片叶子（每片 = 一段被压缩的原始对话，□ = 一条消息）══ -->
+    <rect x="340" y="196" width="150" height="68" rx="10" fill="url(#gMid)" stroke="#5fb8d6" stroke-width="1.2"/>
+    <text x="415" y="222" text-anchor="middle" font-size="12.5" fill="#fff" font-weight="bold">node1_002</text>
+    <text x="415" y="240" text-anchor="middle" font-size="10" fill="#eef6fc">node0_003+004</text>
+
+    <rect x="600" y="196" width="150" height="68" rx="10" fill="url(#gMid)" stroke="#2e9e6b" stroke-width="2.2"/>
+    <text x="675" y="222" text-anchor="middle" font-size="12.5" fill="#fff" font-weight="bold">node1_003</text>
+    <text x="675" y="240" text-anchor="middle" font-size="10" fill="#eef6fc">node0_005+006 · 未合并</text>
+  </g>
+  <text x="62" y="230" text-anchor="end" font-size="11" fill="#8fa8b8">Level 1</text>
+
+  <!-- ══ Level 0：八片叶子（□ = 一条消息；cx 间距 130，组宽 94 不重叠）══ -->
   <g>
-    <!-- 叶子 1 -->
     <g>
-      <g>
-        <rect x="130" y="336" width="22" height="22" rx="4" fill="url(#gLeaf)"/>
-        <rect x="156" y="336" width="22" height="22" rx="4" fill="url(#gLeaf)"/>
-        <rect x="182" y="336" width="22" height="22" rx="4" fill="url(#gLeaf)" opacity="0.75"/>
-        <rect x="208" y="336" width="22" height="22" rx="4" fill="url(#gLeaf)" opacity="0.55"/>
-      </g>
-      <text x="185" y="378" text-anchor="middle" font-size="11" fill="#3d6a75">node0_001 · 第0-39条</text>
-      <text x="185" y="393" text-anchor="middle" font-size="9.5" fill="#8fa8b8">□ = 一条消息</text>
+      <rect x="38" y="336" width="22" height="22" rx="4" fill="url(#gLeaf)"/>
+      <rect x="62" y="336" width="22" height="22" rx="4" fill="url(#gLeaf)"/>
+      <rect x="86" y="336" width="22" height="22" rx="4" fill="url(#gLeaf)" opacity="0.75"/>
+      <rect x="110" y="336" width="22" height="22" rx="4" fill="url(#gLeaf)" opacity="0.55"/>
+      <text x="90" y="378" text-anchor="middle" font-size="11" fill="#3d6a75">node0_001</text>
+      <text x="90" y="393" text-anchor="middle" font-size="9.5" fill="#8fa8b8">第0-39条</text>
     </g>
-    <!-- 叶子 2 -->
     <g>
-      <g>
-        <rect x="384" y="336" width="22" height="22" rx="4" fill="url(#gLeaf)"/>
-        <rect x="410" y="336" width="22" height="22" rx="4" fill="url(#gLeaf)"/>
-        <rect x="436" y="336" width="22" height="22" rx="4" fill="url(#gLeaf)" opacity="0.75"/>
-        <rect x="462" y="336" width="22" height="22" rx="4" fill="url(#gLeaf)" opacity="0.55"/>
-      </g>
-      <text x="439" y="378" text-anchor="middle" font-size="11" fill="#3d6a75">node0_002 · 第40-79条</text>
-      <text x="439" y="393" text-anchor="middle" font-size="9.5" fill="#8fa8b8">原文存在节点里</text>
+      <rect x="168" y="336" width="22" height="22" rx="4" fill="url(#gLeaf)"/>
+      <rect x="192" y="336" width="22" height="22" rx="4" fill="url(#gLeaf)"/>
+      <rect x="216" y="336" width="22" height="22" rx="4" fill="url(#gLeaf)" opacity="0.75"/>
+      <rect x="240" y="336" width="22" height="22" rx="4" fill="url(#gLeaf)" opacity="0.55"/>
+      <text x="220" y="378" text-anchor="middle" font-size="11" fill="#3d6a75">node0_002</text>
+      <text x="220" y="393" text-anchor="middle" font-size="9.5" fill="#8fa8b8">第40-79条</text>
     </g>
-    <!-- 叶子 3 -->
     <g>
-      <g>
-        <rect x="460" y="336" width="22" height="22" rx="4" fill="url(#gLeaf)"/>
-        <rect x="486" y="336" width="22" height="22" rx="4" fill="url(#gLeaf)"/>
-        <rect x="512" y="336" width="22" height="22" rx="4" fill="url(#gLeaf)" opacity="0.75"/>
-        <rect x="538" y="336" width="22" height="22" rx="4" fill="url(#gLeaf)" opacity="0.55"/>
-      </g>
-      <text x="515" y="378" text-anchor="middle" font-size="11" fill="#3d6a75">node0_003 · 第80-119条</text>
-      <text x="515" y="393" text-anchor="middle" font-size="9.5" fill="#8fa8b8">可 explore 展开</text>
+      <rect x="298" y="336" width="22" height="22" rx="4" fill="url(#gLeaf)"/>
+      <rect x="322" y="336" width="22" height="22" rx="4" fill="url(#gLeaf)"/>
+      <rect x="346" y="336" width="22" height="22" rx="4" fill="url(#gLeaf)" opacity="0.75"/>
+      <rect x="370" y="336" width="22" height="22" rx="4" fill="url(#gLeaf)" opacity="0.55"/>
+      <text x="350" y="378" text-anchor="middle" font-size="11" fill="#3d6a75">node0_003</text>
+      <text x="350" y="393" text-anchor="middle" font-size="9.5" fill="#8fa8b8">第80-119条</text>
     </g>
-    <!-- 叶子 4 -->
     <g>
-      <g>
-        <rect x="714" y="336" width="22" height="22" rx="4" fill="url(#gLeaf)"/>
-        <rect x="740" y="336" width="22" height="22" rx="4" fill="url(#gLeaf)"/>
-        <rect x="766" y="336" width="22" height="22" rx="4" fill="url(#gLeaf)" opacity="0.75"/>
-        <rect x="792" y="336" width="22" height="22" rx="4" fill="url(#gLeaf)" opacity="0.55"/>
-      </g>
-      <text x="769" y="378" text-anchor="middle" font-size="11" fill="#3d6a75">node0_004 · 第120-159条</text>
-      <text x="769" y="393" text-anchor="middle" font-size="9.5" fill="#8fa8b8">最早的一段</text>
+      <rect x="428" y="336" width="22" height="22" rx="4" fill="url(#gLeaf)"/>
+      <rect x="452" y="336" width="22" height="22" rx="4" fill="url(#gLeaf)"/>
+      <rect x="476" y="336" width="22" height="22" rx="4" fill="url(#gLeaf)" opacity="0.75"/>
+      <rect x="500" y="336" width="22" height="22" rx="4" fill="url(#gLeaf)" opacity="0.55"/>
+      <text x="480" y="378" text-anchor="middle" font-size="11" fill="#3d6a75">node0_004</text>
+      <text x="480" y="393" text-anchor="middle" font-size="9.5" fill="#8fa8b8">第120-159条</text>
+    </g>
+    <g>
+      <rect x="558" y="336" width="22" height="22" rx="4" fill="url(#gLeaf)"/>
+      <rect x="582" y="336" width="22" height="22" rx="4" fill="url(#gLeaf)"/>
+      <rect x="606" y="336" width="22" height="22" rx="4" fill="url(#gLeaf)" opacity="0.75"/>
+      <rect x="630" y="336" width="22" height="22" rx="4" fill="url(#gLeaf)" opacity="0.55"/>
+      <text x="610" y="378" text-anchor="middle" font-size="11" fill="#3d6a75">node0_005</text>
+      <text x="610" y="393" text-anchor="middle" font-size="9.5" fill="#8fa8b8">第160-199条</text>
+    </g>
+    <g>
+      <rect x="688" y="336" width="22" height="22" rx="4" fill="url(#gLeaf)"/>
+      <rect x="712" y="336" width="22" height="22" rx="4" fill="url(#gLeaf)"/>
+      <rect x="736" y="336" width="22" height="22" rx="4" fill="url(#gLeaf)" opacity="0.75"/>
+      <rect x="760" y="336" width="22" height="22" rx="4" fill="url(#gLeaf)" opacity="0.55"/>
+      <text x="740" y="378" text-anchor="middle" font-size="11" fill="#3d6a75">node0_006</text>
+      <text x="740" y="393" text-anchor="middle" font-size="9.5" fill="#8fa8b8">第200-239条</text>
+    </g>
+    <g>
+      <rect x="818" y="336" width="22" height="22" rx="4" fill="url(#gLeaf)" stroke="#2e9e6b" stroke-width="2"/>
+      <rect x="842" y="336" width="22" height="22" rx="4" fill="url(#gLeaf)" stroke="#2e9e6b" stroke-width="2"/>
+      <rect x="866" y="336" width="22" height="22" rx="4" fill="url(#gLeaf)" opacity="0.75" stroke="#2e9e6b" stroke-width="2"/>
+      <rect x="890" y="336" width="22" height="22" rx="4" fill="url(#gLeaf)" opacity="0.55" stroke="#2e9e6b" stroke-width="2"/>
+      <text x="870" y="378" text-anchor="middle" font-size="11" fill="#2e7d4f">node0_007</text>
+      <text x="870" y="393" text-anchor="middle" font-size="9.5" fill="#8fa8b8">第240-279条 · 未合并</text>
+    </g>
+    <g>
+      <rect x="948" y="336" width="22" height="22" rx="4" fill="url(#gLeaf)" stroke="#2e9e6b" stroke-width="2"/>
+      <rect x="972" y="336" width="22" height="22" rx="4" fill="url(#gLeaf)" stroke="#2e9e6b" stroke-width="2"/>
+      <rect x="996" y="336" width="22" height="22" rx="4" fill="url(#gLeaf)" opacity="0.75" stroke="#2e9e6b" stroke-width="2"/>
+      <rect x="1020" y="336" width="22" height="22" rx="4" fill="url(#gLeaf)" opacity="0.55" stroke="#2e9e6b" stroke-width="2"/>
+      <text x="1000" y="378" text-anchor="middle" font-size="11" fill="#2e7d4f">node0_008</text>
+      <text x="1000" y="393" text-anchor="middle" font-size="9.5" fill="#8fa8b8">第280-319条 · 未合并</text>
     </g>
   </g>
-  <text x="112" y="348" text-anchor="end" font-size="11" fill="#8fa8b8">Level 0</text>
+  <text x="20" y="348" text-anchor="end" font-size="11" fill="#8fa8b8">Level 0</text>
 
   <!-- 压缩规则说明 -->
-  <text x="450" y="428" text-anchor="middle" font-size="11" fill="#5a6b7d">
-    触发：对话满 60 条 → 最早 40 条压成 1 片叶子（保留最近 20 条）｜ 向上：满 8 个节点取前 4 个合并（此处简化为 2 合 1）
+  <text x="550" y="428" text-anchor="middle" font-size="11" fill="#5a6b7d">
+    触发：对话满 60 条 → 最早 40 条压成 1 片叶子（保留最近 20 条）｜ 某层节点满 8 个 → 取前 4 个合并成上层节点（图中简化为 2 合 1）
   </text>
 
   <!-- ══ Buffer state ══ -->
   <g>
-    <rect x="60" y="455" width="780" height="180" rx="12" fill="#f4f8fb" stroke="#d6e2ec" stroke-width="1.4"/>
-    <text x="450" y="480" text-anchor="middle" font-size="14.5" font-weight="bold" fill="#2b2f38">Buffer state —— 压缩后，模型每一轮实际看到的上下文</text>
+    <rect x="40" y="452" width="1020" height="248" rx="12" fill="#f4f8fb" stroke="#d6e2ec" stroke-width="1.4"/>
+    <text x="550" y="478" text-anchor="middle" font-size="14.5" font-weight="bold" fill="#2b2f38">Buffer state —— 压缩后，模型每一轮实际看到的上下文</text>
 
-    <!-- 根摘要块 -->
-    <rect x="80" y="500" width="110" height="52" rx="9" fill="url(#gRoot)" stroke="#8f7fd6"/>
-    <text x="135" y="525" text-anchor="middle" font-size="11.5" fill="#fff" font-weight="bold">node2_001</text>
-    <text x="135" y="541" text-anchor="middle" font-size="9.5" fill="#eef2ff">旧记忆浓缩</text>
+    <!-- node2_001 根 -->
+    <rect x="60" y="498" width="150" height="56" rx="9" fill="url(#gRoot)" stroke="#8f7fd6"/>
+    <text x="135" y="524" text-anchor="middle" font-size="11.5" fill="#fff" font-weight="bold">node2_001</text>
+    <text x="135" y="541" text-anchor="middle" font-size="9.5" fill="#eef2ff">旧记忆浓缩（含 1_001/002）</text>
 
-    <!-- 最近 L1 -->
-    <rect x="205" y="500" width="100" height="52" rx="9" fill="url(#gMid)" stroke="#5fb8d6"/>
-    <text x="255" y="525" text-anchor="middle" font-size="11.5" fill="#fff" font-weight="bold">node1_002</text>
-    <text x="255" y="541" text-anchor="middle" font-size="9.5" fill="#eef6fc">最近的中间层</text>
+    <!-- node1_003 最近中间层 -->
+    <rect x="230" y="498" width="150" height="56" rx="9" fill="url(#gMid)" stroke="#2e9e6b" stroke-width="2"/>
+    <text x="305" y="524" text-anchor="middle" font-size="11.5" fill="#fff" font-weight="bold">node1_003</text>
+    <text x="305" y="541" text-anchor="middle" font-size="9.5" fill="#eef6fc">最近中间层 · 未合并</text>
+
+    <!-- 最近叶子 007/008 -->
+    <rect x="400" y="498" width="82" height="56" rx="8" fill="url(#gLeaf)" stroke="#2e9e6b" stroke-width="1.6"/>
+    <text x="441" y="522" text-anchor="middle" font-size="11" fill="#fff" font-weight="bold">node0_007</text>
+    <text x="441" y="539" text-anchor="middle" font-size="9" fill="#eafaf6">最近叶子</text>
+    <rect x="492" y="498" width="82" height="56" rx="8" fill="url(#gLeaf)" stroke="#2e9e6b" stroke-width="1.6"/>
+    <text x="533" y="522" text-anchor="middle" font-size="11" fill="#fff" font-weight="bold">node0_008</text>
+    <text x="533" y="539" text-anchor="middle" font-size="9" fill="#eafaf6">最近叶子</text>
 
     <!-- 最新 20 条对话 -->
     <g>
-      <rect x="320" y="496" width="500" height="60" rx="8" fill="#ffffff" stroke="#d6e2ec"/>
-      <text x="335" y="512" font-size="10" fill="#8fa8b8">最近 20 条对话（原样保留）</text>
+      <rect x="594" y="494" width="446" height="64" rx="8" fill="#ffffff" stroke="#d6e2ec"/>
+      <text x="609" y="510" font-size="10" fill="#8fa8b8">最近 20 条对话（原样保留）</text>
       <g>
-        <rect x="335" y="521" width="20" height="20" rx="4" fill="#9adfd6"/>
-        <rect x="359" y="521" width="20" height="20" rx="4" fill="#9adfd6"/>
-        <rect x="383" y="521" width="20" height="20" rx="4" fill="#9adfd6"/>
-        <rect x="407" y="521" width="20" height="20" rx="4" fill="#9adfd6"/>
-        <rect x="431" y="521" width="20" height="20" rx="4" fill="#9adfd6"/>
-        <rect x="455" y="521" width="20" height="20" rx="4" fill="#9adfd6"/>
-        <rect x="479" y="521" width="20" height="20" rx="4" fill="#9adfd6"/>
-        <rect x="503" y="521" width="20" height="20" rx="4" fill="#9adfd6"/>
-        <rect x="527" y="521" width="20" height="20" rx="4" fill="#9adfd6"/>
-        <rect x="551" y="521" width="20" height="20" rx="4" fill="#9adfd6"/>
-        <rect x="575" y="521" width="20" height="20" rx="4" fill="#9adfd6" opacity="0.85"/>
-        <rect x="599" y="521" width="20" height="20" rx="4" fill="#9adfd6" opacity="0.7"/>
-        <rect x="623" y="521" width="20" height="20" rx="4" fill="#9adfd6" opacity="0.7"/>
-        <rect x="647" y="521" width="20" height="20" rx="4" fill="#9adfd6" opacity="0.55"/>
-        <rect x="671" y="521" width="20" height="20" rx="4" fill="#9adfd6" opacity="0.55"/>
-        <rect x="695" y="521" width="20" height="20" rx="4" fill="#9adfd6" opacity="0.4"/>
-        <rect x="719" y="521" width="20" height="20" rx="4" fill="#9adfd6" opacity="0.4"/>
-        <rect x="743" y="521" width="20" height="20" rx="4" fill="#9adfd6" opacity="0.25"/>
-        <rect x="767" y="521" width="20" height="20" rx="4" fill="#9adfd6" opacity="0.25"/>
-        <rect x="791" y="521" width="20" height="20" rx="4" fill="#9adfd6" opacity="0.15"/>
+        <rect x="609" y="519" width="20" height="20" rx="4" fill="#9adfd6"/>
+        <rect x="633" y="519" width="20" height="20" rx="4" fill="#9adfd6"/>
+        <rect x="657" y="519" width="20" height="20" rx="4" fill="#9adfd6"/>
+        <rect x="681" y="519" width="20" height="20" rx="4" fill="#9adfd6"/>
+        <rect x="705" y="519" width="20" height="20" rx="4" fill="#9adfd6"/>
+        <rect x="729" y="519" width="20" height="20" rx="4" fill="#9adfd6"/>
+        <rect x="753" y="519" width="20" height="20" rx="4" fill="#9adfd6"/>
+        <rect x="777" y="519" width="20" height="20" rx="4" fill="#9adfd6"/>
+        <rect x="801" y="519" width="20" height="20" rx="4" fill="#9adfd6"/>
+        <rect x="825" y="519" width="20" height="20" rx="4" fill="#9adfd6"/>
+        <rect x="849" y="519" width="20" height="20" rx="4" fill="#9adfd6" opacity="0.85"/>
+        <rect x="873" y="519" width="20" height="20" rx="4" fill="#9adfd6" opacity="0.7"/>
+        <rect x="897" y="519" width="20" height="20" rx="4" fill="#9adfd6" opacity="0.7"/>
+        <rect x="921" y="519" width="20" height="20" rx="4" fill="#9adfd6" opacity="0.55"/>
+        <rect x="945" y="519" width="20" height="20" rx="4" fill="#9adfd6" opacity="0.55"/>
+        <rect x="969" y="519" width="20" height="20" rx="4" fill="#9adfd6" opacity="0.4"/>
+        <rect x="993" y="519" width="20" height="20" rx="4" fill="#9adfd6" opacity="0.4"/>
+        <rect x="1017" y="519" width="20" height="20" rx="4" fill="#9adfd6" opacity="0.25"/>
       </g>
     </g>
 
     <!-- 标注箭头 -->
     <g stroke="#8fa8b8" stroke-width="1.4" fill="none">
-      <path d="M 185 566 L 135 566 L 135 590 M 135 590 L 60 590"/>
-      <path d="M 570 566 L 570 590 L 840 590"/>
+      <path d="M 135 572 L 135 596 L 60 596"/>
+      <path d="M 441 572 L 441 596 L 300 596 L 300 622"/>
+      <path d="M 533 572 L 533 596 L 800 596 L 800 622"/>
+      <path d="M 817 572 L 817 596 L 1040 596"/>
     </g>
-    <text x="98" y="608" text-anchor="middle" font-size="11" fill="#5a6b7d">旧对话早已压进树里，只剩摘要占位</text>
-    <text x="705" y="608" text-anchor="middle" font-size="11" fill="#5a6b7d">最新对话原样在场，随时可答</text>
-    <text x="450" y="628" text-anchor="middle" font-size="10.5" fill="#8fa8b8">→ 上下文窗口恒定（约 20 条 + 摘要），而记忆树无限生长</text>
+    <text x="100" y="614" text-anchor="middle" font-size="11" fill="#5a6b7d">已被压缩的节点不再占位</text>
+    <text x="306" y="640" text-anchor="middle" font-size="10.5" fill="#5a6b7d">未合并的中间层/叶子仍在场</text>
+    <text x="955" y="614" text-anchor="middle" font-size="11" fill="#5a6b7d">最新对话原样在场</text>
+    <text x="550" y="672" text-anchor="middle" font-size="10.5" fill="#8fa8b8">→ 上下文窗口恒定（摘要节点 + 最近 20 条），而记忆树无限生长</text>
   </g>
 </svg>
