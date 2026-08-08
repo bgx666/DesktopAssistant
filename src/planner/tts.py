@@ -112,19 +112,18 @@ class _KokoroLocal:
                     voices[f.stem] = raw.reshape(510, 256)
                 np.savez(merged, **voices)
             self._voices = np.load(merged)
-            # 推理后端：OpenVINO GPU（fp16 模型，Intel 核显/Arc 4x 加速）→ CPU（int8）回退
-            ort.set_default_logger_severity(3)   # 只留 ERROR（OpenVINO 转换的常量折叠警告太吵）
+            # 推理后端：FP32 模型 + CPU（实测比 int8 快 ~10x：本机无 AVX512，int8 反量化开销大；
+            # OpenVINO/DirectML GPU 在此平台不可靠——OV EP 静默落 CPU、DML ConvTranspose 报错，
+            # fp16 CPU 输出 NaN）→ 无 fp32 模型时回退 int8
+            ort.set_default_logger_severity(3)   # 只留 ERROR（DML/图优化警告太吵）
             sess, provider = None, ""
-            if "OpenVINOExecutionProvider" in ort.get_available_providers():
-                fp16_file = onnx_dir / "model_fp16.onnx"
-                if fp16_file.is_file():
-                    try:
-                        sess = ort.InferenceSession(
-                            str(fp16_file), providers=["OpenVINOExecutionProvider"],
-                            provider_options=[{"device_type": "GPU"}])
-                        provider = "OpenVINO-GPU(f16)"
-                    except Exception:
-                        _logger.info("[tts] OpenVINO GPU 不可用，回退 CPU")
+            fp32_file = onnx_dir / "model.onnx"
+            if fp32_file.is_file():
+                try:
+                    sess = ort.InferenceSession(str(fp32_file), providers=["CPUExecutionProvider"])
+                    provider = "CPU(f32)"
+                except Exception:
+                    _logger.info("[tts] FP32 模型不可用，回退 int8")
             if sess is None:
                 sess = ort.InferenceSession(
                     str(onnx_dir / "model_int8.onnx"), providers=["CPUExecutionProvider"])
@@ -170,7 +169,24 @@ class _KokoroLocal:
                     "style": np.array(style, dtype=np.float32)[None, :],
                     "speed": np.array([1.0], dtype=np.float32),
                 })
-                wav = np.asarray(out, dtype=np.float32).reshape(-1)   # fp16 输出转 float32
+                wav = np.asarray(out, dtype=np.float32).reshape(-1)   # 统一 float32
+                rms = float(np.sqrt(np.mean(wav ** 2)))
+                if not np.isfinite(rms) or rms > 0.99:
+                    # NaN/全 ±1.0 常量 = 推理后端异常输出（静音）→ 回退 int8 CPU 重试
+                    _logger.warning("[tts] 推理输出异常（rms=%s），回退 CPU(int8) 重试", rms)
+                    import onnxruntime as _ort
+                    self._sess = _ort.InferenceSession(
+                        str(self.model_dir / "onnx" / "model_int8.onnx"),
+                        providers=["CPUExecutionProvider"])
+                    self._provider = "CPU(int8)"
+                    out, _ = self._sess.run(None, {
+                        "input_ids": np.array([[0, *tokens, 0]], dtype=np.int64),
+                        "style": self._voices[self.voice][len(tokens)].astype(np.float32)[None, :],
+                        "speed": np.array([1.0], dtype=np.float32),
+                    })
+                    wav = np.asarray(out, dtype=np.float32).reshape(-1)
+                    rms = float(np.sqrt(np.mean(wav ** 2)))
+                    _logger.info("[tts] 回退重试输出 rms=%.3f", rms)
                 if len(wav) < 2400:
                     return None
                 # float32 → int16 PCM wav（soundfile）

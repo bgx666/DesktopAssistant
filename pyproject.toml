@@ -11,7 +11,7 @@ dependencies = [
     "python-dotenv",
     "dashscope>=1.26.4",
     "funasr-onnx>=0.4.2",
-    "onnxruntime-openvino>=1.24",
+    "onnxruntime>=1.18",
     "modelscope>=1.18",
     "numpy<2",
     "rapidocr_onnxruntime",
