@@ -1,4 +1,4 @@
-﻿# build.ps1 —— 一键发版：复制代码到仓库旁 planner-release 并生成 start.bat
+﻿# build.ps1 —— 一键发版：复制代码到仓库上一级 planner-release 并生成 start.bat
 # 用法：
 #   powershell -File build.ps1            # 自动 vX.Y.Z patch+1
 #   powershell -File build.ps1 -Version v0.2.0   # 手动指定
@@ -7,11 +7,11 @@
 
 param(
     [string]$Version = "",
-    [string]$ReleaseRoot = ""   # 默认 = 仓库旁 planner-release
+    [string]$ReleaseRoot = ""   # 默认 = 仓库上一级 planner-release
 )
 
 $ErrorActionPreference = "Stop"
-if (-not $ReleaseRoot) { $ReleaseRoot = Join-Path $PSScriptRoot "planner-release" }
+if (-not $ReleaseRoot) { $ReleaseRoot = Join-Path (Split-Path $PSScriptRoot -Parent) "planner-release" }
 $DevRoot = $PSScriptRoot
 $AppDir = Join-Path $ReleaseRoot "app"
 $VenvDir = Join-Path $ReleaseRoot "venv"

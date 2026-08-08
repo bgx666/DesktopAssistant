@@ -5,7 +5,9 @@
 # 用法：powershell -NoProfile -ExecutionPolicy Bypass -File tests\e2e_release.ps1
 
 $ErrorActionPreference = "Stop"
-$ReleaseRoot = Join-Path (Split-Path $PSScriptRoot -Parent) "planner-release"
+# release 目录 = 仓库上一级 planner-release（与 build.ps1 默认一致）
+$RepoRoot = Split-Path $PSScriptRoot -Parent
+$ReleaseRoot = Join-Path (Split-Path $RepoRoot -Parent) "planner-release"
 $Port = 18772
 $AppDir = Join-Path $ReleaseRoot "app"
 $VenvPython = Join-Path $ReleaseRoot "venv\Scripts\pythonw.exe"   # pythonw：与真实启动一致，验证无控制台后端
