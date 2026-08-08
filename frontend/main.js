@@ -659,12 +659,21 @@ ipcMain.handle('get-mounted', () => mountedFiles);
 ipcMain.on('toggle-panel', () => togglePanel());
 // ── 设置窗口 ─────────────────────────────────────────────
 let settingsWin = null;
+const SETTINGS_DEBUG_LOG = () => path.join(app.getPath('userData'), 'settings-debug.log');
+function logSettingsDebug(msg) {
+  try {
+    fs.appendFileSync(SETTINGS_DEBUG_LOG(), `[${new Date().toISOString()}] ${msg}\n`);
+  } catch { /* 忽略 */ }
+}
 function openSettings() {
+  logSettingsDebug('openSettings 被调用');
   try {
     if (settingsWin && !settingsWin.isDestroyed()) {
+      logSettingsDebug('已存在，聚焦');
       settingsWin.focus();
       return;
     }
+    logSettingsDebug('创建 BrowserWindow');
     settingsWin = new BrowserWindow({
       width: 520, height: 660,
       frame: true, resizable: true, maximizable: false,
@@ -677,12 +686,21 @@ function openSettings() {
         nodeIntegration: false,
       },
     });
+    settingsWin.webContents.on('did-fail-load', (e, code, desc) => {
+      logSettingsDebug('did-fail-load: ' + code + ' ' + desc);
+    });
+    settingsWin.webContents.on('did-finish-load', () => {
+      logSettingsDebug('did-finish-load OK');
+    });
     settingsWin.once('ready-to-show', () => {
+      logSettingsDebug('ready-to-show，显示窗口');
       if (settingsWin && !settingsWin.isDestroyed()) settingsWin.show();
     });
     settingsWin.loadFile(path.join(__dirname, 'renderer', 'settings.html'));
     settingsWin.on('closed', () => { settingsWin = null; });
+    logSettingsDebug('窗口创建流程完成');
   } catch (err) {
+    logSettingsDebug('异常: ' + (err && err.stack ? err.stack : String(err)));
     console.error('[planner] 打开设置窗口失败:', err);
   }
 }
