@@ -15,6 +15,8 @@ contextBridge.exposeInMainWorld('planner', {
   removeMounted: (index) => ipcRenderer.send('remove-mounted', index),
   getMounted: () => ipcRenderer.invoke('get-mounted'),
   onMountedChanged: (cb) => ipcRenderer.on('mounted-files', (e, list) => cb(list)),
+  onSettings: (cb) => ipcRenderer.on('settings', (e, s) => cb(s)),
+  settingsSaved: () => ipcRenderer.send('settings-saved'),
   // 悬浮球
   togglePanel: () => ipcRenderer.send('toggle-panel'),
   bubbleMenu: () => ipcRenderer.send('bubble-menu'),

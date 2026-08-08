@@ -339,13 +339,20 @@ class SummarizationMiddleware(AgentMiddleware):
         与同步版 _maybe_compress 同逻辑，但不修改任何 state——
         removes 为 RemoveMessage（按 id 删除），adds 为节点消息；
         由 session 压缩线程在空闲时应用到 recent_buffer。
+        压缩参数从 session.settings 动态读取（用户设置，应用即生效）。
         """
         removes: list[RemoveMessage] = []
         adds: list[HumanMessage] = []
 
+        st = getattr(self.session, "settings", None) or {}
+        trigger = int(st.get("compress_trigger", SUMMARIZE_TRIGGER_MESSAGES))
+        keep = int(st.get("compress_keep", SUMMARIZE_KEEP_MESSAGES))
+        threshold = int(st.get("compact_threshold", LEVEL_COMPACT_THRESHOLD))
+        factor = int(st.get("compact_factor", BRANCHING_FACTOR))
+
         raw = [m for m in msgs if "node_id" not in (getattr(m, "metadata", None) or {})]
-        if len(raw) >= SUMMARIZE_TRIGGER_MESSAGES:
-            batch = raw[:len(raw) - SUMMARIZE_KEEP_MESSAGES]
+        if len(raw) >= trigger:
+            batch = raw[:len(raw) - keep]
             if batch:
                 # 扩展 batch：batch 末尾 ai(tool_calls) 的配套 tool 消息也纳入
                 # （否则删 ai 留 tool → 孤儿 ToolMessage → DeepSeek 400）
@@ -354,8 +361,8 @@ class SummarizationMiddleware(AgentMiddleware):
 
         tree = self.session.get_memory_tree()
         level = 0
-        while tree.get_level_count(level) >= LEVEL_COMPACT_THRESHOLD:
-            if not self._compact_level(msgs, level, removes, adds):
+        while tree.get_level_count(level) >= threshold:
+            if not self._compact_level(msgs, level, removes, adds, threshold, factor):
                 break
             level += 1
 
@@ -491,12 +498,18 @@ class SummarizationMiddleware(AgentMiddleware):
 
     # ── 向上压缩（递归：摘要还能再被摘要）────────────────────
 
-    def _compact_level(self, msgs, level, removes, adds) -> bool:
+    def _compact_level(self, msgs, level, removes, adds,
+                       threshold: int | None = None,
+                       factor: int | None = None) -> bool:
         tree = self.session.get_memory_tree()
+        if threshold is None:
+            st = getattr(self.session, "settings", None) or {}
+            threshold = int(st.get("compact_threshold", LEVEL_COMPACT_THRESHOLD))
+            factor = int(st.get("compact_factor", BRANCHING_FACTOR))
         nodes = tree.get_nodes_at_level(level)
-        if len(nodes) < LEVEL_COMPACT_THRESHOLD:
+        if len(nodes) < threshold:
             return False
-        to_compact = nodes[:BRANCHING_FACTOR]
+        to_compact = nodes[:factor]
 
         by_id = {}
         for m in msgs:

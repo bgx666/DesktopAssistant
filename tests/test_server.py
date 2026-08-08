@@ -359,6 +359,22 @@ def test_chat_with_files_injection(backend):
         _fp.save_attachment_text = real_save
 
 
+def test_settings_endpoint(backend):
+    """GET/POST /settings：读取、保存、校验失败 400。"""
+    session, base = backend
+    d = _get(base, "/settings")
+    assert d["ok"] and d["settings"]["press_ms"] == 200
+    r = _post(base, "/settings", {"updates": {"press_ms": 300, "compress_trigger": 80}})
+    assert r["ok"] and r["settings"]["press_ms"] == 300
+    assert session.settings["compress_trigger"] == 80
+    from urllib.error import HTTPError
+    try:
+        _post(base, "/settings", {"updates": {"press_ms": 1}})
+        assert False, "非法值应 400"
+    except HTTPError as e:
+        assert e.code == 400
+
+
 def test_toggle_mock(backend):
     _, base = backend
     r = _post(base, "/toggle_mock")

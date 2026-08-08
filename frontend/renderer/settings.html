@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'self'; connect-src http://127.0.0.1:*; style-src 'self' 'unsafe-inline'; script-src 'self';" />
+<title>小助 · 设置</title>
+<style>
+  :root { --cyan: #39c5bb; --cyan2: #7deee3; --blue: #5fb8d6; --pink: #ff2e97; --text: #2b2f38; --dim: #8fa8b8; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+    background: #f4f8fb; color: var(--text); padding: 18px 20px 24px;
+  }
+  h1 { font-size: 17px; margin-bottom: 4px; }
+  .sub { font-size: 12px; color: var(--dim); margin-bottom: 16px; }
+  section { background: #fff; border: 1px solid #e3ecf3; border-radius: 12px; padding: 14px 16px; margin-bottom: 14px; }
+  h2 { font-size: 13.5px; margin-bottom: 12px; color: #345; }
+  .row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+  .row label { width: 150px; font-size: 12.5px; flex: none; }
+  .row input[type=number], .row input[type=text], .row input[type=password] {
+    flex: 1; padding: 6px 10px; border: 1px solid #d6e2ec; border-radius: 8px;
+    font-size: 13px; outline: none; max-width: 240px;
+  }
+  .row input:focus { border-color: var(--cyan); }
+  .row .hint { font-size: 11px; color: var(--dim); flex: none; width: 130px; }
+  .btn-row { display: flex; align-items: center; gap: 12px; margin-top: 4px; }
+  #save { padding: 8px 26px; border: none; border-radius: 10px; cursor: pointer;
+    color: #fff; font-size: 13px; font-weight: 700; background: linear-gradient(135deg, var(--cyan2), var(--cyan)); }
+  #save:disabled { opacity: .55; cursor: default; }
+  #msg { font-size: 12px; color: var(--pink); min-height: 16px; }
+  #msg.ok { color: #2e9e6b; }
+  canvas { width: 100%; height: 200px; background: #0a0f1e; border-radius: 10px; display: block; }
+  .chart-tip { font-size: 11px; color: var(--dim); margin-top: 8px; line-height: 1.7; }
+  .legend { font-size: 11px; color: var(--dim); margin-top: 6px; }
+  .legend b { color: var(--blue); }
+</style>
+</head>
+<body>
+  <h1>小助 · 设置</h1>
+  <div class="sub">修改后点击保存，立即生效（压缩参数下次压缩时生效，LLM 配置下次生成时生效）</div>
+
+  <section>
+    <h2>交互</h2>
+    <div class="row">
+      <label>长按判定时间</label>
+      <input type="number" id="press_ms" min="50" max="5000" step="10" />
+      <span class="hint">毫秒（按住多久进入语音输入）</span>
+    </div>
+  </section>
+
+  <section>
+    <h2>记忆压缩</h2>
+    <div class="row">
+      <label>触发压缩条数</label>
+      <input type="number" id="compress_trigger" min="20" max="500" />
+      <span class="hint">对话积累到多少条触发压缩</span>
+    </div>
+    <div class="row">
+      <label>压缩后保留条数</label>
+      <input type="number" id="compress_keep" min="5" max="200" />
+      <span class="hint">压缩后保留最近多少条</span>
+    </div>
+    <div class="row">
+      <label>层级触发阈值</label>
+      <input type="number" id="compact_threshold" min="3" max="50" />
+      <span class="hint">某层节点达到多少个开始合并</span>
+    </div>
+    <div class="row">
+      <label>合并个数</label>
+      <input type="number" id="compact_factor" min="2" max="10" />
+      <span class="hint">每次合并几个节点为 1 个</span>
+    </div>
+  </section>
+
+  <section>
+    <h2>压缩示意图</h2>
+    <canvas id="chart" width="900" height="300"></canvas>
+    <div class="legend">蓝色折线 = 每次压缩触发前的上下文峰值（触发条数 × 360 + 节点 × 500 token）· 横轴为对话轮数（线性）</div>
+    <div class="chart-tip">输入上面的压缩参数后此图即时重算，直观感受上下文随轮数增长的形态。</div>
+  </section>
+
+  <section>
+    <h2>LLM API（留空 = 使用环境变量 / .env）</h2>
+    <div class="row">
+      <label>API Key</label>
+      <input type="password" id="llm_api_key" />
+    </div>
+    <div class="row">
+      <label>Base URL</label>
+      <input type="text" id="llm_base_url" placeholder="如 https://api.deepseek.com" />
+    </div>
+    <div class="row">
+      <label>Model</label>
+      <input type="text" id="llm_model" placeholder="如 deepseek-v4-flash" />
+    </div>
+  </section>
+
+  <div class="btn-row">
+    <button id="save">保存设置</button>
+    <span id="msg"></span>
+  </div>
+
+<script src="settings.js"></script>
+</body>
+</html>

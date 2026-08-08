@@ -10,12 +10,25 @@
 
   const core = document.getElementById('core');
 
+  // ── 设置：长按判定时间（保存后经主进程广播，应用即生效）──
+  let pressMs = 200;
+  function applySettings(s) {
+    if (s && s.press_ms) {
+      pressMs = Math.max(50, Math.min(5000, parseInt(s.press_ms, 10) || 200));
+    }
+  }
+  window.planner.onSettings(applySettings);
+  fetch(window.planner.apiBase + '/settings', { signal: AbortSignal.timeout(4000) })
+    .then((r) => r.json())
+    .then((d) => applySettings(d.settings))
+    .catch(() => {});
+
   // ── 手动拖拽（不用 -webkit-app-region，透明窗口上它吞点击事件）──
   let dragging = false;
   let startX = 0, startY = 0;
   let winX = 0, winY = 0;
   let lastMoveX = 0, lastMoveY = 0;
-  let pressTimer = null;     // 200ms 长按判定定时器
+  let pressTimer = null;     // 长按判定定时器（时长来自设置，默认 200ms）
   let longPress = false;     // 已进入长按（录音）状态
   let micStop = null;        // 录音停止函数（麦克风就绪后赋值）
   let micPromise = null;     // begin() 的 Promise（预启动，可能未就绪）
@@ -151,13 +164,13 @@
       micStop = null;
       return null;
     });
-    // 200ms 未松开 → 判定为长按：点变红 + 启动音量环（与录音同步，不丢语音）
+    // 长按未松开 → 判定为长按：点变红 + 启动音量环（与录音同步，不丢语音）
     pressTimer = setTimeout(() => {
       pressTimer = null;
       longPress = true;
       core.classList.add('recording');
       startSoundRing();
-    }, 200);
+    }, pressMs);
   });
 
   function cancelMic() {

@@ -82,6 +82,8 @@ class _Handler(BaseHTTPRequestHandler):
             })
         elif path == "/state":
             self._send_json({"ok": True, "state": self.session.state_dict()})
+        elif path == "/settings":
+            self._send_json({"ok": True, "settings": self.session.settings})
         elif path == "/dequeue":
             events = self.session.drain_events()
             self._send_json({"ok": True, "events": events, "state": self.session.state_dict()})
@@ -223,6 +225,14 @@ class _Handler(BaseHTTPRequestHandler):
             body = self._read_json_body()
             self.session.set_typing(bool(body.get("typing", False)))
             self._send_json({"ok": True})
+        elif path == "/settings":
+            body = self._read_json_body()
+            try:
+                settings = self.session.update_settings(body.get("updates") or {})
+            except ValueError as exc:
+                self._send_json({"ok": False, "error": str(exc)}, status=400)
+                return
+            self._send_json({"ok": True, "settings": settings})
         elif path == "/nudge":
             now = datetime.now(timezone(timedelta(hours=8))).strftime("%H:%M")
             self.session._receive(f"[{now}] {PLAYER_NAME}戳了戳你，想看看你在忙什么。", trigger=True)

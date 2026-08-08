@@ -26,16 +26,22 @@ _logger = logging.getLogger("planner.llm")
 
 # ── 模型构建 ──────────────────────────────────────────────────
 
-def build_chat_model() -> ChatOpenAI:
-    """DeepSeek v4 适配的 ChatOpenAI。配置来自 .env / D:\\xiaob\\.env。"""
-    model_name = os.getenv("LLM_MODEL", "deepseek-v4-flash")
-    base_url = os.getenv("LLM_BASE_URL", "").rstrip("/")
+def build_chat_model(api_key: str | None = None,
+                     base_url: str | None = None,
+                     model_name: str | None = None) -> ChatOpenAI:
+    """DeepSeek v4 适配的 ChatOpenAI。
+
+    配置优先级：显式参数（用户设置）> 环境变量 / .env。
+    """
+    model_name = model_name or os.getenv("LLM_MODEL", "deepseek-v4-flash")
+    base_url = (base_url or os.getenv("LLM_BASE_URL", "")).rstrip("/")
+    api_key = api_key or os.getenv("LLM_API_KEY")
     kwargs: dict[str, Any] = {}
     if model_name.startswith("deepseek-v4"):
         kwargs["extra_body"] = {"thinking": {"type": "enabled"}, "reasoning_effort": "low"}
     return ChatOpenAI(
         model=model_name,
-        api_key=os.getenv("LLM_API_KEY"),
+        api_key=api_key,
         base_url=base_url,
         max_retries=int(os.getenv("LLM_MAX_RETRIES", "3")),
         timeout=int(os.getenv("LLM_TIMEOUT", "60")),

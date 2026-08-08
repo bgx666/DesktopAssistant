@@ -64,6 +64,10 @@ class PlannerSession:
         self.mock = _config.PLANNER_MOCK_LLM if mock is None else mock
         self.mode: str = "mock" if self.mock else "llm"
 
+        # 用户设置（data/settings.json；压缩参数/长按时间/LLM 配置）
+        from .settings import load_settings
+        self.settings: dict = load_settings(self.data_root)
+
         # 存储
         self.db = TasksDb(self.data_root / "planner.db")
         self.memory_tree: SQLiteMemoryTree | None = None
@@ -151,7 +155,13 @@ class PlannerSession:
             if self.mock:
                 self._llm = MockChatModel(session=self)
             else:
-                self._llm = build_chat_model()
+                from .settings import DEFAULT_SETTINGS
+                s = self.settings
+                self._llm = build_chat_model(
+                    api_key=s.get("llm_api_key") or None,
+                    base_url=s.get("llm_base_url") or None,
+                    model_name=s.get("llm_model") or None,
+                )
         return self._llm
 
     def _get_summary_model(self):
@@ -160,7 +170,13 @@ class PlannerSession:
             if self.mock:
                 self._summary_model = MockChatModel()
             else:
-                self._summary_model = build_chat_model()
+                from .settings import DEFAULT_SETTINGS
+                s = self.settings
+                self._summary_model = build_chat_model(
+                    api_key=s.get("llm_api_key") or None,
+                    base_url=s.get("llm_base_url") or None,
+                    model_name=s.get("llm_model") or None,
+                )
         return self._summary_model
 
     @property
@@ -174,6 +190,26 @@ class PlannerSession:
         """测试桩注入：替换 chat model 并重建 agent。"""
         self._llm = model
         self._agent_obj = None
+
+    def update_settings(self, updates: dict) -> dict:
+        """保存并应用设置（应用即生效）：
+        - 压缩参数：下次压缩时读取新值（运行时读 settings）
+        - LLM 配置：重建模型实例（下次生成生效）
+        校验失败抛 ValueError。
+        """
+        from .settings import save_settings
+        old_llm = (self.settings.get("llm_api_key"), self.settings.get("llm_base_url"),
+                   self.settings.get("llm_model"))
+        self.settings = save_settings(self.data_root, updates)
+        new_llm = (self.settings.get("llm_api_key"), self.settings.get("llm_base_url"),
+                   self.settings.get("llm_model"))
+        if old_llm != new_llm:
+            self._llm = None
+            self._summary_model = None
+            self._agent_obj = None
+            _logger.info("[settings] LLM 配置变更，已重建模型")
+        _logger.info("[settings] 设置已保存并应用: %s", {k: self.settings[k] for k in updates if k in self.settings})
+        return dict(self.settings)
 
     def toggle_mock(self) -> str:
         """运行时切换 Mock/真实 LLM。返回切换后的模式。"""

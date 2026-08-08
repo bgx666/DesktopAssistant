@@ -541,6 +541,7 @@ function createTray() {
   const menu = Menu.buildFromTemplate([
     { label: '打开小助', click: () => { showBubble(); togglePanel(); } },
     { label: '切换免打扰', click: () => toggleDndFromMain() },
+    { label: '设置', click: () => openSettings() },
     { type: 'separator' },
     { label: '退出', click: () => doQuit() },
   ]);
@@ -656,6 +657,43 @@ ipcMain.on('remove-mounted', (e, index) => {
 });
 ipcMain.handle('get-mounted', () => mountedFiles);
 ipcMain.on('toggle-panel', () => togglePanel());
+// ── 设置窗口 ─────────────────────────────────────────────
+let settingsWin = null;
+function openSettings() {
+  if (settingsWin && !settingsWin.isDestroyed()) {
+    settingsWin.focus();
+    return;
+  }
+  settingsWin = new BrowserWindow({
+    width: 520, height: 660,
+    frame: true, resizable: true, maximizable: false,
+    alwaysOnTop: true,
+    title: '小助 · 设置',
+    icon: APP_ICON_FILE,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+  settingsWin.loadFile(path.join(__dirname, 'renderer', 'settings.html'));
+  settingsWin.on('closed', () => { settingsWin = null; });
+}
+ipcMain.on('open-settings', () => openSettings());
+// 设置保存后：重新拉取并广播给各窗口（长按时间等前端项即时生效）
+ipcMain.on('settings-saved', async () => {
+  try {
+    const r = await fetch(BACKEND_URL + '/settings', { signal: AbortSignal.timeout(3000) });
+    const d = await r.json();
+    if (d.ok) broadcastSettings(d.settings);
+  } catch { /* 后端不可达忽略 */ }
+});
+function broadcastSettings(settings) {
+  try {
+    if (bubbleWin && !bubbleWin.isDestroyed()) bubbleWin.webContents.send('settings', settings);
+    if (panelWin && !panelWin.isDestroyed()) panelWin.webContents.send('settings', settings);
+  } catch { /* 忽略 */ }
+}
 // 输入框状态同步：非空 = 正在输入（模型生成前提示，临时注入不落库）
 ipcMain.on('typing-state', (e, typing) => {
   fetch(BACKEND_URL + '/typing', {
@@ -756,6 +794,7 @@ ipcMain.on('quit-app', () => doQuit());ipcMain.on('bubble-menu', (e) => {
   const items = [
     { label: '放大', click: () => togglePanel() },
     { label: '切换免打扰', click: () => toggleDndFromMain() },
+    { label: '设置', click: () => openSettings() },
   ];
   if (mountedFiles.length) {
     items.push({
