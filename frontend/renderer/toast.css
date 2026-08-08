@@ -21,7 +21,7 @@ html, body {
   -webkit-backdrop-filter: blur(14px);
   border: 1px solid rgba(138, 168, 255, 0.30);
   border-radius: 12px;
-  box-shadow: 0 6px 24px rgba(90, 120, 200, 0.20), 0 0 0 1px rgba(255, 255, 255, 0.6);
+  box-shadow: 0 0 0 1px rgba(138, 168, 255, 0.28);       /* 无投影阴影，仅细描边 */
   animation: toastIn 240ms ease-out;
   cursor: pointer;
 }
@@ -43,7 +43,6 @@ html, body {
   line-height: 24px;
   text-align: center;
   margin-top: 1px;
-  box-shadow: 0 2px 6px rgba(57, 197, 187, 0.45);
 }
 
 #toast-text {

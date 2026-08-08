@@ -36,9 +36,7 @@ body {
   border-radius: 14px;          /* 展开窗口圆角 */
   overflow: hidden;             /* 裁剪子元素到圆角内 */
   border: 1px solid rgba(120, 140, 190, 0.30);          /* 窗口边框：与白色背景区分 */
-  box-shadow:
-    0 10px 36px rgba(90, 120, 200, 0.22),
-    0 2px 8px rgba(90, 120, 200, 0.10);                 /* 外阴影：悬浮于桌面之上 */
+  box-shadow: none;                                      /* 无外阴影（扁平） */
   background:
     radial-gradient(120% 90% at 85% -10%, rgba(138, 168, 255, 0.28), transparent 55%),
     radial-gradient(100% 80% at -10% 110%, rgba(61, 220, 151, 0.16), transparent 50%),
