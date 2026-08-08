@@ -104,6 +104,7 @@ class PlannerSession:
         self._inbox: list[BaseMessage] = []
         self.pending_response: bool = False
         self._last_text_len: int = 0   # 最近一轮模型文本长度（continue 分段暂停用）
+        self._continue_pause_event = threading.Event()   # continue 分段暂停（可被用户打断唤醒）
         self.current_trigger: str = "player"   # player | heartbeat | scheduled | nudge
 
         # 对外状态
@@ -304,10 +305,17 @@ class PlannerSession:
         """continue_speaking 分段：按上段文本长度暂停，让回复一句一句出现。
 
         公式：基础 2 秒 + 每 10 字 +1 秒（上限 10 秒，防呆）。
+        用 Event.wait 实现：用户打断（说话/停止）时 interrupt_continue_pause()
+        立即唤醒，暂停即刻结束让位。
         """
         secs = min(10.0, 2.0 + (self._last_text_len or 0) / 10.0)
         _logger.info("[continue] 暂停 %.1f 秒（上段 %d 字）", secs, self._last_text_len or 0)
-        time.sleep(secs)
+        self._continue_pause_event.clear()
+        self._continue_pause_event.wait(timeout=secs)
+
+    def interrupt_continue_pause(self) -> None:
+        """立即唤醒正在进行的 continue 分段暂停（用户说话 / 停止时调用）。"""
+        self._continue_pause_event.set()
 
     def push_log(self, text: str) -> None:
         self.push_event({"type": "log", "text": text})
@@ -466,6 +474,8 @@ class PlannerSession:
         """
         msg = HumanMessage(content=content, id=uuid.uuid4().hex,
                            metadata={"ts": self._ts_now()})
+        # 玩家消息 = 立即打断 continue 分段暂停（让位给用户）
+        self.interrupt_continue_pause()
         with self.buffer_lock:
             if self._generating:
                 self._inbox.append(msg)

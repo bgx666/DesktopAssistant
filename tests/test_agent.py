@@ -248,14 +248,24 @@ def test_player_message_does_not_reset_heartbeat(data_root):
         s.close()
 
 
-def test_continue_speaking_tool(data_root, monkeypatch):
+def test_continue_speaking_tool(data_root):
     """continue_speaking：分点描述时每调用一次暂停片刻再说下一点（循环不退出）；
     暂停时长 = 2s + 每 10 字 +1s（上限 10s）；且该工具不产生前端工具卡片。"""
-    import planner.session as session_mod
-    pauses = []
-    monkeypatch.setattr(session_mod.time, "sleep", lambda s: pauses.append(s))
+    class _FakePauseEvent:
+        """只替换本实例的暂停事件（monkeypatch threading.Event 会误伤心跳线程）。"""
+        def __init__(self):
+            self.waits = []
+        def clear(self):
+            pass
+        def set(self):
+            pass
+        def wait(self, timeout=None):
+            self.waits.append(timeout)
+            return True
     s = PlannerSession(data_root, mock=True)
     try:
+        fake = _FakePauseEvent()
+        s._continue_pause_event = fake
         _drive_generation(s, "帮我分点描述一下学习计划")
         # 两轮 AI 输出：第一点（调 continue）+ 最后一点（纯文本收尾）
         ais = [m for m in s.recent_buffer if getattr(m, "type", None) == "ai"]
@@ -266,9 +276,9 @@ def test_continue_speaking_tool(data_root, monkeypatch):
         assert any(getattr(m, "type", None) == "tool"
                    and getattr(m, "name", "") == "continue_speaking"
                    for m in s.recent_buffer)
-        # 暂停过（时长按公式：2s 基础 + 上段字数/10，封顶 10s）
-        assert pauses, "应触发暂停"
-        assert all(2.0 <= p <= 10.0 for p in pauses), f"暂停时长应在 2~10s，实际 {pauses}"
+        # 暂停过（Event.wait 以公式时长调用：2s 基础 + 上段字数/10，封顶 10s）
+        assert fake.waits, "应触发暂停"
+        assert all(2.0 <= t <= 10.0 for t in fake.waits), f"暂停时长应在 2~10s，实际 {fake.waits}"
         # 不产生前端工具卡片事件
         events = s.drain_events()
         calls = [e for e in events if e["type"] == "tool_call"]
@@ -276,6 +286,29 @@ def test_continue_speaking_tool(data_root, monkeypatch):
         assert not any(e["name"] == "continue_speaking" for e in calls)
         # tool_result 事件也不该有 continue 对应的（其 tool_call 未展示）
         assert all(any(c["id"] == r["id"] for c in calls) for r in results)
+    finally:
+        s.close()
+
+
+def test_continue_pause_interruptible(data_root):
+    """continue 分段暂停可被用户打断：Event.set() 后 wait 立即返回（远小于超时）。"""
+    import threading
+    from planner.session import PlannerSession
+    s = PlannerSession(data_root, mock=True)
+    try:
+        s._last_text_len = 80          # 时长 10s（封顶）
+        t0 = time.time()
+        # 后台线程 0.2s 后打断暂停
+        threading.Timer(0.2, s.interrupt_continue_pause).start()
+        s.pause_before_continue()
+        elapsed = time.time() - t0
+        assert elapsed < 5.0, f"打断后暂停应立即结束，实际等了 {elapsed:.1f}s"
+        # 未打断的暂停按公式时长等待（2s 基础）
+        s._last_text_len = 0
+        t0 = time.time()
+        s.pause_before_continue()
+        elapsed = time.time() - t0
+        assert 1.5 <= elapsed <= 3.0, f"基础暂停应约 2s，实际 {elapsed:.1f}s"
     finally:
         s.close()
 

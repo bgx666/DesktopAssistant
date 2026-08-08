@@ -202,8 +202,9 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             self._send_json(self.session.undo_message(msg_id))
         elif path == "/stop":
-            # 停止当前生成（生成在安全点收尾）
+            # 停止当前生成（含立即唤醒 continue 分段暂停），安全位置收尾
             self.session.request_stop()
+            self.session.interrupt_continue_pause()
             self._send_json({"ok": True})
         elif path == "/task":
             body = self._read_json_body()
