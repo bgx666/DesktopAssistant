@@ -155,6 +155,13 @@ body {
   transition: background 0.15s, color 0.15s;
 }
 #titlebar-btns button:hover { background: rgba(91, 124, 250, 0.1); color: var(--primary); }
+/* 设置按钮（右上角，缩小按钮左侧） */
+#btn-settings {
+  width: 40px;
+  font-size: 15px;
+  padding: 0;
+  border-radius: 0;
+}
 /* 缩小（收起）按钮：贴右上角、撑满标题栏高度的大点击区（勿扰已移出，无误触风险） */
 #btn-fold {
   width: 52px;

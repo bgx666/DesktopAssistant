@@ -43,5 +43,6 @@ contextBridge.exposeInMainWorld('planner', {
   onState: (cb) => ipcRenderer.on('state', (e, s) => cb(s)),
   morphDone: (kind) => ipcRenderer.send(kind === 'in' ? 'morph-in-done' : 'morph-out-done'),
   hidePanel: () => ipcRenderer.send('hide-panel'),
+  openSettings: () => ipcRenderer.send('open-settings'),
   quitApp: () => ipcRenderer.send('quit-app'),
 });

@@ -530,6 +530,10 @@
   $('#btn-fold').addEventListener('click', () => {
     window.planner.hidePanel(); // 走 IPC 变形收回（不依赖 window.close 链路）
   });
+  // 设置（右上角 ⚙）
+  $('#btn-settings').addEventListener('click', () => {
+    window.planner.openSettings();
+  });
 
   // ── 历史消息（重启恢复 / 面板重新可见时补渲染）────────────
   // 面板隐藏期间小助说的话只冒了气泡，展开面板时要补进对话框；

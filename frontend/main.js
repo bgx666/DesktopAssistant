@@ -660,24 +660,31 @@ ipcMain.on('toggle-panel', () => togglePanel());
 // ── 设置窗口 ─────────────────────────────────────────────
 let settingsWin = null;
 function openSettings() {
-  if (settingsWin && !settingsWin.isDestroyed()) {
-    settingsWin.focus();
-    return;
+  try {
+    if (settingsWin && !settingsWin.isDestroyed()) {
+      settingsWin.focus();
+      return;
+    }
+    settingsWin = new BrowserWindow({
+      width: 520, height: 660,
+      frame: true, resizable: true, maximizable: false,
+      alwaysOnTop: true,
+      title: '小助 · 设置',
+      show: false,
+      webPreferences: {
+        preload: path.join(__dirname, 'preload.js'),
+        contextIsolation: true,
+        nodeIntegration: false,
+      },
+    });
+    settingsWin.once('ready-to-show', () => {
+      if (settingsWin && !settingsWin.isDestroyed()) settingsWin.show();
+    });
+    settingsWin.loadFile(path.join(__dirname, 'renderer', 'settings.html'));
+    settingsWin.on('closed', () => { settingsWin = null; });
+  } catch (err) {
+    console.error('[planner] 打开设置窗口失败:', err);
   }
-  settingsWin = new BrowserWindow({
-    width: 520, height: 660,
-    frame: true, resizable: true, maximizable: false,
-    alwaysOnTop: true,
-    title: '小助 · 设置',
-    icon: APP_ICON_FILE,
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-    },
-  });
-  settingsWin.loadFile(path.join(__dirname, 'renderer', 'settings.html'));
-  settingsWin.on('closed', () => { settingsWin = null; });
 }
 ipcMain.on('open-settings', () => openSettings());
 // 设置保存后：重新拉取并广播给各窗口（长按时间等前端项即时生效）
