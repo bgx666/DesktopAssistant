@@ -172,7 +172,9 @@
     input.value = '';
     input.style.height = 'auto';             // 发送后重置高度
     syncTypingState();                       // 清空输入 → 退出"正在输入"状态
-    $('#send').disabled = true;
+    const sendBtn = $('#send');
+    sendBtn.classList.add('stopping');       // 立即变"停止"（防快速双击重复提交）
+    sendBtn.textContent = '停止';
     try {
       // 发送时自动附带全局挂载文件（拖入的文件），发送后清空
       const mounted = await window.planner.getMounted();
@@ -181,8 +183,9 @@
       addMessage(text, 'user', r.msg_id || null);
     } catch (err) {
       addMessage('（连接后端失败，稍后重试）', 'log');
+      sendBtn.classList.remove('stopping');
+      sendBtn.textContent = '发送';
     }
-    $('#send').disabled = false;
   });
 
   // ── 拖拽文件挂载：拖到面板任意处 → 主进程挂载（对话框上方文件条显示）──
@@ -424,8 +427,10 @@
     const thinking = !!s.thinking;
     $('#thinking').classList.toggle('hidden', !thinking);
     $('.dot').classList.toggle('thinking', thinking);
-    // 停止按钮：生成中显示
-    $('#btn-stop').classList.toggle('hidden', !thinking);
+    // 发送/停止合并按钮：生成中变"停止"（点击打断），否则"发送"
+    const sendBtn = $('#send');
+    sendBtn.classList.toggle('stopping', thinking);
+    sendBtn.textContent = thinking ? '停止' : '发送';
     // 上下文 token 估算（字符数近似）
     const ctx = s.context;
     if (ctx) {
@@ -644,13 +649,16 @@
   // 自动朗读（audio 事件）
   window.planner.onAudio((url) => { playAudioUrl(url); });
 
-  // ── 停止按钮：生成中点一下打断小助 ─────────────────────
-  $('#btn-stop').addEventListener('click', async () => {
-    $('#btn-stop').disabled = true;
-    try {
-      await post('/stop');
-    } catch { /* 忽略 */ }
-    setTimeout(() => { $('#btn-stop').disabled = false; }, 300);
+  // ── 发送/停止合并按钮：生成中点击打断小助，平时提交 ─────
+  $('#send').addEventListener('click', (e) => {
+    if (!$('#send').classList.contains('stopping')) return;   // 平时走表单提交
+    e.preventDefault();
+    const sendBtn = $('#send');
+    if (sendBtn.disabled) return;
+    sendBtn.disabled = true;
+    post('/stop').catch(() => { /* 忽略 */ }).finally(() => {
+      setTimeout(() => { sendBtn.disabled = false; }, 300);
+    });
   });
 
   // ── 右键复制选中文字（气泡内容已可选中）──────────────
