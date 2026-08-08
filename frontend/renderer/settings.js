@@ -1,10 +1,23 @@
-// settings.js —— 设置窗口：表单回显 + 压缩示意图（峰值折线，即时重算）+ 保存
+// settings.js —— 设置窗口：选项卡切换 + 表单回显 + 压缩示意图 + 保存
 (() => {
   'use strict';
   const API = (window.planner && window.planner.apiBase) || 'http://127.0.0.1:18771';
   const $ = (s) => document.querySelector(s);
   const canvas = $('#chart');
   const ctx = canvas.getContext('2d');
+
+  // ── 选项卡切换 ──
+  document.querySelectorAll('aside .tab').forEach((tab) => {
+    tab.addEventListener('click', () => {
+      document.querySelectorAll('aside .tab').forEach((t) => t.classList.remove('active'));
+      tab.classList.add('active');
+      const name = tab.dataset.tab;
+      document.querySelectorAll('.pane').forEach((p) => {
+        p.classList.toggle('active', p.dataset.pane === name);
+      });
+      if (name === 'compress') drawChart();   // 隐藏时 canvas 不可见，切回重画
+    });
+  });
 
   // ── 读取当前设置并回显 ──
   let current = {};

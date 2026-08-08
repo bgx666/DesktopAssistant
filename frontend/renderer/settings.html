@@ -8,98 +8,148 @@
 <style>
   :root { --cyan: #39c5bb; --cyan2: #7deee3; --blue: #5fb8d6; --pink: #ff2e97; --text: #2b2f38; --dim: #8fa8b8; }
   * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; }
   body {
     font-family: "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
-    background: #f4f8fb; color: var(--text); padding: 18px 20px 24px;
+    background: #f4f8fb; color: var(--text);
+    display: flex; flex-direction: column; height: 100vh;
   }
-  h1 { font-size: 17px; margin-bottom: 4px; }
-  .sub { font-size: 12px; color: var(--dim); margin-bottom: 16px; }
-  section { background: #fff; border: 1px solid #e3ecf3; border-radius: 12px; padding: 14px 16px; margin-bottom: 14px; }
+
+  /* ── 顶部标题 ── */
+  .head { padding: 14px 18px 10px; }
+  .head h1 { font-size: 16px; }
+  .head .sub { font-size: 11.5px; color: var(--dim); margin-top: 3px; }
+
+  /* ── 主体：左侧选项卡 + 右侧内容 ── */
+  .layout { flex: 1; display: flex; min-height: 0; }
+  aside {
+    width: 118px; flex: none; padding: 10px 8px;
+    border-right: 1px solid #e3ecf3; background: #eef4fa;
+    display: flex; flex-direction: column; gap: 4px;
+  }
+  aside .tab {
+    padding: 10px 12px; border: none; border-radius: 10px; cursor: pointer;
+    background: transparent; color: #4a5a70; font-size: 13px; text-align: left;
+    transition: background 0.15s, color 0.15s;
+  }
+  aside .tab:hover { background: #e2ecf6; }
+  aside .tab.active { background: #fff; color: #1e8a80; font-weight: 700; box-shadow: 0 1px 4px rgba(90,120,200,0.12); }
+  main { flex: 1; overflow-y: auto; padding: 16px 20px; min-width: 0; }
+  .pane { display: none; }
+  .pane.active { display: block; }
+
   h2 { font-size: 13.5px; margin-bottom: 12px; color: #345; }
+  section { background: #fff; border: 1px solid #e3ecf3; border-radius: 12px; padding: 14px 16px; margin-bottom: 14px; }
   .row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
-  .row label { width: 150px; font-size: 12.5px; flex: none; }
+  .row label { width: 132px; font-size: 12.5px; flex: none; }
   .row input[type=number], .row input[type=text], .row input[type=password] {
     flex: 1; padding: 6px 10px; border: 1px solid #d6e2ec; border-radius: 8px;
-    font-size: 13px; outline: none; max-width: 240px;
+    font-size: 13px; outline: none; max-width: 210px;
   }
   .row input:focus { border-color: var(--cyan); }
-  .row .hint { font-size: 11px; color: var(--dim); flex: none; width: 130px; }
-  .btn-row { display: flex; align-items: center; gap: 12px; margin-top: 4px; }
-  #save { padding: 8px 26px; border: none; border-radius: 10px; cursor: pointer;
-    color: #fff; font-size: 13px; font-weight: 700; background: linear-gradient(135deg, var(--cyan2), var(--cyan)); }
-  #save:disabled { opacity: .55; cursor: default; }
-  #msg { font-size: 12px; color: var(--pink); min-height: 16px; }
-  #msg.ok { color: #2e9e6b; }
-  canvas { width: 100%; height: 260px; background: #fff; border-radius: 10px; display: block; border: 1px solid #e3ecf3; cursor: grab; }
+  .row .hint { font-size: 11px; color: var(--dim); flex: none; width: 120px; }
+
+  canvas { width: 100%; height: 240px; background: #fff; border-radius: 10px; display: block; border: 1px solid #e3ecf3; cursor: grab; }
   canvas:active { cursor: grabbing; }
   .chart-tip { font-size: 11px; color: var(--dim); margin-top: 8px; line-height: 1.7; }
   .legend { font-size: 11px; color: var(--dim); margin-top: 6px; }
   .legend b { color: var(--blue); }
+
+  /* ── 底部：保存按钮固定右下角 ── */
+  .footer {
+    flex: none; display: flex; align-items: center; gap: 12px;
+    padding: 12px 18px; border-top: 1px solid #e3ecf3; background: #fff;
+  }
+  #msg { flex: 1; font-size: 12px; color: var(--pink); min-height: 16px; }
+  #msg.ok { color: #2e9e6b; }
+  #save { padding: 8px 30px; border: none; border-radius: 10px; cursor: pointer;
+    color: #fff; font-size: 13px; font-weight: 700; background: linear-gradient(135deg, var(--cyan2), var(--cyan)); }
+  #save:disabled { opacity: .55; cursor: default; }
 </style>
 </head>
 <body>
-  <h1>小助 · 设置</h1>
-  <div class="sub">修改后点击保存，立即生效（压缩参数下次压缩时生效，LLM 配置下次生成时生效）</div>
+  <div class="head">
+    <h1>小助 · 设置</h1>
+    <div class="sub">修改后点击右下角「保存设置」，立即生效</div>
+  </div>
 
-  <section>
-    <h2>交互</h2>
-    <div class="row">
-      <label>长按判定时间</label>
-      <input type="number" id="press_ms" min="50" max="5000" step="10" />
-      <span class="hint">毫秒（按住多久进入语音输入）</span>
-    </div>
-  </section>
+  <div class="layout">
+    <aside>
+      <button class="tab active" data-tab="interact">交互</button>
+      <button class="tab" data-tab="compress">记忆压缩</button>
+      <button class="tab" data-tab="llm">LLM API</button>
+    </aside>
 
-  <section>
-    <h2>记忆压缩</h2>
-    <div class="row">
-      <label>触发压缩条数</label>
-      <input type="number" id="compress_trigger" min="20" max="500" />
-      <span class="hint">对话积累到多少条触发压缩</span>
-    </div>
-    <div class="row">
-      <label>压缩后保留条数</label>
-      <input type="number" id="compress_keep" min="5" max="200" />
-      <span class="hint">压缩后保留最近多少条</span>
-    </div>
-    <div class="row">
-      <label>层级触发阈值</label>
-      <input type="number" id="compact_threshold" min="3" max="50" />
-      <span class="hint">某层节点达到多少个开始合并</span>
-    </div>
-    <div class="row">
-      <label>合并个数</label>
-      <input type="number" id="compact_factor" min="2" max="10" />
-      <span class="hint">每次合并几个节点为 1 个</span>
-    </div>
-  </section>
+    <main>
+      <!-- 交互 -->
+      <div class="pane active" data-pane="interact">
+        <section>
+          <h2>交互</h2>
+          <div class="row">
+            <label>长按判定时间</label>
+            <input type="number" id="press_ms" min="50" max="5000" step="10" />
+            <span class="hint">毫秒（按住多久进入语音输入）</span>
+          </div>
+        </section>
+      </div>
 
-  <section>
-    <h2>压缩示意图</h2>
-    <canvas id="chart" width="900" height="300"></canvas>
-    <div class="legend">黑色折线 = 每次压缩触发前的上下文峰值（触发条数 × 360 + 节点 × 500 token）· 横轴为对话轮数（线性）</div>
-    <div class="chart-tip">拖动平移 · 滚轮缩放 · 双击重置 · 输入上面的压缩参数后即时重算。</div>
-  </section>
+      <!-- 记忆压缩 -->
+      <div class="pane" data-pane="compress">
+        <section>
+          <h2>记忆压缩</h2>
+          <div class="row">
+            <label>触发压缩条数</label>
+            <input type="number" id="compress_trigger" min="20" max="500" />
+            <span class="hint">对话积累到多少条触发压缩</span>
+          </div>
+          <div class="row">
+            <label>压缩后保留条数</label>
+            <input type="number" id="compress_keep" min="5" max="200" />
+            <span class="hint">压缩后保留最近多少条</span>
+          </div>
+          <div class="row">
+            <label>层级触发阈值</label>
+            <input type="number" id="compact_threshold" min="3" max="50" />
+            <span class="hint">某层节点达到多少个开始合并</span>
+          </div>
+          <div class="row">
+            <label>合并个数</label>
+            <input type="number" id="compact_factor" min="2" max="10" />
+            <span class="hint">每次合并几个节点为 1 个</span>
+          </div>
+        </section>
+        <section>
+          <h2>压缩示意图</h2>
+          <canvas id="chart" width="900" height="300"></canvas>
+          <div class="legend">黑色折线 = 每次压缩触发前的上下文峰值（触发条数 × 360 + 节点 × 500 token）· 横轴为对话轮数（线性）</div>
+          <div class="chart-tip">拖动平移 · 滚轮缩放 · 双击重置 · 输入上面的压缩参数后即时重算。</div>
+        </section>
+      </div>
 
-  <section>
-    <h2>LLM API（留空 = 使用环境变量 / .env）</h2>
-    <div class="row">
-      <label>API Key</label>
-      <input type="password" id="llm_api_key" />
-    </div>
-    <div class="row">
-      <label>Base URL</label>
-      <input type="text" id="llm_base_url" placeholder="如 https://api.deepseek.com" />
-    </div>
-    <div class="row">
-      <label>Model</label>
-      <input type="text" id="llm_model" placeholder="如 deepseek-v4-flash" />
-    </div>
-  </section>
+      <!-- LLM API -->
+      <div class="pane" data-pane="llm">
+        <section>
+          <h2>LLM API（留空 = 使用环境变量 / .env）</h2>
+          <div class="row">
+            <label>API Key</label>
+            <input type="password" id="llm_api_key" />
+          </div>
+          <div class="row">
+            <label>Base URL</label>
+            <input type="text" id="llm_base_url" placeholder="如 https://api.deepseek.com" />
+          </div>
+          <div class="row">
+            <label>Model</label>
+            <input type="text" id="llm_model" placeholder="如 deepseek-v4-flash" />
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
 
-  <div class="btn-row">
-    <button id="save">保存设置</button>
+  <div class="footer">
     <span id="msg"></span>
+    <button id="save">保存设置</button>
   </div>
 
 <script src="settings.js"></script>
