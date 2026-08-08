@@ -9,6 +9,7 @@
   'use strict';
 
   const core = document.getElementById('core');
+  const ball = document.getElementById('ball');   // 拖动时 CSS transform 跟随（窗口不动）
 
   // ── 设置：长按判定时间（主进程本地配置，启动即用，无需等后端）──
   let pressMs = 200;
@@ -201,7 +202,22 @@
         cancelMic();
       }
     }
-    window.planner.moveBubble(winX + dx, winY + dy);
+    // CSS transform 拖动：窗口不随鼠标高频移动（Windows 透明窗口拖动有
+    // 残影 bug——左上角闪点）。累计位移超过 TICK 时窗口跳一次（低频，
+    // 视觉无缝），其余时间内容跟手
+    const TICK = 80;   // 窗口跟随步进（px）
+    if (Math.abs(dx) >= TICK || Math.abs(dy) >= TICK) {
+      window.planner.moveBubble(winX + dx, winY + dy);
+      winX += dx;
+      winY += dy;
+      startX = e.screenX;      // 重置基准：窗口已跟到这里
+      startY = e.screenY;
+      lastMoveX = 0;
+      lastMoveY = 0;
+      ball.style.transform = '';
+    } else {
+      ball.style.transform = `translate(${dx}px, ${dy}px)`;
+    }
   });
 
   document.addEventListener('mouseup', async (e) => {
@@ -215,6 +231,9 @@
     if (!isClick) {
       if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
       cancelMic();
+      // 拖动结束：窗口一次性移到最终位置（含最后一次 transform 偏移），内容归零
+      window.planner.moveBubble(winX + dx, winY + dy);
+      ball.style.transform = '';
       return;
     }
     if (!longPress) {
