@@ -395,8 +395,29 @@ class SummarizationMiddleware(AgentMiddleware):
     # ── 节点消息渲染（全字段，供模型上下文与 explore 使用）──────
 
     @staticmethod
-    def _render_node_text(node_id: str, start, end, out: MemoryNodeOutput) -> str:
+    def _fmt_time(ts: str, short: bool = False) -> str:
+        """ISO 秒级时间戳 → 短格式（MM-DD HH:MM / HH:MM:SS）。"""
+        if not ts:
+            return ""
+        return ts[5:16] if short else ts
+
+    @staticmethod
+    def _fmt_time_range(start: str, end: str) -> str:
+        """节点起止时间 → 'MM-DD HH:MM ~ HH:MM'（同日省略结束日期）。"""
+        s = SummarizationMiddleware._fmt_time(start, short=True)
+        e = SummarizationMiddleware._fmt_time(end, short=True)
+        if not s or not e:
+            return ""
+        if start[:10] == end[:10]:
+            e = end[11:16]           # 同日：结束只显示时分
+        return f"{s} ~ {e}"
+
+    @staticmethod
+    def _render_node_text(node_id: str, start, end, out: MemoryNodeOutput,
+                          time_range: tuple[str, str] | None = None) -> str:
         lines = [f"[{node_id}] 第{start}-{end}条", f"[摘要] {out.summary}"]
+        if time_range and time_range[0] and time_range[1]:
+            lines.append(f"[时间] {SummarizationMiddleware._fmt_time_range(*time_range)}")
         p = out.profile
         for label, items in (("喜好", p.preferences), ("性格", p.personality),
                              ("习惯", p.habits), ("目标", p.goals)):
@@ -411,6 +432,10 @@ class SummarizationMiddleware(AgentMiddleware):
         """把树节点 dict（get_nodes_at_level 返回）渲染为全字段文本。"""
         rr = n.get("round_range") or ["?", "?"]
         lines = [f"节点 {n['id']}（第{rr[0]}-{rr[1]}轮）", f"摘要：{n.get('summary', '')}"]
+        tr = SummarizationMiddleware._fmt_time_range(
+            n.get("time_start") or "", n.get("time_end") or "")
+        if tr:
+            lines.append(f"时间：{tr}")
         p = n.get("profile") or {}
         for label, key in (("喜好", "preferences"), ("性格", "personality"),
                            ("习惯", "habits"), ("目标", "goals")):
@@ -441,6 +466,12 @@ class SummarizationMiddleware(AgentMiddleware):
             return
 
         from langchain_core.messages import messages_to_dict
+        # 覆盖时间范围：batch 首/末消息的 metadata.ts（秒级 ISO，UTC+8）
+        def _msg_ts(m):
+            return (getattr(m, "metadata", None) or {}).get("ts")
+        first_ts = _msg_ts(batch[0])
+        last_ts = _msg_ts(batch[-1])
+        time_range = (first_ts, last_ts) if (first_ts and last_ts) else None
         node_id = tree.add_leaf(
             out.summary,
             (start_pos, end_pos),
@@ -449,9 +480,10 @@ class SummarizationMiddleware(AgentMiddleware):
             profile=self._profile_or_none(out),
             future_notes=out.future_notes or None,
             meta={"schema_version": 1, **out.meta},
+            time_range=time_range,
         )
         self.session._compressed_total = end_pos + 1   # 累加已压缩条数
-        node_text = self._render_node_text(node_id, start_pos, end_pos, out)
+        node_text = self._render_node_text(node_id, start_pos, end_pos, out, time_range)
         # node_start：全局起始序号——回写 buffer 后据此把节点移到
         # 正确位置（压缩的总是最早的消息，节点应排在 buffer 最前）
         summary_msg = HumanMessage(

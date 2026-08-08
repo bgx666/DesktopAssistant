@@ -394,8 +394,10 @@ class PlannerSession:
 
         显式分配 id（langchain 默认 None，langgraph 在模型调用时才补）——
         撤销按钮依赖消息 id 在入队时就稳定存在。
+        消息带 metadata.ts 时间戳（秒级，UTC+8）——压缩节点起止时间的数据来源。
         """
-        msg = HumanMessage(content=content, id=uuid.uuid4().hex)
+        msg = HumanMessage(content=content, id=uuid.uuid4().hex,
+                           metadata={"ts": self._ts_now()})
         with self.buffer_lock:
             if self._generating:
                 self._inbox.append(msg)
@@ -407,6 +409,26 @@ class PlannerSession:
             if trigger:
                 self.pending_response = True
         return msg
+
+    @staticmethod
+    def _ts_now() -> str:
+        """当前时间戳（秒级 ISO，UTC+8）。"""
+        return _now().strftime("%Y-%m-%d %H:%M:%S")
+
+    def _stamp_missing_ts(self) -> None:
+        """给 buffer 中缺少 ts 的消息补时间戳（agent 生成的 ai/tool 消息、
+        旧 buffer 恢复的消息）——保证压缩时每条消息都有时间。"""
+        ts = self._ts_now()
+        with self.buffer_lock:
+            for m in self.recent_buffer:
+                meta = getattr(m, "metadata", None)
+                if not meta:
+                    try:
+                        m.metadata = {"ts": ts}      # metadata 为 None（旧数据）→ 重建
+                    except Exception:
+                        continue
+                elif not meta.get("ts"):
+                    meta["ts"] = ts
 
     def _repair_buffer(self) -> None:
         """检查 buffer 末尾是否有孤儿 tool_call，自动补 tool 消息（防御用）。"""
@@ -479,6 +501,7 @@ class PlannerSession:
             msgs = messages_from_dict(state["recent_buffer"])
             if msgs:
                 self.recent_buffer = msgs
+                self._stamp_missing_ts()   # 旧数据/缺时间戳的消息补打（压缩时间字段的数据来源）
                 self._msg_counter = state.get("_msg_counter", len(msgs))
                 self.round = state.get("round", 0)
                 self._last_activity_at = state.get("last_activity_at", 0.0) or 0.0
@@ -996,6 +1019,7 @@ class PlannerSession:
                          if (getattr(m, "id", None) or id(m)) not in in_ids
                          and getattr(m, "type", None) == "human"]
                 self.recent_buffer = filtered + extra
+            self._stamp_missing_ts()   # agent 生成的 ai/tool 消息补时间戳
             self._reorder_node_messages()
         self.push_plan_update()
 

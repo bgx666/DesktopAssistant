@@ -31,6 +31,8 @@ CREATE TABLE IF NOT EXISTS nodes (
     parent_id TEXT,
     round_start INTEGER,
     round_end INTEGER,
+    time_start TEXT,
+    time_end TEXT,
     source_ref TEXT,
     details TEXT,
     profile TEXT,
@@ -122,6 +124,15 @@ class SQLiteMemoryTree:
             with self._lock:
                 with self._conn:
                     self._execute_with_retry("ALTER TABLE nodes ADD COLUMN meta TEXT")
+        # compat: 节点覆盖时间范围（压缩时取原始消息起止时间）
+        for col in ("time_start", "time_end"):
+            cur = self._execute_with_retry(
+                f"SELECT name FROM pragma_table_info('nodes') WHERE name = '{col}'"
+            )
+            if not cur.fetchone():
+                with self._lock:
+                    with self._conn:
+                        self._execute_with_retry(f"ALTER TABLE nodes ADD COLUMN {col} TEXT")
 
     def _execute_with_retry(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
         """带简单重试的 SQL 执行（锁内串行，处理多线程/多连接并发）。"""
@@ -159,7 +170,7 @@ class SQLiteMemoryTree:
     def get_node_children_info(self, node_id: str) -> dict | None:
         """获取节点的子节点信息或叶子详情（含画像、后续说明与 meta）。"""
         cur = self._execute_with_retry(
-            "SELECT level, details, profile, meta FROM nodes WHERE id = ? AND character_id = ?",
+            "SELECT level, details, profile, meta, time_start, time_end FROM nodes WHERE id = ? AND character_id = ?",
             (node_id, self._character_id),
         )
         row = cur.fetchone()
@@ -193,7 +204,7 @@ class SQLiteMemoryTree:
                 future_notes = details.get("future_notes")
                 details = details.get("messages", [])
             return {"details": details, "profile": profile, "future_notes": future_notes,
-                    "meta": meta}
+                    "meta": meta, "time_start": row["time_start"], "time_end": row["time_end"]}
 
         cur = self._execute_with_retry(
             "SELECT id, summary, profile FROM nodes WHERE parent_id = ? AND character_id = ? ORDER BY round_start",
@@ -208,7 +219,8 @@ class SQLiteMemoryTree:
                 except json.JSONDecodeError:
                     cp = None
             children.append({"node_id": r["id"], "summary": r["summary"], "profile": cp})
-        return {"children": children, "profile": profile, "meta": meta}
+        return {"children": children, "profile": profile, "meta": meta,
+                "time_start": row["time_start"], "time_end": row["time_end"]}
 
     # ── 写入接口 ──────────────────────────────────────────────
 
@@ -221,23 +233,26 @@ class SQLiteMemoryTree:
         profile: dict | None = None,
         future_notes: list[str] | None = None,
         meta: dict | None = None,
+        time_range: tuple[str, str] | None = None,
     ) -> str:
         """新增一个叶子节点，返回 node_id。
 
         profile: 用户画像 JSON（preferences/personality/habits/goals）；
         future_notes: 后续说明（结合未来消息的澄清/修正）——存进 details 结构；
-        meta: schema_version 与未来扩展字段（JSON）。
+        meta: schema_version 与未来扩展字段（JSON）；
+        time_range: 覆盖的原始对话起止时间（(start, end) ISO 秒级字符串）。
         """
         node_id = self._next_id(0)
         rr = list(round_range)
+        tr = list(time_range) if time_range else [None, None]
         details_payload = details
         if future_notes:
             details_payload = {"messages": details or [], "future_notes": future_notes}
         with self._lock:
             with self._conn:
                 self._execute_with_retry(
-                    "INSERT INTO nodes (id, character_id, level, summary, parent_id, round_start, round_end, source_ref, details, profile, meta, is_active) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO nodes (id, character_id, level, summary, parent_id, round_start, round_end, time_start, time_end, source_ref, details, profile, meta, is_active) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         node_id,
                         self._character_id,
@@ -246,6 +261,8 @@ class SQLiteMemoryTree:
                         None,
                         rr[0],
                         rr[1],
+                        tr[0],
+                        tr[1],
                         source_ref,
                         json.dumps(details_payload, ensure_ascii=False) if details_payload else None,
                         json.dumps(profile, ensure_ascii=False) if profile else None,
@@ -259,16 +276,22 @@ class SQLiteMemoryTree:
                 profile: dict | None = None,
                 future_notes: list[str] | None = None,
                 meta: dict | None = None) -> str:
-        """将多个子节点压缩成一个父节点，返回父节点 node_id。"""
+        """将多个子节点压缩成一个父节点，返回父节点 node_id。
+
+        父节点时间范围 = 子节点 time_start 最小 / time_end 最大（ISO 字符串 min/max）。
+        """
         if not child_ids:
             raise ValueError("compact: child_ids 不能为空")
 
         children_level = None
         round_start = None
         round_end = None
+        time_start = None
+        time_end = None
         for cid in child_ids:
             cur = self._execute_with_retry(
-                "SELECT level, round_start, round_end FROM nodes WHERE id = ? AND character_id = ?",
+                "SELECT level, round_start, round_end, time_start, time_end "
+                "FROM nodes WHERE id = ? AND character_id = ?",
                 (cid, self._character_id),
             )
             row = cur.fetchone()
@@ -281,6 +304,11 @@ class SQLiteMemoryTree:
                 round_start = rs
             if round_end is None or (re is not None and re > round_end):
                 round_end = re
+            ts, te = row["time_start"], row["time_end"]
+            if ts and (time_start is None or ts < time_start):
+                time_start = ts
+            if te and (time_end is None or te > time_end):
+                time_end = te
 
         parent_level = (children_level or 0) + 1
         parent_id = self._next_id(parent_level)
@@ -288,9 +316,10 @@ class SQLiteMemoryTree:
         with self._lock:
             with self._conn:
                 self._execute_with_retry(
-                    "INSERT INTO nodes (id, character_id, level, summary, parent_id, round_start, round_end, profile, meta, is_active) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO nodes (id, character_id, level, summary, parent_id, round_start, round_end, time_start, time_end, profile, meta, is_active) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (parent_id, self._character_id, parent_level, summary, None, round_start, round_end,
+                     time_start, time_end,
                      json.dumps(profile, ensure_ascii=False) if profile else None,
                      json.dumps(meta, ensure_ascii=False) if meta else None, 1),
                 )
@@ -306,7 +335,7 @@ class SQLiteMemoryTree:
     def get_nodes_at_level(self, level: int) -> list[dict[str, Any]]:
         """获取指定层级的当前活跃节点（is_active = 1）。"""
         cur = self._execute_with_retry(
-            "SELECT id, level, summary, parent_id, round_start, round_end, source_ref, details, profile, meta, is_active "
+            "SELECT id, level, summary, parent_id, round_start, round_end, time_start, time_end, source_ref, details, profile, meta, is_active "
             "FROM nodes WHERE character_id = ? AND level = ? AND is_active = 1 ORDER BY round_start",
             (self._character_id, level),
         )
