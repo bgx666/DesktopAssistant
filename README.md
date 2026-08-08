@@ -40,6 +40,18 @@
 | 语音输入 | 按住悬浮球或长按发送按钮说话，本地识别填入输入框 |
 | 图片/文件 | 拖拽文件挂载（PDF/Word/文本解析 + OCR）、截屏、网页搜索 |
 
+## 使用的开源模型
+
+小助的语音/视觉能力全部基于开源模型**本地推理**（无云端依赖、数据不出本机），首次使用时自动下载到用户缓存目录（`~/.cache/planner_tts`、`~/.cache/planner_asr`），之后离线可用：
+
+| 模型 | 用途 | 说明 |
+|---|---|---|
+| **Kokoro-82M-v1.1-zh**（[onnx-community/Kokoro-82M-v1.1-zh-ONNX](https://huggingface.co/onnx-community/Kokoro-82M-v1.1-zh-ONNX)） | 语音合成（TTS） | 82M 参数、纯 ONNX 推理（无 torch），支持 100+ 中英文音色；配合 [misaki](https://github.com/hexgrad/misaki) 中文音素管线 |
+| **SenseVoiceSmall**（[FunAudioLLM/SenseVoice](https://github.com/FunAudioLLM/SenseVoice)） | 语音识别（ASR） | 阿里开源的多语言语音识别模型，ONNX 版经 [funasr-onnx](https://github.com/altescy/funasr-onnx) 加载 |
+| **RapidOCR**（[RapidAI/RapidOCR](https://github.com/RapidAI/RapidOCR)） | 图片文字识别（OCR） | PaddleOCR 模型的 ONNX 移植版（约 15MB），用于截图/图片中的文字识别 |
+
+各模型的许可证以其项目仓库为准（均为开源协议，商用前请自行核对）。语音输入/识别/OCR 全程本地处理，只有对话内容会发送到你配置的 LLM API。
+
 ## 环境要求
 
 | 依赖 | 版本要求 | 说明 |
