@@ -69,17 +69,22 @@
         const bubbleEl = el.querySelector('.bubble');
         if (!bubbleEl || !bubbleEl.textContent.trim()) return;
         speak.classList.add('loading');
+        let r;
         try {
-          const r = await fetch(API + '/tts/say?text=' + encodeURIComponent(bubbleEl.textContent.trim()));
-          const d = await r.json();
-          if (d.ok && d.url) {
-            ttsAudio.src = API + d.url;
-            await ttsAudio.play();
-          } else {
-            addMessage('语音合成失败', 'log');
-          }
+          r = await fetch(API + '/tts/say?text=' + encodeURIComponent(bubbleEl.textContent.trim()));
         } catch {
           addMessage('语音合成失败（后端未连接）', 'log');
+          speak.classList.remove('loading');
+          return;
+        }
+        try {
+          const d = await r.json();
+          if (!d.ok || !d.url) throw new Error(d.error || 'tts_unavailable');
+          ttsAudio.src = API + d.url;
+          await ttsAudio.play();
+        } catch (e) {
+          console.error('[tts] 播放失败:', e);
+          addMessage('语音播放失败（' + (e.name === 'NotAllowedError' ? '被系统拦截' : '音频无法播放') + '）', 'log');
         }
         speak.classList.remove('loading');
       });

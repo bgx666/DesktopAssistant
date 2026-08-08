@@ -130,6 +130,7 @@ function createBubble() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      autoplayPolicy: 'no-user-gesture-required',   // 允许无手势自动播放（语音朗读）
     },
   });
   bubbleWin.loadFile(path.join(__dirname, 'renderer', 'bubble.html'));
@@ -164,6 +165,7 @@ function createPanel() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      autoplayPolicy: 'no-user-gesture-required',   // 允许无手势自动播放（语音朗读）
     },
   });
   panelWin.loadFile(path.join(__dirname, 'renderer', 'index.html'));
