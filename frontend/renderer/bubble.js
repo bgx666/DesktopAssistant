@@ -18,10 +18,13 @@
     }
   }
   window.planner.onSettings(applySettings);
-  fetch(window.planner.apiBase + '/settings', { signal: AbortSignal.timeout(4000) })
-    .then((r) => r.json())
-    .then((d) => applySettings(d.settings))
-    .catch(() => {});
+  // 启动时后端可能未就绪：拉取失败 2 秒后重试，直到拿到真实设置
+  (function loadSettingsOnce() {
+    fetch(window.planner.apiBase + '/settings', { signal: AbortSignal.timeout(4000) })
+      .then((r) => r.json())
+      .then((d) => applySettings(d.settings))
+      .catch(() => setTimeout(loadSettingsOnce, 2000));
+  })();
 
   // ── 手动拖拽（不用 -webkit-app-region，透明窗口上它吞点击事件）──
   let dragging = false;
