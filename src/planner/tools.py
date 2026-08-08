@@ -208,6 +208,15 @@ def build_tools(session) -> list[BaseTool]:
         return f"（我先歇 {session._fmt_duration(float(minutes))}，{note or '到点再醒'}。）"
 
     @tool(parse_docstring=True)
+    def continue_speaking() -> str:
+        """需要分点、分段继续描述时调用本工具：每调用一次，接着说下一点。
+
+        用法：每说一点之前调用一次，说完这一点、还想继续说下一点时再调用；
+        所有点都说完了就不要再调用，正常收尾（如调用 heartbeat 结束本轮）。
+        不要为了一句普通的话调用它。"""
+        return "（收到，继续。请接着说下一点。）"
+
+    @tool(parse_docstring=True)
     def mark_plan_done(plan_id: int) -> str:
         """勾选完成一条待办（用户确认做完了才调用——不做就不推进进度）。
         如果任务的所有待办都完成，任务自动标记为 done。
@@ -511,8 +520,8 @@ def build_tools(session) -> list[BaseTool]:
         return out
 
     return [create_task, break_down_task, list_tasks, get_task, heartbeat,
-            mark_plan_done, set_do_not_disturb, reschedule, update_task_status,
-            get_next_actions, prioritize, explore_memory_tree,
+            continue_speaking, mark_plan_done, set_do_not_disturb, reschedule,
+            update_task_status, get_next_actions, prioritize, explore_memory_tree,
             list_dir, read_file, capture_screen, web_search, fetch_web]
 
 

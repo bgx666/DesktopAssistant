@@ -97,6 +97,18 @@ class MockChatModel(BaseChatModel):
                 },
                 "future_notes": [],
             }, ensure_ascii=False))
+        # 模拟 continue_speaking：上一轮调用了分段工具 → 本轮纯文本收尾（无工具调用）
+        for m in messages:
+            if (getattr(m, "type", None) == "tool"
+                    and "继续" in str(m.content or "")):
+                return self._make_result("（这是分点说法的最后一点，说完了。）")
+        # 玩家要求分点描述 → 先调 continue_speaking 说第一点（循环继续）
+        # （用所有 HumanMessage 判断：计划快照会注入"（当前计划）"Human 且以 [ 开头）
+        user_texts = " ".join(
+            str(m.content or "") for m in messages if isinstance(m, HumanMessage))
+        if "分点" in user_texts or "continue" in user_texts:
+            return self._make_result("第一点：先梳理整体目标。",
+                                     [self._tc("continue_speaking", {})])
         if last_user.startswith(("（", "[", "【")):
             return self._heartbeat_reply()
         return self._player_reply()

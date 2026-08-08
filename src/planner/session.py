@@ -1096,6 +1096,8 @@ class PlannerSession:
         if mtype == "ai" and getattr(m, "tool_calls", None):
             for tc in m.tool_calls:
                 name = tc.get("name", "?")
+                if name == "continue_speaking":
+                    continue   # 分段工具不展示卡片（视觉上就是连续说话）
                 try:
                     args = tc.get("args", {})
                 except Exception:
@@ -1103,6 +1105,8 @@ class PlannerSession:
                 self.push_event({"type": "tool_call", "id": tc.get("id", ""),
                                  "name": name, "args": args})
         elif mtype == "tool":
+            if getattr(m, "name", "") == "continue_speaking":
+                return   # 对应卡片不展示
             self.push_event({"type": "tool_result", "id": getattr(m, "tool_call_id", ""),
                              "content": str(getattr(m, "content", "") or "")})
 

@@ -248,6 +248,32 @@ def test_player_message_does_not_reset_heartbeat(data_root):
         s.close()
 
 
+def test_continue_speaking_tool(data_root):
+    """continue_speaking：分点描述时每调用一次继续说下一点（循环不退出）；
+    且该工具不产生前端工具卡片（连续说话视觉）。"""
+    s = PlannerSession(data_root, mock=True)
+    try:
+        _drive_generation(s, "帮我分点描述一下学习计划")
+        # 两轮 AI 输出：第一点（调 continue）+ 最后一点（纯文本收尾）
+        ais = [m for m in s.recent_buffer if getattr(m, "type", None) == "ai"]
+        assert len(ais) >= 2, "调 continue 后循环应继续（多轮 AI 输出）"
+        texts = " ".join(str(m.content or "") for m in ais)
+        assert "第一点" in texts and "最后一点" in texts
+        # 工具确实被调用（buffer 里有 continue 的工具结果）
+        assert any(getattr(m, "type", None) == "tool"
+                   and getattr(m, "name", "") == "continue_speaking"
+                   for m in s.recent_buffer)
+        # 不产生前端工具卡片事件
+        events = s.drain_events()
+        calls = [e for e in events if e["type"] == "tool_call"]
+        results = [e for e in events if e["type"] == "tool_result"]
+        assert not any(e["name"] == "continue_speaking" for e in calls)
+        # tool_result 事件也不该有 continue 对应的（其 tool_call 未展示）
+        assert all(any(c["id"] == r["id"] for c in calls) for r in results)
+    finally:
+        s.close()
+
+
 def test_silent_escalation(data_root):
     """连续自主唤醒用户没反应 → 心跳逐步加长（10 → 20 → … → 120 上限）。"""
     from planner import config as _config
