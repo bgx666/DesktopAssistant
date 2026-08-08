@@ -99,6 +99,18 @@ $RelUrl = "http://127.0.0.1:$RelPort"
 $RelUserData = Join-Path $ReleaseRoot "user-data"
 $ElectronExe = Join-Path $AppDir "frontend\node_modules\electron\dist\electron.exe"
 $FrontendDir = Join-Path $AppDir "frontend"
+# 共享 .env（本机私有，不入库）：从开发仓库根 .env 读取并注入 release 启动
+$SharedEnvLine = ""
+$VbsSharedEnvLine = ""
+$DevEnvFile = Join-Path $DevRoot ".env"
+if (Test-Path $DevEnvFile) {
+    $line = Get-Content $DevEnvFile | Where-Object { $_ -match "^XIAOB_SHARED_ENV=" } | Select-Object -First 1
+    if ($line) {
+        $SharedEnvLine = $line.Trim()
+        $v = $line.Substring("XIAOB_SHARED_ENV=".Length).Trim()
+        $VbsSharedEnvLine = "env(""XIAOB_SHARED_ENV"") = ""$v"""
+    }
+}
 $startBatContent = @"
 @echo off
 rem xiaozhu release $Version -- double-click to start (data: $DataDir, port $RelPort)
@@ -107,6 +119,7 @@ set "PLANNER_DATA_ROOT=$DataDir"
 set "PLANNER_PORT=$RelPort"
 set "PLANNER_URL=$RelUrl"
 set "PLANNER_USER_DATA=$RelUserData"
+$SharedEnvLine
 start "" "$ElectronExe" "$FrontendDir"
 "@
 Set-Content -Path $StartBatPath -Value $startBatContent -Encoding ascii
@@ -121,6 +134,7 @@ env("PLANNER_DATA_ROOT") = "$DataDir"
 env("PLANNER_PORT") = "$RelPort"
 env("PLANNER_URL") = "$RelUrl"
 env("PLANNER_USER_DATA") = "$RelUserData"
+$VbsSharedEnvLine
 ws.Run """" & "$ElectronExe" & """" & " " & """" & "$FrontendDir" & """", 0, False
 "@
 Set-Content -Path $StartVbsPath -Value $startVbsContent -Encoding ascii
