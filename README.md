@@ -109,10 +109,12 @@
 | 依赖 | 版本要求 | 说明 |
 |---|---|---|
 | Python | ≥ 3.10 | 建议 3.11/3.12（3.13 也可，部分依赖版本受限） |
-| Node.js | ≥ 18 | 前端 Electron（开发时用；日常使用不需要） |
+| Node.js | ≥ 18 | 前端悬浮窗（Electron）需要；只跑后端可不需要 |
 | 操作系统 | Windows | 已适配 Windows（透明悬浮窗/托盘）；其他平台未验证 |
 
 LLM 需要一个 **OpenAI 兼容的 API**（默认 DeepSeek，也可换任意端点）。语音合成/识别/OCR 全部本地推理，无需额外服务。
+
+> 开始前先确认命令可用：`python --version` 和 `node --version` 能正常输出版本号。
 
 ## 安装与配置
 
@@ -120,7 +122,7 @@ LLM 需要一个 **OpenAI 兼容的 API**（默认 DeepSeek，也可换任意端
 
 ```bash
 # 克隆仓库后，在仓库根目录：
-python -m pip install -e .          # 安装依赖（httpx / langchain / onnxruntime / kokoro 等）
+python -m pip install -e .          # 安装依赖（langchain / onnxruntime / kokoro 等，约 2 分钟）
 ```
 
 ### 2. 配置 LLM API
@@ -138,10 +140,28 @@ LLM_MODEL=deepseek-v4-flash           # 可选
 
 ### 3. 启动
 
-**后端**：
+**方式一（推荐）：只起前端，后端自动拉起**
 
 ```bash
-python -m planner          # 监听 http://127.0.0.1:18771
+cd frontend
+npm install        # 首次
+npm start          # 自动启动后端（用 PATH 里的 python）并打开悬浮窗
+```
+
+**方式二：分开启动**
+
+先起后端（监听 http://127.0.0.1:18771）：
+
+```bash
+python -m planner
+```
+
+再开另一个终端起前端（后端已跑会直接复用）：
+
+```bash
+cd frontend
+npm install
+npm start
 ```
 
 不想消耗 API 额度、只想看看长什么样？用 Mock 模式（脚本化假 LLM，可完整演示建任务→拆解→勾选闭环）：
@@ -151,15 +171,7 @@ set PLANNER_MOCK_LLM=1
 python -m planner
 ```
 
-**前端悬浮窗**（自动拉起后端；后端已跑会直接复用）：
-
-```bash
-cd frontend
-npm install
-npm start
-```
-
-第一次启动，小助会去本地缓存目录下载 Kokoro 语音模型（约 120MB，仅一次），随后全部离线可用。
+第一次合成语音时，小助会去本地缓存目录下载 Kokoro 语音模型（约 120MB，仅一次），随后全部离线可用。
 
 ### 4. 验证
 
@@ -216,11 +228,3 @@ python -m pytest tests -v
                    CORS/PNA 拦截，全部请求走主进程转发）
   renderer/        悬浮球（bubble）与面板（index）页面、设置窗口
 ```
-
-## 技术要点 / 踩坑记录
-
-- **DeepSeek 严格校验 tool_calls 配对**：不使用 LangGraph checkpointer（会导致 400），对话 buffer 持久化走 JSON 落 SQLite
-- **Windows 透明窗口**：悬浮球拖动偶发左上角残影（系统级渲染问题，已尝试 CSS transform 方案副作用更大，保持高频跟随）
-- **渲染进程网络**：Electron 37 起 file:// 页面直连 127.0.0.1 被 CORS/PNA 全拦，前端所有后端请求经主进程代理转发
-- **Windows WinError 10053**：HTTP/1.0 规避 keep-alive 拆除竞态；前端轮询带重试
-- **真实 LLM 联调脚本**：`tests/live_check.py`（独立端口 + 隔离数据，消耗少量 API 额度，可选）
