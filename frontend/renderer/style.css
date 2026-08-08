@@ -429,7 +429,8 @@ body.drop-overlay::after {
 }
 #jump-bottom:hover { background: #fff; transform: scale(1.08); }
 #input {
-  flex: 1;
+  flex: none;                /* 高度由内容决定（JS 自动增高），不被 flex 拉伸 */
+  width: 100%;
   border: 1px solid var(--line);
   border-radius: 12px;
   padding: 9px 15px;
