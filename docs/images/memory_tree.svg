@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 660" font-family="Microsoft YaHei, PingFang SC, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="660" viewBox="0 0 900 660" font-family="Microsoft YaHei, PingFang SC, sans-serif">
   <!-- 背景 -->
   <rect x="0" y="0" width="900" height="660" fill="#ffffff"/>
   <text x="450" y="30" text-anchor="middle" font-size="19" font-weight="bold" fill="#2b2f38">记忆树结构（3 层，2 合 1 简化示意）</text>
