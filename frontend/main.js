@@ -155,6 +155,8 @@ function createBubble() {
 // 视觉球 44px（半径 22）居中，可点半径取 32（球 + 10px 余量）；
 // 圆外透明区通过窗口形状穿透（点击落到下层窗口）。
 // setShape 用横向条带矩形近似圆形（48 条，边缘误差 <1px，肉眼无感）。
+// 条带必须无缝：所有分界 y 坐标先统一取整（共享数组），相邻条带
+// 用同一个值——否则各自 round 会留 1px 缝隙，窗口内容被切出横线。
 function applyBubbleShape() {
   if (!bubbleWin || bubbleWin.isDestroyed() || process.platform !== 'win32') return;
   try {
@@ -162,17 +164,22 @@ function applyBubbleShape() {
     const cx = BUBBLE_SIZE / 2;
     const cy = BUBBLE_SIZE / 2;
     const strips = 48;
+    const ys = [];
+    for (let i = 0; i <= strips; i++) {
+      ys.push(Math.round(cy - r + (i * 2 * r) / strips));
+    }
     const rects = [];
     for (let i = 0; i < strips; i++) {
-      const y0 = cy - r + (i * 2 * r) / strips;
-      const y1 = cy - r + ((i + 1) * 2 * r) / strips;
+      const y0 = ys[i];
+      const y1 = ys[i + 1];
+      if (y1 <= y0) continue;
       const ym = (y0 + y1) / 2 - cy;
       const halfW = Math.sqrt(Math.max(0, r * r - ym * ym));
       rects.push({
         x: Math.round(cx - halfW),
-        y: Math.round(y0),
+        y: y0,
         width: Math.round(2 * halfW),
-        height: Math.round(y1 - y0),
+        height: y1 - y0,
       });
     }
     bubbleWin.setShape(rects);
