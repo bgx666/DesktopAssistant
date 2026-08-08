@@ -346,13 +346,19 @@
   }
   window.planner.onState(applyState);
 
-  // ── 语音播报（气泡朗读）：收到 audio 事件 → 播放（新消息打断旧播放）──
+  // ── 语音播报（气泡朗读）：收到 audio 事件 → fetch → Blob URL 播放 ──
+  // file:// 页面里 audio 元素直连 http 媒体被拦截，Blob URL 不受限
   const ttsAudio = document.getElementById('tts-audio');
-  window.planner.onAudio((url) => {
+  window.planner.onAudio(async (url) => {
     if (!url) return;
     try {
-      ttsAudio.src = window.planner.apiBase + url;
-      ttsAudio.play().catch(() => { /* 播放失败静默 */ });
-    } catch { /* 忽略 */ }
+      const res = await fetch(base + url);
+      if (!res.ok) return;
+      const blob = await res.blob();
+      if (ttsAudio.src && ttsAudio.src.startsWith('blob:')) URL.revokeObjectURL(ttsAudio.src);
+      ttsAudio.src = URL.createObjectURL(blob);
+      ttsAudio.onended = () => URL.revokeObjectURL(ttsAudio.src);
+      await ttsAudio.play();
+    } catch (e) { console.error('[tts] 气泡播放失败:', e); }
   });
 })();

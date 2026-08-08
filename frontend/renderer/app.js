@@ -80,11 +80,10 @@
         try {
           const d = await r.json();
           if (!d.ok || !d.url) throw new Error(d.error || 'tts_unavailable');
-          ttsAudio.src = API + d.url;
-          await ttsAudio.play();
+          if (!(await playAudioUrl(d.url))) throw new Error('play_failed');
         } catch (e) {
           console.error('[tts] 播放失败:', e);
-          addMessage('语音播放失败（' + (e.name === 'NotAllowedError' ? '被系统拦截' : '音频无法播放') + '）', 'log');
+          addMessage('语音播放失败', 'log');
         }
         speak.classList.remove('loading');
       });
@@ -618,15 +617,26 @@
     setTimeout(() => { try { $('#input').focus(); } catch { /* 忽略 */ } }, 80);
   });
 
-  // 语音播报（面板展开时朗读）：audio 事件 → 播放（新消息打断旧播放）
+  // ── 语音播报 ─────────────────────────────────────────
+  // file:// 页面里 audio 元素直连 http 媒体被 Electron 拦截，统一走
+  // fetch → Blob URL 播放（fetch 已有 CORS 支持），新消息打断旧播放。
   const ttsAudio = document.getElementById('tts-audio');
-  window.planner.onAudio((url) => {
-    if (!url) return;
+  async function playAudioUrl(url) {
+    if (!url) return false;
     try {
-      ttsAudio.src = window.planner.apiBase + url;
-      ttsAudio.play().catch((e) => console.error('[tts] 自动播放失败:', e));
-    } catch (e) { console.error('[tts] 自动播放异常:', e); }
-  });
+      const res = await fetch(API + url);
+      if (!res.ok) return false;
+      const blob = await res.blob();
+      if (ttsAudio.src && ttsAudio.src.startsWith('blob:')) URL.revokeObjectURL(ttsAudio.src);
+      ttsAudio.src = URL.createObjectURL(blob);
+      ttsAudio.onended = () => URL.revokeObjectURL(ttsAudio.src);
+      await ttsAudio.play();
+      return true;
+    } catch (e) { console.error('[tts] 播放失败:', e); return false; }
+  }
+
+  // 自动朗读（audio 事件）
+  window.planner.onAudio((url) => { playAudioUrl(url); });
 
   // ── 停止按钮：生成中点一下打断小助 ─────────────────────
   $('#btn-stop').addEventListener('click', async () => {
