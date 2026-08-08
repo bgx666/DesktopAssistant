@@ -133,6 +133,8 @@ function createBubble() {
     },
   });
   bubbleWin.loadFile(path.join(__dirname, 'renderer', 'bubble.html'));
+  // 悬浮球最高层级（pop-up-menu > floating 气泡），保证不被气泡/其他窗口遮挡
+  bubbleWin.setAlwaysOnTop(true, 'pop-up-menu');
   bubbleWin.once('ready-to-show', () => bubbleWin.show());
   bubbleWin.on('moved', () => {
     if (bubbleWin && !bubbleWin.isDestroyed()) saveBubbleState(bubbleWin.getBounds());
@@ -165,6 +167,8 @@ function createPanel() {
     },
   });
   panelWin.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+  // 面板与悬浮球同级最高层级
+  panelWin.setAlwaysOnTop(true, 'pop-up-menu');
   // 页面加载完成（listener 就绪）后，补发暂存的变形请求
   panelWin.webContents.once('did-finish-load', () => {
     panelLoaded = true;
@@ -441,7 +445,9 @@ function createToastWin(text, offset = 0, history = false) {
   win._toastOffset = offset;   // 距最新偏移（0=最新）
   win._isHistory = history;    // true=单击翻出的历史消息；false=小助主动说话
   win.loadFile(path.join(__dirname, 'renderer', 'toast.html'));
-  win.setAlwaysOnTop(true, 'pop-up-menu');
+  // 气泡层级低于悬浮球（floating > 普通窗口，但 < pop-up-menu）：
+  // 悬浮球永远不被气泡遮挡
+  win.setAlwaysOnTop(true, 'floating');
   const timer = setTimeout(() => destroyToastWin(win), TOAST_MS);
   win.on('closed', () => {
     clearTimeout(timer);
