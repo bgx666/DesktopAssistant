@@ -69,6 +69,8 @@ def clean_speech_text(text: str) -> str:
 
 # ── 本地引擎：Kokoro-82M-zh（onnx，无 torch）────────────────
 
+_MAX_TOKENS = 508   # voice style 矩阵 510 行，留 2 个 padding（[0, *tokens, 0]）
+
 class _KokoroLocal:
     """Kokoro zh 本地合成（懒加载单例：misaki 音素 → 声调数字 → 字符 vocab → onnx）。"""
 
@@ -162,6 +164,10 @@ class _KokoroLocal:
             tokens = self._phonemes_to_tokens(text)
             if not tokens:
                 return None
+            # voice style 矩阵只有 510 行（≈21s 音频上限），超长文本截断（宁短勿崩）
+            if len(tokens) > _MAX_TOKENS:
+                _logger.info("[tts] 文本过长，音素 %d → 截断至 %d", len(tokens), _MAX_TOKENS)
+                tokens = tokens[:_MAX_TOKENS]
             try:
                 style = self._voices[self.voice][len(tokens)]
                 out, _ = self._sess.run(None, {
