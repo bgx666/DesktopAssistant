@@ -98,6 +98,18 @@ class _Handler(BaseHTTPRequestHandler):
         elif path == "/next":
             # 动态待办队列（按紧急度排序）
             self._send_json({"ok": True, "queue": self.session.db.list_pending()})
+        elif path == "/tts/say":
+            # 喇叭按钮：按需合成整句（text → wav），返回 /tts/{name} URL
+            query = parse_qs(parsed.query)
+            text = (query.get("text") or [""])[0]
+            if not text.strip():
+                self._send_json({"ok": False, "error": "empty_text"}, status=400)
+                return
+            url = self.session.tts.synthesize(text)
+            if url:
+                self._send_json({"ok": True, "url": url})
+            else:
+                self._send_json({"ok": False, "error": "tts_unavailable"}, status=500)
         elif path.startswith("/tts/"):
             # 合成音频下载（仅限 tts 目录内的 32 位 hex + .mp3/.wav，防路径穿越）
             name = path[len("/tts/"):]

@@ -80,6 +80,7 @@ class _KokoroLocal:
         self._g2p = None
         self._voices = None
         self._error = ""
+        self._lock = threading.Lock()   # 初始化/合成串行化（会话线程与 HTTP 线程并发安全）
 
     @property
     def ready(self) -> bool:
@@ -137,30 +138,31 @@ class _KokoroLocal:
         """合成 → wav bytes（24kHz 16bit）；失败返回 None。"""
         import numpy as np
 
-        if not self._ensure():
-            return None
-        tokens = self._phonemes_to_tokens(text)
-        if not tokens:
-            return None
-        try:
-            style = self._voices[self.voice][len(tokens)]
-            out, _ = self._sess.run(None, {
-                "input_ids": np.array([[0, *tokens, 0]], dtype=np.int64),
-                "style": np.array(style, dtype=np.float32)[None, :],
-                "speed": np.array([1.0], dtype=np.float32),
-            })
-            wav = np.asarray(out).reshape(-1)
-            if len(wav) < 2400:
+        with self._lock:  # 并发调用共享 g2p/session/voice，整体串行化
+            if not self._ensure():
                 return None
-            # float32 → int16 PCM wav（soundfile）
-            import io
-            import soundfile as sf
-            buf = io.BytesIO()
-            sf.write(buf, wav, 24000, format="WAV", subtype="PCM_16")
-            return buf.getvalue()
-        except Exception:
-            _logger.exception("[tts] Kokoro 合成失败")
-            return None
+            tokens = self._phonemes_to_tokens(text)
+            if not tokens:
+                return None
+            try:
+                style = self._voices[self.voice][len(tokens)]
+                out, _ = self._sess.run(None, {
+                    "input_ids": np.array([[0, *tokens, 0]], dtype=np.int64),
+                    "style": np.array(style, dtype=np.float32)[None, :],
+                    "speed": np.array([1.0], dtype=np.float32),
+                })
+                wav = np.asarray(out).reshape(-1)
+                if len(wav) < 2400:
+                    return None
+                # float32 → int16 PCM wav（soundfile）
+                import io
+                import soundfile as sf
+                buf = io.BytesIO()
+                sf.write(buf, wav, 24000, format="WAV", subtype="PCM_16")
+                return buf.getvalue()
+            except Exception:
+                _logger.exception("[tts] Kokoro 合成失败")
+                return None
 
 
 class TtsClient:

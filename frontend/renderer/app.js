@@ -54,6 +54,37 @@
       bubble.textContent = text;
     }
     el.appendChild(bubble);
+    if (cls === 'assistant') {
+      // 喇叭按钮：点击按需合成并朗读这条消息（用户手势播放，不受自动播放限制）
+      const speak = document.createElement('button');
+      speak.className = 'speak-btn';
+      speak.title = '朗读这条消息';
+      speak.innerHTML =
+        '<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor">' +
+        '<path d="M3 9v6h4l5 5V4L7 9H3z"/>' +
+        '<path d="M16 8.5a5 5 0 0 1 0 7" stroke="currentColor" stroke-width="1.6" fill="none"/>' +
+        '</svg>';
+      speak.addEventListener('click', async () => {
+        if (speak.classList.contains('loading')) return;
+        const bubbleEl = el.querySelector('.bubble');
+        if (!bubbleEl || !bubbleEl.textContent.trim()) return;
+        speak.classList.add('loading');
+        try {
+          const r = await fetch(API + '/tts/say?text=' + encodeURIComponent(bubbleEl.textContent.trim()));
+          const d = await r.json();
+          if (d.ok && d.url) {
+            ttsAudio.src = API + d.url;
+            await ttsAudio.play();
+          } else {
+            addMessage('语音合成失败', 'log');
+          }
+        } catch {
+          addMessage('语音合成失败（后端未连接）', 'log');
+        }
+        speak.classList.remove('loading');
+      });
+      el.appendChild(speak);
+    }
     if (cls === 'user' && msgId) {
       const undo = document.createElement('button');
       undo.className = 'undo-btn';
@@ -588,8 +619,8 @@
     if (!url) return;
     try {
       ttsAudio.src = window.planner.apiBase + url;
-      ttsAudio.play().catch(() => { /* 播放失败静默 */ });
-    } catch { /* 忽略 */ }
+      ttsAudio.play().catch((e) => console.error('[tts] 自动播放失败:', e));
+    } catch (e) { console.error('[tts] 自动播放异常:', e); }
   });
 
   // ── 停止按钮：生成中点一下打断小助 ─────────────────────

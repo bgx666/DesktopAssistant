@@ -162,6 +162,21 @@ def test_plan_done_roundtrip(backend):
     assert ev is not None  # agent 收到勾选通知后有回应
 
 
+def test_tts_say_endpoint(backend):
+    """/tts/say：空文本 400；引擎不可用 → 500，且不落音频文件。"""
+    import urllib.error
+    from urllib.parse import quote
+    session, base = backend
+    session.tts._enabled = False   # 模拟引擎不可用（测试不碰真实模型/网络）
+    with pytest.raises(urllib.error.HTTPError) as e:
+        _get(base, "/tts/say?text=")
+    assert e.value.code == 400
+    with pytest.raises(urllib.error.HTTPError) as e:
+        _get(base, "/tts/say?text=" + quote("你好"))
+    assert e.value.code == 500
+    assert list(session.tts.tts_dir.glob("*")) == []
+
+
 def test_dnd_endpoint(backend):
     session, base = backend
     r = _post(base, "/dnd", {"enabled": True, "until_hour": 14})

@@ -403,6 +403,17 @@ body.drop-overlay::after {
   font-weight: 700;
   box-shadow: 0 2px 8px rgba(229, 72, 77, 0.4);
 }
+/* 喇叭按钮：助手消息旁，点击朗读（用户手势播放） */
+.speak-btn {
+  border: none; background: transparent; color: var(--text-soft);
+  width: 22px; height: 22px; padding: 3px; border-radius: 50%;
+  cursor: pointer; opacity: 0.55; flex: none;
+  display: inline-flex; align-items: center; justify-content: center;
+  transition: opacity 0.15s, color 0.15s, background 0.15s;
+}
+.speak-btn:hover { opacity: 1; color: var(--accent, #4da6ff); background: rgba(77, 166, 255, 0.12); }
+.speak-btn.loading { opacity: 0.4; pointer-events: none; animation: speakPulse 1s ease-in-out infinite; }
+@keyframes speakPulse { 50% { opacity: 1; } }
 @keyframes msgIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 #input-bar {
   display: flex;
