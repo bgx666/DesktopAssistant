@@ -243,13 +243,16 @@
 
   // ── 语音输入（长按发送按钮）：长按录音 → 识别结果填入输入框；
   //    短按 = 发送；生成中 = 停止。识别结果只填入输入框，不自动发送。──
-  let pressMs = 200;                     // 长按判定（复用设置里的长按时间）
+  let pressMs = 200;                     // 长按判定（与悬浮球共用设置里的长按时间）
   (async () => {
     try {
       const ui = await window.planner.getUiSettings();
       if (ui && ui.press_ms != null) pressMs = ui.press_ms;
     } catch { /* 主进程不可用用默认 */ }
   })();
+  window.planner.onUiSettings((s) => {   // 设置变更实时生效（与悬浮球一致）
+    if (s && s.press_ms != null) pressMs = Math.max(50, Math.min(5000, parseInt(s.press_ms, 10) || 200));
+  });
   let pressTimer = null;
   let micStop = null;
   let micActive = false;
