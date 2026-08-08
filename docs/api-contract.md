@@ -78,6 +78,38 @@
 ### POST /toggle_mock
 运行时切换 Mock/真实 LLM → `{"ok": true, "mode": "mock|llm"}`。
 
+### GET /history
+历史消息（重启恢复 / 面板补渲染）：`{"ok": true, "messages": [{role, content, id, …}]}`。
+
+### POST /undo
+`{"msg_id": "…"}` → 撤回该消息及其之后的对话 → `{"ok": true}`。
+
+### POST /stop
+打断当前生成（生成中才有效）→ `{"ok": true}`。
+
+### POST /typing
+`{"typing": true|false}` → 用户输入框状态（瞬态，不持久化）。
+
+### GET /next
+动态待办队列（按紧急度排序）→ `{"ok": true, "queue": […]}`。
+
+### GET/POST /settings
+设置读写（压缩参数 / LLM API / TTS 开关音色，应用即生效、启动恢复）：
+- GET → `{"ok": true, "settings": {…}}`
+- POST `{"updates": {…}}` → `{"ok": true, "settings": {…}}`（校验失败 400）
+
+### POST /asr
+`Content-Type: audio/wav` 上传录音 → `{"ok": true, "text": "…"}`（SenseVoice 本地识别）。
+
+### GET /tts/voices
+可用音色列表（zf 女声 / zm 男声）→ `{"ok": true, "voices": [{id, label}]}`。
+
+### GET /tts/say?text=…&voice=…
+按需合成整句（voice 可选，临时音色）→ `{"ok": true, "url": "/tts/xxx.wav"}`。
+
+### GET /tts/{32hex}.wav
+合成音频下载（仅限白名单文件名，防路径穿越）→ audio/wav 或 audio/mpeg。
+
 ## 主动互动机制
 
 - 后端调度线程（daemon，启动即运行）管理三类触发：

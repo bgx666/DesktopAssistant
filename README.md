@@ -41,9 +41,13 @@ npm start
 | 任务拆解 | `break_down_task`：LLM 产出阶段 + 逐日计划 JSON，直接落库（从今天起排期） |
 | 每日计划 | 今日计划自动从任务拆解生成；前端可勾选完成（`POST /plan/done`） |
 | 主动回访 | 后端调度线程：LLM 自主 `heartbeat(minutes)` 决定下次醒来（clamp 10~720 分钟） |
+| 分段说话 | `continue_speaking`：分点描述时每调用一次继续说下一点（ReAct 循环不退出） |
 | 定时触发点 | 早晨 8:00 计划播报 / 晚间 21:00 回顾 / 逾期提醒（每 10 分钟查一次） |
 | 免打扰 | 默认 22:00-08:00 静默（玩家消息不受限），可 `set_do_not_disturb` 或前端开关 |
 | 长期记忆 | 对话超阈值自动压缩成记忆树（叶子落树 + 向上递归压缩），`explore_memory_tree` 翻阅 |
+| 语音播报 | Kokoro 本地 TTS（onnx 推理无 torch）：自动朗读 / 消息喇叭按钮 / 设置里 103 音色切换 + 开关 + 试听 |
+| 语音输入 | SenseVoice 本地 ASR（按住悬浮球或长按发送按钮说话） |
+| 图片/文件 | 拖拽文件挂载（PDF/Word/文本解析 + RapidOCR 图片识别）、截屏、网页搜索（web_search/fetch_web） |
 | 状态持久化 | planner.db（任务/阶段/计划）+ memory_tree.db（记忆树 + buffer），重启恢复 |
 
 ## 目录结构
@@ -54,15 +58,19 @@ src/planner/
   server.py        ThreadingHTTPServer + 契约端点（HTTP/1.0，规避 Windows 10053）
   session.py       PlannerSession：并发（chat_lock/buffer_lock/_inbox）、调度线程、事件队列、DND
   agent.py         create_agent 构建（LangGraph，无 checkpointer——DeepSeek 400 坑）
-  middleware.py    DndGuard / PlanSnapshot / PlayerPriority / Nudge / HeartbeatTrack /
-                   StreamText / Logging / Summarization（压缩+记忆树一体）
+  middleware.py    DndGuard / PlanSnapshot / PlayerPriority / TypingHint / Nudge /
+                   HeartbeatTrack / Logging / Summarization（压缩+记忆树一体）+ ModelCallLimit
   tools.py         @tool 工厂：create_task / break_down_task / mark_plan_done /
-                   reschedule / heartbeat / set_do_not_disturb / explore_memory_tree …
+                   continue_speaking / heartbeat / set_do_not_disturb / web_search /
+                   fetch_web / capture_screen / explore_memory_tree …
   llm.py           build_chat_model（DeepSeek v4 extra_body）+ MockChatModel（脚本化假 LLM）
+  tts.py           本地 Kokoro-82M-zh（misaki 音素 → onnx 推理）+ DashScope 云引擎可选
+  asr.py / ocr.py / fileparse.py  SenseVoice 语音识别 / RapidOCR / PDF·Word 解析
+  settings.py      设置持久化（settings.json，校验护栏；压缩/LLM/TTS 配置启动即生效）
   store/tasks_db.py  任务库（RLock 串行化，避免 close 竞态）
-  memory/          独立移植的 SQLiteMemoryTree（LEAF_SIZE=20 / BRANCHING=3 / 阈值 6）
+  memory/          独立移植的 SQLiteMemoryTree（压缩阈值 8 / 4 合 1，节点含时间范围）
   prompts/system.md  助理人格与工作准则
-frontend/         Electron 悬浮球（bubble 窗口 + 面板窗口；renderer 轮询 /dequeue 600ms）
+frontend/         Electron 悬浮球（bubble 窗口 + 面板窗口；renderer 轮询 /dequeue 800ms）
 tests/            pytest（全部 mock LLM + tmp_path 隔离）
 ```
 
