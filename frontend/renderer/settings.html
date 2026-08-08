@@ -30,7 +30,8 @@
   #save:disabled { opacity: .55; cursor: default; }
   #msg { font-size: 12px; color: var(--pink); min-height: 16px; }
   #msg.ok { color: #2e9e6b; }
-  canvas { width: 100%; height: 200px; background: #0a0f1e; border-radius: 10px; display: block; }
+  canvas { width: 100%; height: 260px; background: #fff; border-radius: 10px; display: block; border: 1px solid #e3ecf3; cursor: grab; }
+  canvas:active { cursor: grabbing; }
   .chart-tip { font-size: 11px; color: var(--dim); margin-top: 8px; line-height: 1.7; }
   .legend { font-size: 11px; color: var(--dim); margin-top: 6px; }
   .legend b { color: var(--blue); }
@@ -76,8 +77,8 @@
   <section>
     <h2>压缩示意图</h2>
     <canvas id="chart" width="900" height="300"></canvas>
-    <div class="legend">蓝色折线 = 每次压缩触发前的上下文峰值（触发条数 × 360 + 节点 × 500 token）· 横轴为对话轮数（线性）</div>
-    <div class="chart-tip">输入上面的压缩参数后此图即时重算，直观感受上下文随轮数增长的形态。</div>
+    <div class="legend">黑色折线 = 每次压缩触发前的上下文峰值（触发条数 × 360 + 节点 × 500 token）· 横轴为对话轮数（线性）</div>
+    <div class="chart-tip">拖动平移 · 滚轮缩放 · 双击重置 · 输入上面的压缩参数后即时重算。</div>
   </section>
 
   <section>
