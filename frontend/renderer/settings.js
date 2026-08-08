@@ -1,7 +1,6 @@
 // settings.js —— 设置窗口：选项卡切换 + 表单回显 + 压缩示意图 + 保存
 (() => {
   'use strict';
-  const API = (window.planner && window.planner.apiBase) || 'http://127.0.0.1:18771';
   const $ = (s) => document.querySelector(s);
   const canvas = $('#chart');
   const ctx = canvas.getContext('2d');
@@ -28,8 +27,8 @@
       if (ui && ui.press_ms != null) $('#press_ms').value = ui.press_ms;
     } catch { /* 主进程不可用 */ }
     try {
-      const r = await fetch(API + '/settings', { signal: AbortSignal.timeout(4000) });
-      const d = await r.json();
+      const r = await window.planner.apiFetch('/settings');
+      const d = JSON.parse(r.text);
       current = d.settings || {};
       for (const k of ['compress_trigger', 'compress_keep',
                        'compact_threshold', 'compact_factor']) {
@@ -209,12 +208,12 @@
     updates.llm_base_url = $('#llm_base_url').value.trim();
     updates.llm_model = $('#llm_model').value.trim();
     try {
-      const r = await fetch(API + '/settings', {
+      const r = await window.planner.apiFetch('/settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ updates }),
       });
-      const d = await r.json();
+      const d = JSON.parse(r.text);
       if (!d.ok) errs.push(d.error || '保存失败');
       else current = d.settings;
     } catch {

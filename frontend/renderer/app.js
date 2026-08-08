@@ -2,16 +2,14 @@
 (() => {
   'use strict';
 
-  const API = (window.planner && window.planner.apiBase) || 'http://127.0.0.1:18771';
-
   const $ = (sel) => document.querySelector(sel);
   const state = { heartbeat: null, dnd: null, plan: null, lastPlanDate: '' };
 
-  // ── HTTP ─────────────────────────────────────────────
+  // ── HTTP（走主进程代理：file:// 页面直连被 CORS/PNA 拦）────────
   async function api(path, opts = {}) {
-    const res = await fetch(API + path, opts);
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    return res.json();
+    const r = await window.planner.apiFetch(path, opts);
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return JSON.parse(r.text);
   }
 
   function post(path, body) {
@@ -71,14 +69,15 @@
         speak.classList.add('loading');
         let r;
         try {
-          r = await fetch(API + '/tts/say?text=' + encodeURIComponent(bubbleEl.textContent.trim()));
+          r = await window.planner.apiFetch('/tts/say?text=' + encodeURIComponent(bubbleEl.textContent.trim()));
         } catch {
           addMessage('语音合成失败（后端未连接）', 'log');
           speak.classList.remove('loading');
           return;
         }
         try {
-          const d = await r.json();
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          const d = JSON.parse(r.text);
           if (!d.ok || !d.url) throw new Error(d.error || 'tts_unavailable');
           if (!(await playAudioUrl(d.url))) throw new Error('play_failed');
         } catch (e) {
@@ -241,8 +240,8 @@
   let micActive = false;
   (async () => {
     try {
-      const r = await fetch(window.planner.apiBase + '/init', { signal: AbortSignal.timeout(4000) });
-      const d = await r.json();
+      const r = await window.planner.apiFetch('/init');
+      const d = JSON.parse(r.text);
       if (d.asr && d.asr.enabled) micBtn.classList.remove('hidden');
     } catch { /* 后端不可用时不显示 */ }
   })();
@@ -268,13 +267,12 @@
     const wav = await stop(cancel);
     if (!wav) return;
     try {
-      const r = await fetch(window.planner.apiBase + '/asr', {
+      const r = await window.planner.apiFetch('/asr', {
         method: 'POST',
         headers: { 'Content-Type': 'audio/wav' },
         body: wav,
-        signal: AbortSignal.timeout(60000),
       });
-      const d = await r.json();
+      const d = JSON.parse(r.text);
       if (d.ok && d.text) {
         input.value = (input.value ? input.value + ' ' : '') + d.text;
         input.focus();
@@ -618,18 +616,16 @@
   });
 
   // ── 语音播报 ─────────────────────────────────────────
-  // file:// 页面里 audio 元素直连 http 媒体被 Electron 拦截，统一走
-  // fetch → Blob URL 播放（fetch 已有 CORS 支持），新消息打断旧播放。
+  // file:// 页面无法直连 http 媒体/接口（CORS/PNA），音频经主进程下载为
+  // 本地 file:// 后播放（audio 元素加载 file:// 无限制），新播放打断旧播放。
   const ttsAudio = document.getElementById('tts-audio');
   async function playAudioUrl(url) {
     if (!url) return false;
     try {
-      const res = await fetch(API + url);
-      if (!res.ok) return false;
-      const blob = await res.blob();
-      if (ttsAudio.src && ttsAudio.src.startsWith('blob:')) URL.revokeObjectURL(ttsAudio.src);
-      ttsAudio.src = URL.createObjectURL(blob);
-      ttsAudio.onended = () => URL.revokeObjectURL(ttsAudio.src);
+      const fileUrl = await window.planner.audioFile(url);
+      if (!fileUrl) return false;
+      ttsAudio.src = fileUrl;
+      ttsAudio.onended = () => ttsAudio.removeAttribute('src');
       await ttsAudio.play();
       return true;
     } catch (e) { console.error('[tts] 播放失败:', e); return false; }

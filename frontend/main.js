@@ -637,6 +637,37 @@ function toggleDndFromMain() {
 }
 
 // ── IPC：渲染进程 ↔ 主进程 ──────────────────────────────────
+// ── 渲染进程 HTTP 代理 ────────────────────────────────
+// Electron 37 起 file:// 页面直连 127.0.0.1 被 CORS/PNA 全拦（GET/POST 均 Failed to fetch），
+// 渲染进程所有后端请求统一走主进程（无此限制）。
+ipcMain.handle('api-fetch', async (e, reqPath, opts = {}) => {
+  const url = BACKEND_URL + (reqPath || '');
+  const res = await fetch(url, {
+    method: opts.method || 'GET',
+    headers: opts.headers || {},
+    body: opts.body,
+    signal: AbortSignal.timeout(120000),
+  });
+  const text = await res.text();
+  return { status: res.status, ok: res.ok, text };
+});
+
+// 语音下载：主进程拉 wav/mp3 → 写 userData/tts_cache → 返回 file:// 路径（渲染直接播放）
+ipcMain.handle('api-audio', async (e, reqPath) => {
+  const name = String(reqPath || '').split('/').pop();
+  if (!/^[0-9a-f]{32}\.(wav|mp3)$/.test(name)) return null;
+  try {
+    const res = await fetch(BACKEND_URL + '/tts/' + name, { signal: AbortSignal.timeout(60000) });
+    if (!res.ok) return null;
+    const buf = Buffer.from(await res.arrayBuffer());
+    const dir = path.join(app.getPath('userData'), 'tts_cache');
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, name);
+    fs.writeFileSync(file, buf);
+    return 'file:///' + file.replace(/\\/g, '/');
+  } catch { return null; }
+});
+
 // 全局挂载文件（拖拽上传）：主进程单点持有，两窗口（悬浮球/面板）共享，
 // 变更即广播——球显示文件数徽标、面板显示对话框上方文件条。
 let mountedFiles = [];

@@ -5,6 +5,10 @@ contextBridge.exposeInMainWorld('planner', {
   platform: process.platform,
   // 后端地址（release 版经 PLANNER_URL 指向独立端口）
   apiBase: process.env.PLANNER_URL || 'http://127.0.0.1:18771',
+  // HTTP 代理：file:// 页面直连被 CORS/PNA 拦，全部走主进程转发
+  apiFetch: (path, opts) => ipcRenderer.invoke('api-fetch', path, opts || {}),
+  // 语音下载代理：/tts/x.wav → 本地 file:// 路径（audio 元素直接播放）
+  audioFile: (path) => ipcRenderer.invoke('api-audio', path),
   // 拖拽文件：取本地绝对路径（Electron 37：File.path 已移除，用 webUtils）
   getPathForFile: (file) => {
     try { return webUtils.getPathForFile(file); } catch { return ''; }

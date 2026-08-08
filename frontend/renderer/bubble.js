@@ -242,18 +242,16 @@
     }
     if (!wav) return;
     try {
-      const base = window.planner.apiBase;
-      const r = await fetch(base + '/asr', {
+      const r = await window.planner.apiFetch('/asr', {
         method: 'POST',
         headers: { 'Content-Type': 'audio/wav' },
         body: wav,
-        signal: AbortSignal.timeout(60000),
       });
-      const d = await r.json();
+      const d = JSON.parse(r.text);
       if (d.ok && d.text) {
         // 语音文本 + 全局挂载文件一起发送；发送后清空挂载
         const mounted = await window.planner.getMounted();
-        await fetch(base + '/chat', {
+        await window.planner.apiFetch('/chat', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ message: d.text, files: mounted }),
@@ -276,8 +274,8 @@
     if (now - lastReplyAt > REPLY_LIFE_MS) replyOffset = 0;   // 旧气泡已过期 → 重新从最新
     lastReplyAt = now;
     try {
-      const r = await fetch(window.planner.apiBase + '/history', { signal: AbortSignal.timeout(5000) });
-      const d = await r.json();
+      const r = await window.planner.apiFetch('/history');
+      const d = JSON.parse(r.text);
       const replies = (d.messages || []).filter((m) => m.role === 'assistant' && m.content);
       if (!replies.length) { replyOffset = 0; return; }
       if (replyOffset >= replies.length) replyOffset = 0;   // 到头循环回最新
@@ -346,18 +344,15 @@
   }
   window.planner.onState(applyState);
 
-  // ── 语音播报（气泡朗读）：收到 audio 事件 → fetch → Blob URL 播放 ──
-  // file:// 页面里 audio 元素直连 http 媒体被拦截，Blob URL 不受限
+  // ── 语音播报（气泡朗读）：audio 事件 → 主进程下载为 file:// 后播放 ──
   const ttsAudio = document.getElementById('tts-audio');
   window.planner.onAudio(async (url) => {
     if (!url) return;
     try {
-      const res = await fetch(base + url);
-      if (!res.ok) return;
-      const blob = await res.blob();
-      if (ttsAudio.src && ttsAudio.src.startsWith('blob:')) URL.revokeObjectURL(ttsAudio.src);
-      ttsAudio.src = URL.createObjectURL(blob);
-      ttsAudio.onended = () => URL.revokeObjectURL(ttsAudio.src);
+      const fileUrl = await window.planner.audioFile(url);
+      if (!fileUrl) return;
+      ttsAudio.src = fileUrl;
+      ttsAudio.onended = () => ttsAudio.removeAttribute('src');
       await ttsAudio.play();
     } catch (e) { console.error('[tts] 气泡播放失败:', e); }
   });
