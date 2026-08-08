@@ -296,6 +296,14 @@ body.drop-overlay::after {
 }
 .msg.user { align-self: flex-end; align-items: flex-end; }
 .msg.assistant { align-self: flex-start; align-items: flex-start; gap: 4px; }
+/* 气泡 + 喇叭按钮横排（气泡左、按钮右，底部对齐） */
+.msg-body {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-end;
+  gap: 3px;
+  max-width: 100%;
+}
 /* 小助头像：与悬浮球同款渐变球（CSS 绘制），显示在气泡上方 */
 .avatar {
   flex: 0 0 auto;

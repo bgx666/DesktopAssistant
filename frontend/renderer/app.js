@@ -43,6 +43,10 @@
       avatar.className = 'avatar';
       el.appendChild(avatar);
     }
+    // 气泡 + 喇叭按钮：横向一行（气泡左、喇叭右，底部对齐）
+    const body = document.createElement('div');
+    body.className = 'msg-body';
+    el.appendChild(body);
     const bubble = document.createElement('div');
     bubble.className = 'bubble ' + cls;   // bubble user / bubble assistant（颜色区分）
     if (cls === 'assistant' || cls === 'memory') {
@@ -51,7 +55,7 @@
     } else {
       bubble.textContent = text;
     }
-    el.appendChild(bubble);
+    body.appendChild(bubble);
     if (cls === 'assistant') {
       // 喇叭按钮：点击按需合成并朗读这条消息（用户手势播放，不受自动播放限制）
       const speak = document.createElement('button');
@@ -64,7 +68,7 @@
         '</svg>';
       speak.addEventListener('click', async () => {
         if (speak.classList.contains('loading')) return;
-        const bubbleEl = el.querySelector('.bubble');
+        const bubbleEl = body.querySelector('.bubble');
         if (!bubbleEl || !bubbleEl.textContent.trim()) return;
         speak.classList.add('loading');
         let r;
@@ -86,7 +90,7 @@
         }
         speak.classList.remove('loading');
       });
-      el.appendChild(speak);
+      body.appendChild(speak);
     }
     if (cls === 'user' && msgId) {
       const undo = document.createElement('button');

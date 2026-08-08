@@ -239,15 +239,18 @@ class TtsClient:
         self._lock = threading.Lock()
         self._local = _KokoroLocal(_KOKORO_MODEL_DIR, voice)
         if engine == "local":
-            self._enabled = True    # 依赖可用性在首次合成时确认（懒加载）
+            self._engine_ok = True      # 懒加载，可用性在首次合成时确认
+            self._enabled = True        # 自动播报开关（设置里可关；手动喇叭不受限）
         else:
-            self._enabled = bool(api_key and _HAS_DASHSCOPE)
-            if not self._enabled:
+            self._engine_ok = bool(api_key and _HAS_DASHSCOPE)
+            self._enabled = self._engine_ok
+            if not self._engine_ok:
                 _logger.info("[tts] 云引擎未启用：%s",
                              "未配置 PLANNER_TTS_API_KEY" if not api_key else "dashscope SDK 缺失")
 
     @property
     def enabled(self) -> bool:
+        """自动播报开关（关闭后仅手动喇叭/试听可用）。"""
         return self._enabled
 
     def list_voices(self) -> list[dict]:
@@ -268,9 +271,9 @@ class TtsClient:
         return out
 
     def synthesize(self, text: str, voice: str | None = None) -> str | None:
-        """阻塞合成整句 → 保存音频 → 返回 /tts/{name} URL；失败/未启用返回 None。
-        voice 非空时临时用该音色（不改变全局 self.voice）。"""
-        if not self._enabled:
+        """阻塞合成整句 → 保存音频 → 返回 /tts/{name} URL；失败/引擎不可用返回 None。
+        手动喇叭/试听不受自动播报开关（_enabled）限制；voice 非空时临时用该音色。"""
+        if not self._engine_ok:
             return None
         content = clean_speech_text(text)
         if not content:
@@ -298,8 +301,9 @@ class TtsClient:
             return None
 
     def synthesize_async(self, text: str, on_done) -> None:
-        """后台线程合成；on_done(url) 回调（url=None 表示失败/未启用）。"""
-        if not self._enabled:
+        """后台线程合成；on_done(url) 回调（url=None 表示失败/关闭/引擎不可用）。
+        自动播报路径：受 _enabled（设置开关）与引擎可用性双重限制。"""
+        if not self._enabled or not self._engine_ok:
             on_done(None)
             return
 
