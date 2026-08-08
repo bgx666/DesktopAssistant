@@ -577,7 +577,7 @@ async function pollDequeue() {
     pendingEvents.push(...events);
     if (pendingEvents.length > 60) pendingEvents.splice(0, pendingEvents.length - 60);
     if (panelState === 'hidden') {
-      // 悬浮球形态：文本事件冒气泡；audio 事件 → 气泡窗口播放（只读气泡）
+      // 悬浮球形态：文本事件冒气泡；audio 事件 → 气泡窗口播放
       for (const ev of events) {
         if (ev.type === 'text' && ev.content) {
           showToast(ev.content);
@@ -588,6 +588,12 @@ async function pollDequeue() {
     } else if (panelLoaded && panelWin && !panelWin.isDestroyed()) {
       // 面板展开：推给面板渲染（含 morphing_in/out，事件顺序保持）
       panelWin.webContents.send('events', events);
+      // audio 事件 → 面板窗口播放（展开时也朗读）
+      for (const ev of events) {
+        if (ev.type === 'audio' && ev.url) {
+          panelWin.webContents.send('audio', ev.url);
+        }
+      }
     }
     // morphing_in 且页面未加载完 → 事件留在 pendingEvents，morph-in-done 时补发
   } catch {

@@ -582,6 +582,16 @@
     setTimeout(() => { try { $('#input').focus(); } catch { /* 忽略 */ } }, 80);
   });
 
+  // 语音播报（面板展开时朗读）：audio 事件 → 播放（新消息打断旧播放）
+  const ttsAudio = document.getElementById('tts-audio');
+  window.planner.onAudio((url) => {
+    if (!url) return;
+    try {
+      ttsAudio.src = window.planner.apiBase + url;
+      ttsAudio.play().catch(() => { /* 播放失败静默 */ });
+    } catch { /* 忽略 */ }
+  });
+
   // ── 停止按钮：生成中点一下打断小助 ─────────────────────
   $('#btn-stop').addEventListener('click', async () => {
     $('#btn-stop').disabled = true;
