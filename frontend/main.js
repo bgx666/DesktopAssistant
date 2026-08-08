@@ -134,13 +134,10 @@ function createBubble() {
     },
   });
   bubbleWin.loadFile(path.join(__dirname, 'renderer', 'bubble.html'));
-  // 点击穿透：透明区不拦截下层窗口；渲染进程报告鼠标是否在球的可点区域
-  bubbleWin.setIgnoreMouseEvents(true, { forward: true });
-  ipcMain.on('bubble-hit', (e, hit) => {
-    if (bubbleWin && !bubbleWin.isDestroyed()) {
-      bubbleWin.setIgnoreMouseEvents(!hit, { forward: true });
-    }
-  });
+  // 窗口形状 = 圆形可点区（球 + 少量余量）：透明区（圆外）点击穿透到下层窗口。
+  // 用 setShape（Windows 原生窗口区域）而非 setIgnoreMouseEvents——
+  // 后者的 forward 选项仅 macOS 支持，Windows 上会连球都点不到。
+  applyBubbleShape();
   // 悬浮球最高层级（pop-up-menu > floating 气泡），保证不被气泡/其他窗口遮挡
   bubbleWin.setAlwaysOnTop(true, 'pop-up-menu');
   bubbleWin.once('ready-to-show', () => bubbleWin.show());
@@ -152,6 +149,34 @@ function createBubble() {
     if (bubbleWin && !bubbleWin.isDestroyed()) bubbleWin.restore();
   });
   bubbleWin.on('closed', () => { bubbleWin = null; });
+}
+
+// ── 悬浮球窗口形状：圆形可点区 ─────────────────────────────
+// 视觉球 44px（半径 22）居中，可点半径取 32（球 + 10px 余量）；
+// 圆外透明区通过窗口形状穿透（点击落到下层窗口）。
+// setShape 用横向条带矩形近似圆形（48 条，边缘误差 <1px，肉眼无感）。
+function applyBubbleShape() {
+  if (!bubbleWin || bubbleWin.isDestroyed() || process.platform !== 'win32') return;
+  try {
+    const r = 32;
+    const cx = BUBBLE_SIZE / 2;
+    const cy = BUBBLE_SIZE / 2;
+    const strips = 48;
+    const rects = [];
+    for (let i = 0; i < strips; i++) {
+      const y0 = cy - r + (i * 2 * r) / strips;
+      const y1 = cy - r + ((i + 1) * 2 * r) / strips;
+      const ym = (y0 + y1) / 2 - cy;
+      const halfW = Math.sqrt(Math.max(0, r * r - ym * ym));
+      rects.push({
+        x: Math.round(cx - halfW),
+        y: Math.round(y0),
+        width: Math.round(2 * halfW),
+        height: Math.round(y1 - y0),
+      });
+    }
+    bubbleWin.setShape(rects);
+  } catch { /* 平台不支持则整窗可点（退回原行为） */ }
 }
 
 // ── 变形面板窗口（球 → 矩形窗口的形态由 renderer 动画驱动）────

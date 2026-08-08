@@ -30,17 +30,6 @@
   let micStop = null;        // 录音停止函数（麦克风就绪后赋值）
   let micPromise = null;     // begin() 的 Promise（预启动，可能未就绪）
 
-  // ── 点击穿透：只有鼠标在球附近（视觉球 + 小余量）才可点，
-  //    其余透明区域穿透到下层窗口（不再被正方形窗口挡住）──
-  const HIT_RADIUS = 30;     // 视觉球半径 22 + 余量 8（辉光区不拦截点击）
-  function updateBubbleHit(e) {
-    if (dragging) return;    // 拖动中保持可点（穿透会丢失 mouseup/mousemove）
-    const hit = Math.hypot(e.clientX - 50, e.clientY - 50) <= HIT_RADIUS;
-    window.planner.setBubbleHit(hit);
-  }
-  document.addEventListener('mousemove', updateBubbleHit);
-  window.planner.setBubbleHit(false);   // 初始穿透（鼠标不在球上）
-
   // ── 录音雷达环：12 顶点 12 边形（雷达图效果）——
   //    每顶点沿圆周、径向随音量起伏，边直线连接（直来直去），
   //    赛博朋克三色循环描边（青/品红/紫）+ 顶点小圆点同色 ──
@@ -220,7 +209,6 @@
   document.addEventListener('mouseup', async (e) => {
     if (!dragging) return;
     dragging = false;
-    updateBubbleHit(e);                  // 拖完立即恢复穿透判断（松手时鼠标位置为准）
     const dx = e.screenX - startX;
     const dy = e.screenY - startY;
     const isClick = Math.abs(dx) < 6 && Math.abs(dy) < 6;
