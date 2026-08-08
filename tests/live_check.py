@@ -1,7 +1,7 @@
 """真实 LLM 联调检查（消耗少量 API 额度）。
 
 用法：
-  D:\Miniconda3\python.exe tests\live_check.py ["对小助说的话"]
+  python tests\live_check.py ["对小助说的话"]
 
 **永远 spawn 独立后端**：隔离临时数据目录 + 独立端口（18773），
 绝不探测/复用可能在跑的真实后端（18771 开发 / 18772 release），
@@ -11,6 +11,7 @@
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -21,7 +22,7 @@ from pathlib import Path
 PORT = 18773
 BASE = f"http://127.0.0.1:{PORT}"
 ROOT = Path(__file__).resolve().parent.parent
-PYTHON = r"D:\Miniconda3\python.exe"
+PYTHON = os.environ.get("PLANNER_PYTHON") or shutil.which("python") or "python"
 MESSAGE = sys.argv[1] if len(sys.argv) > 1 else "帮我安排一下最近的复习计划"
 
 

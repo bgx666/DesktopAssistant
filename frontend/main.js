@@ -8,7 +8,7 @@ const fs = require('fs');
 
 const BACKEND_URL = process.env.PLANNER_URL || 'http://127.0.0.1:18771';
 const PROJECT_ROOT = path.join(app.getAppPath(), '..');       // frontend/ → planner/
-const PYTHON = process.env.PLANNER_PYTHON || 'D:\\Miniconda3\\python.exe';
+const PYTHON = process.env.PLANNER_PYTHON || 'python';
 const TRAY_ICON_FILE = path.join(__dirname, 'assets', 'bubble_32.png');   // 悬浮窗同款托盘图标
 const APP_ICON_FILE = path.join(__dirname, 'assets', 'bubble.ico');      // 应用/快捷方式图标
 

@@ -5,7 +5,7 @@ r"""planner 后端环境配置。
 - PLANNER_MOCK_LLM    =1 时使用脚本化假 LLM（不调真实 API），供联调/测试
 - PLANNER_DATA_ROOT   运行时数据根目录，默认项目根/planner/data
 - LLM_API_KEY / LLM_BASE_URL / LLM_MODEL 等：LLM 配置（默认 DeepSeek），
-  从本地 .env 或 D:\xiaob\.env 加载（只读配置，不 import xiaob）
+  从项目根 .env 或共享 .env（XIAOB_SHARED_ENV 指定路径）加载
 """
 
 from __future__ import annotations
@@ -16,19 +16,20 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 PACKAGE_ROOT = Path(__file__).resolve().parent          # src/planner/
-PROJECT_ROOT = PACKAGE_ROOT.parent.parent               # 项目根（D:\xiaob\planner\）
+PROJECT_ROOT = PACKAGE_ROOT.parent.parent               # 项目根
 PROMPTS_DIR = PACKAGE_ROOT / "prompts"
-
-_DEFAULT_XIAOB_ENV = Path(r"D:\xiaob\.env")
 
 
 def _load_env_files() -> None:
-    """加载 .env：项目本地优先，其次 D:\\xiaob\\.env（LLM_API_KEY 等复用）。"""
+    """加载 .env：项目根 .env 优先，其次共享 .env（XIAOB_SHARED_ENV 指定路径）。"""
     local_env = PROJECT_ROOT / ".env"
     if local_env.exists():
         load_dotenv(local_env, override=False)
-    if _DEFAULT_XIAOB_ENV.exists():
-        load_dotenv(_DEFAULT_XIAOB_ENV, override=False)
+    shared = os.environ.get("XIAOB_SHARED_ENV")
+    if shared:
+        shared_env = Path(shared)
+        if shared_env.exists():
+            load_dotenv(shared_env, override=False)
 
 
 _load_env_files()

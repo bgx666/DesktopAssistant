@@ -1,15 +1,17 @@
-﻿# build.ps1 —— 一键发版：复制代码到 D:\xiaob\planner-release 并生成 start.bat
+﻿# build.ps1 —— 一键发版：复制代码到仓库旁 planner-release 并生成 start.bat
 # 用法：
 #   powershell -File build.ps1            # 自动 vX.Y.Z patch+1
 #   powershell -File build.ps1 -Version v0.2.0   # 手动指定
 # 前置：git 工作区干净（未提交改动会拒绝发版）。
+# Python 解释器：默认取 $env:PLANNER_PYTHON，未设置时用 PATH 中的 python。
 
 param(
     [string]$Version = "",
-    [string]$ReleaseRoot = "D:\xiaob\planner-release"
+    [string]$ReleaseRoot = ""   # 默认 = 仓库旁 planner-release
 )
 
 $ErrorActionPreference = "Stop"
+if (-not $ReleaseRoot) { $ReleaseRoot = Join-Path $PSScriptRoot "planner-release" }
 $DevRoot = $PSScriptRoot
 $AppDir = Join-Path $ReleaseRoot "app"
 $VenvDir = Join-Path $ReleaseRoot "venv"
@@ -18,7 +20,7 @@ $venvPythonW = Join-Path $VenvDir "Scripts\pythonw.exe"     # 运行时注入（
 $DataDir = Join-Path $ReleaseRoot "data"
 $VersionFile = Join-Path $ReleaseRoot "VERSION"
 $StartBatPath = Join-Path $ReleaseRoot "start.bat"
-$MinicondaPython = "D:\Miniconda3\python.exe"
+$MinicondaPython = if ($env:PLANNER_PYTHON) { $env:PLANNER_PYTHON } else { "python" }
 
 function Invoke-RobocopyMirror {
     param([string]$Src, [string]$Dst, [string[]]$Exclude)

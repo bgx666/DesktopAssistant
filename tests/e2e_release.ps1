@@ -5,7 +5,7 @@
 # 用法：powershell -NoProfile -ExecutionPolicy Bypass -File tests\e2e_release.ps1
 
 $ErrorActionPreference = "Stop"
-$ReleaseRoot = "D:\xiaob\planner-release"
+$ReleaseRoot = Join-Path (Split-Path $PSScriptRoot -Parent) "planner-release"
 $Port = 18772
 $AppDir = Join-Path $ReleaseRoot "app"
 $VenvPython = Join-Path $ReleaseRoot "venv\Scripts\pythonw.exe"   # pythonw：与真实启动一致，验证无控制台后端
