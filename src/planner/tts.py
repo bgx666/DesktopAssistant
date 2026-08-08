@@ -80,6 +80,7 @@ class _KokoroLocal:
         self._g2p = None
         self._voices = None
         self._error = ""
+        self._provider = ""
         self._lock = threading.Lock()   # 初始化/合成串行化（会话线程与 HTTP 线程并发安全）
 
     @property
@@ -94,10 +95,10 @@ class _KokoroLocal:
             import numpy as np
             import onnxruntime as ort
 
-            model_file = self.model_dir / "onnx" / "model_int8.onnx"
+            onnx_dir = self.model_dir / "onnx"
             tok_file = self.model_dir / "tokenizer.json"
             voices_dir = self.model_dir / "voices"
-            if not model_file.is_file() or not tok_file.is_file() or not voices_dir.is_dir():
+            if not onnx_dir.is_dir() or not tok_file.is_file() or not voices_dir.is_dir():
                 self._error = "模型未下载"
                 _logger.info("[tts] 本地引擎未就绪：%s", self._error)
                 return False
@@ -111,10 +112,28 @@ class _KokoroLocal:
                     voices[f.stem] = raw.reshape(510, 256)
                 np.savez(merged, **voices)
             self._voices = np.load(merged)
-            self._sess = ort.InferenceSession(str(model_file), providers=["CPUExecutionProvider"])
+            # 推理后端：OpenVINO GPU（fp16 模型，Intel 核显/Arc 4x 加速）→ CPU（int8）回退
+            ort.set_default_logger_severity(3)   # 只留 ERROR（OpenVINO 转换的常量折叠警告太吵）
+            sess, provider = None, ""
+            if "OpenVINOExecutionProvider" in ort.get_available_providers():
+                fp16_file = onnx_dir / "model_fp16.onnx"
+                if fp16_file.is_file():
+                    try:
+                        sess = ort.InferenceSession(
+                            str(fp16_file), providers=["OpenVINOExecutionProvider"],
+                            provider_options=[{"device_type": "GPU"}])
+                        provider = "OpenVINO-GPU(f16)"
+                    except Exception:
+                        _logger.info("[tts] OpenVINO GPU 不可用，回退 CPU")
+            if sess is None:
+                sess = ort.InferenceSession(
+                    str(onnx_dir / "model_int8.onnx"), providers=["CPUExecutionProvider"])
+                provider = "CPU(int8)"
+            self._sess = sess
+            self._provider = provider
             from misaki import zh as _zh
             self._g2p = _zh.ZHG2P()
-            _logger.info("[tts] Kokoro 本地引擎就绪：%s", self.model_dir)
+            _logger.info("[tts] Kokoro 本地引擎就绪：%s（%s）", self.model_dir, provider)
             return True
         except Exception:
             self._error = "初始化失败"
@@ -151,7 +170,7 @@ class _KokoroLocal:
                     "style": np.array(style, dtype=np.float32)[None, :],
                     "speed": np.array([1.0], dtype=np.float32),
                 })
-                wav = np.asarray(out).reshape(-1)
+                wav = np.asarray(out, dtype=np.float32).reshape(-1)   # fp16 输出转 float32
                 if len(wav) < 2400:
                     return None
                 # float32 → int16 PCM wav（soundfile）
