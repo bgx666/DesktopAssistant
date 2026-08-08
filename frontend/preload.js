@@ -35,6 +35,8 @@ contextBridge.exposeInMainWorld('planner', {
   getBubblePos: () => ipcRenderer.invoke('get-bubble-pos'),
   getPanelPos: () => ipcRenderer.invoke('get-panel-pos'),
   getPanelState: () => ipcRenderer.invoke('get-panel-state'),
+  // 点击穿透：鼠标在球可点区域 ↔ 透明区穿透（不拦截下层窗口）
+  setBubbleHit: (hit) => ipcRenderer.send('bubble-hit', !!hit),
   // 气泡窗
   showToast: (text, offset, history) => ipcRenderer.send('toast-show', { text, offset: offset || 0, history: !!history }),
   onToastText: (cb) => ipcRenderer.on('toast-text', (e, data) => cb(data)),

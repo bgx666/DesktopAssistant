@@ -134,6 +134,13 @@ function createBubble() {
     },
   });
   bubbleWin.loadFile(path.join(__dirname, 'renderer', 'bubble.html'));
+  // 点击穿透：透明区不拦截下层窗口；渲染进程报告鼠标是否在球的可点区域
+  bubbleWin.setIgnoreMouseEvents(true, { forward: true });
+  ipcMain.on('bubble-hit', (e, hit) => {
+    if (bubbleWin && !bubbleWin.isDestroyed()) {
+      bubbleWin.setIgnoreMouseEvents(!hit, { forward: true });
+    }
+  });
   // 悬浮球最高层级（pop-up-menu > floating 气泡），保证不被气泡/其他窗口遮挡
   bubbleWin.setAlwaysOnTop(true, 'pop-up-menu');
   bubbleWin.once('ready-to-show', () => bubbleWin.show());
