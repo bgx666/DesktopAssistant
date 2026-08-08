@@ -114,18 +114,31 @@ class _KokoroLocal:
                     voices[f.stem] = raw.reshape(510, 256)
                 np.savez(merged, **voices)
             self._voices = np.load(merged)
-            # 推理后端：FP32 模型 + CPU（实测比 int8 快 ~10x：本机无 AVX512，int8 反量化开销大；
-            # OpenVINO/DirectML GPU 在此平台不可靠——OV EP 静默落 CPU、DML ConvTranspose 报错，
-            # fp16 CPU 输出 NaN）→ 无 fp32 模型时回退 int8
+            # 推理后端：DirectML GPU（FP32，驱动支持则加速）→ CPU FP32 → CPU int8。
+            # 平台排雷记录：本机（Core Ultra 5 338H + Arc B370）实测——
+            #   - OpenVINO：onnx 前端不支持模型的 SplitToSequence/SequenceAt → 转换失败，死路
+            #   - DirectML int8：会话创建卡死；fp16：ConvTranspose 驱动报错（0x80070057，驱动 bug，
+            #     更新 Intel 驱动后可能修复——届时本代码自动启用 GPU）
+            #   - CPU fp16：onnxruntime CPU 对 fp16 支持不完整 → NaN
+            #   - CPU fp32：正常且比 int8 快 ~10x（无 AVX512，int8 反量化开销大）
             ort.set_default_logger_severity(3)   # 只留 ERROR（DML/图优化警告太吵）
             sess, provider = None, ""
             fp32_file = onnx_dir / "model.onnx"
             if fp32_file.is_file():
-                try:
-                    sess = ort.InferenceSession(str(fp32_file), providers=["CPUExecutionProvider"])
-                    provider = "CPU(f32)"
-                except Exception:
-                    _logger.info("[tts] FP32 模型不可用，回退 int8")
+                if "DmlExecutionProvider" in ort.get_available_providers():
+                    try:
+                        cand = ort.InferenceSession(
+                            str(fp32_file), providers=["DmlExecutionProvider"])
+                        if "DmlExecutionProvider" in cand.get_providers():
+                            sess, provider = cand, "DirectML-GPU(f32)"
+                    except Exception:
+                        _logger.info("[tts] DirectML 不可用，回退 CPU(f32)")
+                if sess is None:
+                    try:
+                        sess = ort.InferenceSession(str(fp32_file), providers=["CPUExecutionProvider"])
+                        provider = "CPU(f32)"
+                    except Exception:
+                        _logger.info("[tts] FP32 模型不可用，回退 int8")
             if sess is None:
                 sess = ort.InferenceSession(
                     str(onnx_dir / "model_int8.onnx"), providers=["CPUExecutionProvider"])
@@ -170,30 +183,7 @@ class _KokoroLocal:
                 _logger.info("[tts] 文本过长，音素 %d → 截断至 %d", len(tokens), _MAX_TOKENS)
                 tokens = tokens[:_MAX_TOKENS]
             try:
-                style = self._voices[use_voice][len(tokens)]
-                out, _ = self._sess.run(None, {
-                    "input_ids": np.array([[0, *tokens, 0]], dtype=np.int64),
-                    "style": np.array(style, dtype=np.float32)[None, :],
-                    "speed": np.array([1.0], dtype=np.float32),
-                })
-                wav = np.asarray(out, dtype=np.float32).reshape(-1)   # 统一 float32
-                rms = float(np.sqrt(np.mean(wav ** 2)))
-                if not np.isfinite(rms) or rms > 0.99:
-                    # NaN/全 ±1.0 常量 = 推理后端异常输出（静音）→ 回退 int8 CPU 重试
-                    _logger.warning("[tts] 推理输出异常（rms=%s），回退 CPU(int8) 重试", rms)
-                    import onnxruntime as _ort
-                    self._sess = _ort.InferenceSession(
-                        str(self.model_dir / "onnx" / "model_int8.onnx"),
-                        providers=["CPUExecutionProvider"])
-                    self._provider = "CPU(int8)"
-                    out, _ = self._sess.run(None, {
-                        "input_ids": np.array([[0, *tokens, 0]], dtype=np.int64),
-                        "style": self._voices[use_voice][len(tokens)].astype(np.float32)[None, :],
-                        "speed": np.array([1.0], dtype=np.float32),
-                    })
-                    wav = np.asarray(out, dtype=np.float32).reshape(-1)
-                    rms = float(np.sqrt(np.mean(wav ** 2)))
-                    _logger.info("[tts] 回退重试输出 rms=%.3f", rms)
+                wav = self._run_tokens(tokens, use_voice)
                 if len(wav) < 2400:
                     return None
                 # float32 → int16 PCM wav（soundfile）
@@ -205,6 +195,35 @@ class _KokoroLocal:
             except Exception:
                 _logger.exception("[tts] Kokoro 合成失败")
                 return None
+
+    def _run_tokens(self, tokens: list[int], use_voice: str) -> np.ndarray:
+        """推理 → float32 波形；异常输出（NaN/饱和）或 DML 驱动报错 → 回退 CPU 重试。"""
+        import numpy as np
+
+        for attempt in range(2):
+            try:
+                style = self._voices[use_voice][len(tokens)]
+                out, _ = self._sess.run(None, {
+                    "input_ids": np.array([[0, *tokens, 0]], dtype=np.int64),
+                    "style": np.array(style, dtype=np.float32)[None, :],
+                    "speed": np.array([1.0], dtype=np.float32),
+                })
+                wav = np.asarray(out, dtype=np.float32).reshape(-1)
+                rms = float(np.sqrt(np.mean(wav ** 2)))
+                if not np.isfinite(rms) or rms > 0.99:
+                    raise RuntimeError(f"推理输出异常（rms={rms}）")
+                return wav
+            except Exception:
+                if attempt == 0 and self._provider.startswith("DirectML"):
+                    # DML 驱动不支持（ConvTranspose 报错）或输出异常 → 回退 CPU(f32)
+                    _logger.warning("[tts] DirectML 推理异常，回退 CPU(f32)")
+                    import onnxruntime as _ort
+                    fp32_file = self.model_dir / "onnx" / "model.onnx"
+                    self._sess = _ort.InferenceSession(
+                        str(fp32_file), providers=["CPUExecutionProvider"])
+                    self._provider = "CPU(f32)"
+                    continue
+                raise
 
 
 class TtsClient:
