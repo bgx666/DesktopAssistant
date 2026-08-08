@@ -136,7 +136,11 @@ def test_compress_snapshot_stores_time_range(data_root, monkeypatch):
 
 def test_render_time_range_format():
     from planner.middleware import SummarizationMiddleware as SM
-    assert SM._fmt_time_range("2026-08-08 10:00:00", "2026-08-08 12:30:00") == "08-08 10:00 ~ 12:30"
-    assert SM._fmt_time_range("2026-08-08 22:00:00", "2026-08-09 01:00:00") == "08-08 22:00 ~ 08-09 01:00"
+    # 同日：开始带年份，结束省略日期
+    assert SM._fmt_time_range("2026-08-08 10:00:00", "2026-08-08 12:30:00") == "2026-08-08 10:00 ~ 12:30"
+    # 跨日：结束带完整日期
+    assert SM._fmt_time_range("2026-08-08 22:00:00", "2026-08-09 01:00:00") == "2026-08-08 22:00 ~ 2026-08-09 01:00"
+    # 跨年：两端都带年份
+    assert SM._fmt_time_range("2026-12-31 23:00:00", "2027-01-01 00:30:00") == "2026-12-31 23:00 ~ 2027-01-01 00:30"
     assert SM._fmt_time_range("", "") == ""
     assert SM._fmt_time_range("2026-08-08 10:00:00", "") == ""

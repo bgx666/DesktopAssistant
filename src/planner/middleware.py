@@ -395,22 +395,16 @@ class SummarizationMiddleware(AgentMiddleware):
     # ── 节点消息渲染（全字段，供模型上下文与 explore 使用）──────
 
     @staticmethod
-    def _fmt_time(ts: str, short: bool = False) -> str:
-        """ISO 秒级时间戳 → 短格式（MM-DD HH:MM / HH:MM:SS）。"""
-        if not ts:
-            return ""
-        return ts[5:16] if short else ts
-
-    @staticmethod
     def _fmt_time_range(start: str, end: str) -> str:
-        """节点起止时间 → 'MM-DD HH:MM ~ HH:MM'（同日省略结束日期）。"""
-        s = SummarizationMiddleware._fmt_time(start, short=True)
-        e = SummarizationMiddleware._fmt_time(end, short=True)
-        if not s or not e:
+        """节点起止时间 → 'YYYY-MM-DD HH:MM ~ HH:MM'（同日省略结束日期，
+        跨日/跨年结束时间带完整日期，避免歧义）。"""
+        if not start or not end:
             return ""
+        full = lambda ts: ts[:16]      # YYYY-MM-DD HH:MM
+        hm = lambda ts: ts[11:16]      # HH:MM
         if start[:10] == end[:10]:
-            e = end[11:16]           # 同日：结束只显示时分
-        return f"{s} ~ {e}"
+            return f"{full(start)} ~ {hm(end)}"
+        return f"{full(start)} ~ {full(end)}"
 
     @staticmethod
     def _render_node_text(node_id: str, start, end, out: MemoryNodeOutput,
