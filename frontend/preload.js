@@ -15,6 +15,10 @@ contextBridge.exposeInMainWorld('planner', {
   removeMounted: (index) => ipcRenderer.send('remove-mounted', index),
   getMounted: () => ipcRenderer.invoke('get-mounted'),
   onMountedChanged: (cb) => ipcRenderer.on('mounted-files', (e, list) => cb(list)),
+  // 前端 UI 设置（长按时间等，主进程本地文件，无需后端）
+  getUiSettings: () => ipcRenderer.invoke('get-ui-settings'),
+  saveUiSettings: (updates) => ipcRenderer.send('save-ui-settings', updates),
+  onUiSettings: (cb) => ipcRenderer.on('ui-settings', (e, s) => cb(s)),
   onSettings: (cb) => ipcRenderer.on('settings', (e, s) => cb(s)),
   settingsSaved: () => ipcRenderer.send('settings-saved'),
   // 悬浮球

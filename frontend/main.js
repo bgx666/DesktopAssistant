@@ -656,6 +656,48 @@ ipcMain.on('remove-mounted', (e, index) => {
   }
 });
 ipcMain.handle('get-mounted', () => mountedFiles);
+// ── 前端 UI 设置（长按时间等，纯前端参数不走后端，启动即用）──
+const UI_SETTINGS_FILE = () => path.join(app.getPath('userData'), 'ui-settings.json');
+let uiSettings = { press_ms: 200 };
+(function initUiSettings() {
+  try {
+    // 优先读本地 ui-settings.json（持久化）
+    if (fs.existsSync(UI_SETTINGS_FILE())) {
+      const raw = JSON.parse(fs.readFileSync(UI_SETTINGS_FILE(), 'utf-8'));
+      if (raw && typeof raw.press_ms === 'number') uiSettings.press_ms = raw.press_ms;
+      return;
+    }
+    // 首次：从后端 settings.json 迁移 press_ms（后端旧数据）
+    const dataRoot = process.env.PLANNER_DATA_ROOT;
+    if (dataRoot) {
+      const p = path.join(dataRoot, 'settings.json');
+      if (fs.existsSync(p)) {
+        const raw = JSON.parse(fs.readFileSync(p, 'utf-8'));
+        if (raw && typeof raw.press_ms === 'number') uiSettings.press_ms = raw.press_ms;
+      }
+    }
+  } catch { /* 用默认值 */ }
+})();
+function saveUiSettingsFile() {
+  try {
+    fs.writeFileSync(UI_SETTINGS_FILE(), JSON.stringify(uiSettings, null, 2));
+  } catch { /* 忽略 */ }
+}
+function broadcastUiSettings() {
+  try {
+    if (bubbleWin && !bubbleWin.isDestroyed()) bubbleWin.webContents.send('ui-settings', uiSettings);
+    if (panelWin && !panelWin.isDestroyed()) panelWin.webContents.send('ui-settings', uiSettings);
+  } catch { /* 忽略 */ }
+}
+ipcMain.handle('get-ui-settings', () => uiSettings);
+ipcMain.on('save-ui-settings', (e, updates) => {
+  const u = updates || {};
+  if (typeof u.press_ms === 'number') {
+    uiSettings.press_ms = Math.max(50, Math.min(5000, Math.round(u.press_ms)));
+  }
+  saveUiSettingsFile();
+  broadcastUiSettings();
+});
 ipcMain.on('toggle-panel', () => togglePanel());
 // ── 设置窗口 ─────────────────────────────────────────────
 let settingsWin = null;

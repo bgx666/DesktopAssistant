@@ -19,14 +19,19 @@
     });
   });
 
-  // ── 读取当前设置并回显 ──
+  // ── 读取当前设置并回显：长按时间走主进程（本地配置），其余走后端 ──
   let current = {};
   async function loadSettings() {
+    try {
+      // 长按时间：主进程本地配置（无需等后端）
+      const ui = await window.planner.getUiSettings();
+      if (ui && ui.press_ms != null) $('#press_ms').value = ui.press_ms;
+    } catch { /* 主进程不可用 */ }
     try {
       const r = await fetch(API + '/settings', { signal: AbortSignal.timeout(4000) });
       const d = await r.json();
       current = d.settings || {};
-      for (const k of ['press_ms', 'compress_trigger', 'compress_keep',
+      for (const k of ['compress_trigger', 'compress_keep',
                        'compact_threshold', 'compact_factor']) {
         $(`#${k}`).value = current[k] ?? '';
       }
@@ -34,7 +39,7 @@
       $('#llm_base_url').value = current.llm_base_url || '';
       $('#llm_model').value = current.llm_model || '';
       drawChart();
-    } catch { $('#msg').textContent = '后端不可用，无法读取设置'; }
+    } catch { $('#msg').textContent = '后端不可用，无法读取压缩/LLM 设置'; }
   }
 
   // ── 压缩示意图：只算"每次压缩触发前"的峰值点（性能优先）──
@@ -182,10 +187,20 @@
   ['compress_trigger', 'compress_keep', 'compact_threshold', 'compact_factor']
     .forEach((id) => $(`#${id}`).addEventListener('input', () => { resetView(); drawChart(); }));
 
-  // ── 保存 ──
+  // ── 保存：长按时间 → 主进程（本地，立即生效）；压缩/LLM → 后端 ──
   $('#save').addEventListener('click', async () => {
+    const btn = $('#save');
+    btn.disabled = true;
+    $('#msg').className = '';
+    const errs = [];
+    // 1) 长按时间（主进程本地配置）
+    try {
+      const v = parseInt($('#press_ms').value, 10);
+      if (!isNaN(v)) window.planner.saveUiSettings({ press_ms: v });
+    } catch { errs.push('长按时间保存失败'); }
+    // 2) 压缩参数 + LLM（后端）
     const updates = {};
-    for (const k of ['press_ms', 'compress_trigger', 'compress_keep',
+    for (const k of ['compress_trigger', 'compress_keep',
                      'compact_threshold', 'compact_factor']) {
       const v = parseInt($(`#${k}`).value, 10);
       if (!isNaN(v)) updates[k] = v;
@@ -193,9 +208,6 @@
     updates.llm_api_key = $('#llm_api_key').value.trim();
     updates.llm_base_url = $('#llm_base_url').value.trim();
     updates.llm_model = $('#llm_model').value.trim();
-    const btn = $('#save');
-    btn.disabled = true;
-    $('#msg').className = '';
     try {
       const r = await fetch(API + '/settings', {
         method: 'POST',
@@ -203,16 +215,16 @@
         body: JSON.stringify({ updates }),
       });
       const d = await r.json();
-      if (d.ok) {
-        current = d.settings;
-        $('#msg').textContent = '已保存并生效 ✓';
-        $('#msg').className = 'ok';
-        window.planner.settingsSaved();   // 通知主进程广播（长按时间等前端项即时更新）
-      } else {
-        $('#msg').textContent = '保存失败：' + (d.error || '未知错误');
-      }
+      if (!d.ok) errs.push(d.error || '保存失败');
+      else current = d.settings;
     } catch {
-      $('#msg').textContent = '保存失败：后端不可用';
+      errs.push('后端不可用，压缩/LLM 设置未保存');
+    }
+    if (errs.length) {
+      $('#msg').textContent = errs.join('；');
+    } else {
+      $('#msg').textContent = '已保存并生效 ✓';
+      $('#msg').className = 'ok';
     }
     btn.disabled = false;
   });
