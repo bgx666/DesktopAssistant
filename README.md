@@ -1,162 +1,159 @@
-# DesktopAssistant（小助）—— 陪伴式学习助手
+# DesktopAssistant（小助）
 
-市面上能干的 AI 工具已经很多了：Codex、Claude Code、OpenCode、Workbuddy……写代码、改文档、跑任务，它们都很在行。小助不想和它们比谁更能干——它想做点不一样的：
+面向个人学习的桌面 AI 助手。与以"代完成任务"为目标的主流 coding agent（Codex、Claude Code、OpenCode 等）不同，本项目的定位是**长期陪伴式学习辅助**：系统不代替用户完成工作，而是负责目标的拆解、进度的记录与提醒，并通过持久化的记忆结构维持对用户长期状态的认知。
 
-> **它不太会替你干活，但它会记住你要做什么，然后陪着你去完成。**
+核心设计要点：
 
-- **帮你记着**：你随口说的目标，它会拆成阶段和计划，时不时提醒你"今天该推进哪一步啦"；
-- **陪在旁边**：它不替你写代码、改文档、完成工作——那些是你自己的事，它只是在旁边看着进度、偶尔问问进展；
-- **记得你**：对话会沉淀进**记忆树**（长期、近似无限的记忆），几周前你随口说的决定它还记得。它慢慢了解你的节奏和喜好，像一位认识你很久的朋友，而不是一个"用完就忘"的对话框。
+- **长期记忆**：对话历史经压缩后沉淀为 SQLite 分层摘要记忆树（memory tree）。记忆容量近似无限，且随对话持续更新——系统能够回忆起数周前的对话内容，并据此维持一致的交互人设。
+- **记忆驱动的提示词演化**：系统提示词保持极简，人设信息不预先写死，而是在对话过程中通过摘要机制（用户画像、偏好、目标等结构化字段）逐步累积与完善。
+- **本地优先的感知能力**：语音合成（TTS）、语音识别（ASR）、图像文字识别（OCR）全部基于开源模型本地推理，离线可用；支持文档挂载、屏幕内容识别与网页检索，用于理解用户当前所处的任务情境。
+- **桌面形态**：Electron 悬浮球常驻桌面，支持单击/长按/拖拽等交互，后端（Python + LangChain，LangGraph 化 ReAct 循环）由前端自动拉起。
 
-**关于记忆**：对小助来说，记住你是一件很自然也很重要的事——要是聊过就忘，那就不算陪伴了。它的提示词非常简短，因为上下文是无限的；在日复一日的对话里，它会慢慢总结和你的相处，**一步步形成自己的性格**，而不是一开始就背好一段固定的台词。
+## 系统架构
 
-技术形态：Python + LangChain 的桌面悬浮球 Agent（Electron 前端），语音合成/识别/OCR 全部本地运行、离线可用。你可以把文档拖给它看，它也能看一眼你的屏幕和桌面文字——只是为了更好地理解你正在做的事，好给出更贴心的建议。
+```
+后端（Python, http://127.0.0.1:18771）
+  server.py        ThreadingHTTPServer + JSON 端点（/chat /dequeue /settings /tts/* …）
+  session.py       PlannerSession：并发控制、调度线程、事件队列、免打扰
+  agent.py         create_agent 构建（LangGraph，无 checkpointer）
+  middleware.py    业务中间件链（免打扰/计划快照/玩家优先/记忆压缩/调用上限）
+  tools.py         工具注册（19 个 function calling，见下文）
+  tts.py / asr.py / ocr.py   本地语音合成 / 识别 / 图像文字识别
+  memory/          SQLite 分层摘要记忆树
+  store/           任务/计划/待办库（SQLite）
+前端（Electron）
+  main.js          主进程：悬浮球窗口 + 面板窗口、托盘、HTTP 代理
+  renderer/        悬浮球（bubble）与面板（index）页面、设置窗口
+```
 
-- **后端**：Python + LangChain（`create_agent` + 中间件链），LangGraph 化 ReAct 循环
-- **前端**：Electron 悬浮球（桌面常驻小球，点击展开对话面板、点击其他位置自动收起；可拖拽、右键菜单、自动拉起后端）
-- **记忆**：SQLite 分层摘要记忆树（叶子压缩 + 向上递归合并，节点携带时间范围）
-- **全本地 AI 能力**：语音合成（Kokoro-82M-zh，onnx 推理无 torch）、语音识别（SenseVoice）、图片 OCR（RapidOCR），离线可用
+## 上下文管理：压缩与分层记忆树
 
-## 它有什么工具（function calling）
+大模型上下文窗口有界，而长期对话的需求是无限的。本项目以「压缩 + 分层摘要树」在二者之间建立平衡：
 
-小助通过 19 个工具与你的桌面世界交互，全部由 LLM 自主调用：
-
-| 工具 | 作用 |
-|---|---|
-| `create_task` | 记录一个新任务（对话里说"帮我安排…"即触发） |
-| `break_down_task` | 把任务拆解成阶段 + 待办条目（逐日动态安排） |
-| `list_tasks` / `get_task` | 查看任务列表 / 任务详情 |
-| `get_next_actions` | 动态待办队列（按紧急度排序，今天该做什么） |
-| `mark_plan_done` | 勾选完成一条待办（任务随之自动推进） |
-| `reschedule` / `update_task_status` / `prioritize` | 调整日期 / 状态 / 优先级 |
-| `heartbeat` | 设定定时唤醒——到点它自己醒来回访进度（10~720 分钟） |
-| `continue_speaking` | 分点长谈时暂停片刻继续说下一点（一句一句地讲） |
-| `set_do_not_disturb` | 免打扰时段（默认 22:00-08:00 静默） |
-| `explore_memory_tree` | 翻阅记忆树——按需展开任意历史节点，找回几个月前的原话 |
-| `list_dir` / `read_file` | 浏览/读取你拖进来的文档（PDF/Word/文本已自动解析） |
-| `capture_screen` | 截屏 + OCR 识别屏幕上的文字（看看你在干什么，好给出建议） |
-| `web_search` / `fetch_web` | 搜索并阅读网页（查资料时用） |
-
-## 无限上下文
-
-大模型的上下文窗口是有限的，但小助的记忆**不是**——它用「压缩 + 分层记忆树」把漫长的对话历史折叠起来：
-
-- 对话积累到阈值（默认 60 条）时，自动把**最早的对话压缩成摘要节点**存入记忆树，上下文窗口回收（只保留最近 20 条），**生成成本恒定**；
-- 摘要节点继续向上递归合并（8 合 1），形成**越老越精炼的分层树**——近期的细节、久远的关键决策都还在；
-- 每次压缩后，上下文**不是清零**，而是带着「摘要 + 用户画像 + 未来待办」继续——它记得你是谁、在做什么，只是把废话折叠了；
-- 需要考古时，`explore_memory_tree` 工具可以按需展开任意节点，翻出几个月前的原话。
-
-一句话：**窗口有界，记忆无限。** 你和它聊到第 1 轮还是第 10,000 轮，它的"脑内工作台"始终清爽，而"长期记忆"越积越厚。
-
-### 压缩过程与记忆树结构
-
-对话每满 60 条，最早的 40 条被压成一片叶子（`node0_xxx`，原文存进节点、可随时展开）；叶子攒够 8 片，前 4 片合并成一个中间节点（`node1_xxx`，摘要的摘要）；再往上继续 4 合 1，直到只剩一个根（`node2_xxx`）。**只有"最近一次压缩后尚未被进一步合并"的节点还在上下文里**，被合并掉的节点从 buffer 消失、永久沉淀进树：
+- **触发条件**：原始对话累积至阈值（默认 60 条）时，最早 40 条被压缩为一个叶子节点（`node0_xxx`）写入记忆树，上下文窗口回收至最近 20 条，生成成本保持恒定；
+- **层级结构**：某层节点数量达到阈值（默认 8 个）时，前 4 个合并为上层节点（`node1_xxx`），逐层向上（4 合 1），直至根节点（`node2_xxx`）。节点携带摘要、用户画像、时间范围与全局序号区间；
+- **缓冲区状态**：只有"最近一次压缩后尚未被进一步合并"的节点保留在上下文（buffer）中；被合并节点从 buffer 移除，永久沉淀于记忆树。
 
 ![记忆树结构 + Buffer state](docs/images/memory_tree.svg)
 
-### 压缩不是"扔进碎纸机"，而是"知情回顾"
+### 压缩中的未来信息校正
 
-普通的对话压缩是**孤立快照**：把一段旧对话单独丢给模型做摘要，模型只看到那段时间发生了什么，**看不到后来**——用户后来否定的决定、中途改变的计划、最终完成的结果，摘要一概不知，记忆就成了"过期的快照"。
+常规摘要式压缩将待压缩片段**孤立**地提交给模型，摘要无法反映该片段之后发生的事实变更（如用户推翻的决策、已完成的任务）。本项目压缩时，待压缩片段**原样包裹于指令中，追加到完整原始上下文的末尾**——模型可见被压缩区域之后（相对该区域而言属于"未来"）的全部消息，摘要据此获得**事后校正能力**：
 
-小助的压缩不一样：压缩时，被压缩的片段**原样包裹在指令中，追加到完整原始上下文的末尾**——模型眼前是整个对话 + 待压缩片段的全文。这意味着它能看到**被压缩区域之后、相对它而言属于"未来"的信息**：
+- 后续对话否定的决策不会残留于摘要；
+- 任务的最终状态（完成/变更）被纳入摘要而非停留在中途；
+- 跨片段因果得以保持。
 
-- 用户后来改口说"那个方案算了"→ 摘要不会记成"方案已确定"；
-- 任务后来完成了、目标后来变了 → 摘要带着最终结果写，而不是停在中途；
-- 对话里的伏笔后来揭晓了 → 摘要记得住因果，而不是只记铺垫。
+每一层摘要因此可视为"知情回顾"（informed retrospective），而非"截稿快照"（point-in-time snapshot）。
 
-摘要因此具有**事后校正能力**：每一层记忆都是"知道结局的回顾"，而不是"截稿时的快照"。这也正是记忆树层层向上压缩后依然可信的原因——越往上越精炼，但每一条精炼都经过了后续对话的检验。
+### 上下文复杂度的稳定性
 
-### 对话轮数增长，上下文水位恒定
-
-压缩让上下文随轮数增长始终保持稳定：
+压缩机制使上下文规模随对话轮数增长保持有界：
 
 ![上下文随对话轮数增长（压缩前峰值 vs 记忆保留）](docs/images/context_growth.png)
 
-对比没有记忆树的长对话——传统方案的上下文随轮数线性暴涨，很快撞上模型窗口上限（信息被截断/遗忘）；小助的上下文始终保持在一个稳定水位，10,000 轮也不慌：
+未引入记忆树时，上下文随轮数线性增长直至窗口上限（信息截断/遗忘）；引入后，上下文维持于稳定水位，10,000 轮对话不越界：
 
-![长对话对比：传统上下文膨胀 vs 小助恒定水位](docs/images/context_growth_10k.png)
+![长对话对比：传统上下文膨胀 vs 恒定水位](docs/images/context_growth_10k.png)
+
+## 工具接口（function calling）
+
+系统注册 19 个工具，由 LLM 在 ReAct 循环中自主调用：
+
+| 工具 | 功能 |
+|---|---|
+| `create_task` | 录入新任务（对话触发） |
+| `break_down_task` | 任务拆解为阶段与待办条目 |
+| `list_tasks` / `get_task` | 任务列表 / 详情查询 |
+| `get_next_actions` | 按紧急度排序的动态待办队列 |
+| `mark_plan_done` | 勾选待办完成，任务状态自动推进 |
+| `reschedule` / `update_task_status` / `prioritize` | 日期调整 / 状态更新 / 优先级调整 |
+| `heartbeat` | 自主调度：设定下次唤醒（clamp 10~720 分钟） |
+| `continue_speaking` | 长回复分段：调用后暂停片刻再继续（可被用户立即打断） |
+| `set_do_not_disturb` | 免打扰时段（默认 22:00-08:00） |
+| `explore_memory_tree` | 按需展开记忆树任意节点（历史回溯） |
+| `list_dir` / `read_file` | 文档浏览 / 读取（PDF/Word/文本自动解析） |
+| `capture_screen` | 屏幕截图 + OCR 文字识别 |
+| `web_search` / `fetch_web` | 网页检索与内容抓取 |
 
 ## 功能特性
 
 | 能力 | 说明 |
 |---|---|
 | 任务录入 | 对话（`create_task`）或 HTTP `POST /task` 结构化录入 |
-| 任务拆解 | `break_down_task`：LLM 产出阶段 + 逐日计划，直接落库 |
-| 每日计划 | 自动从任务拆解生成；前端可勾选完成，动态调整排期 |
-| 主动回访 | 后端调度线程：LLM 自主 `heartbeat(minutes)` 决定下次醒来（clamp 10~720 分钟） |
-| 分段说话 | `continue_speaking`：分点描述时每调用一次暂停片刻继续说下一点（用户可立即打断） |
-| 打开时静默 | 启动 2 分钟宽限期 + 到期心跳顺延：不打开就说话 |
-| 免打扰 | 默认 22:00-08:00 静默（玩家消息不受限），可前端开关 |
-| 长期记忆 | 对话超阈值自动压缩成记忆树，`explore_memory_tree` 翻阅 |
-| 语音播报 | 本地 TTS：自动朗读 / 消息喇叭按钮 / 103 种音色切换 + 开关 + 试听 |
-| 语音输入 | 按住悬浮球或长按发送按钮说话，本地识别填入输入框 |
-| 图片/文件 | 拖拽文件挂载（PDF/Word/文本解析 + OCR）、截屏、网页搜索 |
+| 任务拆解 | `break_down_task`：LLM 产出阶段与逐日计划并落库 |
+| 每日计划 | 由任务拆解自动生成；前端可勾选完成 |
+| 主动回访 | 调度线程：LLM 自主 `heartbeat(minutes)` 决定唤醒间隔 |
+| 分段说话 | `continue_speaking`：分点输出时分段暂停（可打断） |
+| 启动静默 | 启动 2 分钟宽限期；到期心跳顺延不补触发 |
+| 免打扰 | 默认 22:00-08:00 静默（用户消息不受限） |
+| 长期记忆 | 超阈值自动压缩入记忆树，`explore_memory_tree` 回溯 |
+| 语音播报 | 本地 TTS：自动朗读 / 消息喇叭按钮 / 103 音色 / 开关与试听 |
+| 语音输入 | 悬浮球长按 / 发送按钮长按，本地识别填入输入框 |
+| 文件/感知 | 拖拽挂载（PDF/Word/文本 + OCR）、截屏、网页搜索 |
 
 ## 使用的开源模型
 
-小助的语音/视觉能力全部基于开源模型**本地推理**（无云端依赖、数据不出本机），首次使用时自动下载到用户缓存目录（`~/.cache/planner_tts`、`~/.cache/planner_asr`），之后离线可用：
+语音与视觉能力基于开源模型本地推理（数据不出本机）。模型于首次使用时自动下载至用户缓存目录（`~/.cache/planner_tts`、`~/.cache/planner_asr`），此后离线可用：
 
 | 模型 | 用途 | 说明 |
 |---|---|---|
-| **Kokoro-82M-v1.1-zh**（[onnx-community/Kokoro-82M-v1.1-zh-ONNX](https://huggingface.co/onnx-community/Kokoro-82M-v1.1-zh-ONNX)） | 语音合成（TTS） | 82M 参数、纯 ONNX 推理（无 torch），支持 100+ 中英文音色；配合 [misaki](https://github.com/hexgrad/misaki) 中文音素管线 |
-| **SenseVoiceSmall**（[FunAudioLLM/SenseVoice](https://github.com/FunAudioLLM/SenseVoice)） | 语音识别（ASR） | 阿里开源的多语言语音识别模型，ONNX 版经 [funasr-onnx](https://github.com/altescy/funasr-onnx) 加载 |
-| **RapidOCR**（[RapidAI/RapidOCR](https://github.com/RapidAI/RapidOCR)） | 图片文字识别（OCR） | PaddleOCR 模型的 ONNX 移植版（约 15MB），用于截图/图片中的文字识别 |
+| [Kokoro-82M-v1.1-zh](https://huggingface.co/onnx-community/Kokoro-82M-v1.1-zh-ONNX) | 语音合成（TTS） | 82M 参数，ONNX 推理（无 torch），100+ 中英文音色；配合 [misaki](https://github.com/hexgrad/misaki) 音素管线 |
+| [SenseVoiceSmall](https://github.com/FunAudioLLM/SenseVoice) | 语音识别（ASR） | 多语言识别，ONNX 版经 [funasr-onnx](https://github.com/altescy/funasr-onnx) 加载 |
+| [RapidOCR](https://github.com/RapidAI/RapidOCR) | 图像文字识别（OCR） | PaddleOCR 的 ONNX 移植版（约 15MB） |
 
-各模型的许可证以其项目仓库为准（均为开源协议，商用前请自行核对）。语音输入/识别/OCR 全程本地处理，只有对话内容会发送到你配置的 LLM API。
+各模型许可证以对应项目仓库为准。语音输入/识别/OCR 全程本地处理；仅对话内容发送至所配置的 LLM API。
 
 ## 环境要求
 
-| 依赖 | 版本要求 | 说明 |
+| 依赖 | 版本 | 说明 |
 |---|---|---|
-| Python | ≥ 3.10 | 建议 3.11/3.12（3.13 也可，部分依赖版本受限） |
-| Node.js | ≥ 18 | 前端悬浮窗（Electron）需要；只跑后端可不需要 |
+| Python | ≥ 3.10 | 建议 3.11/3.12（3.13 可用，部分依赖版本受限） |
+| Node.js | ≥ 18 | 前端（Electron）；仅运行后端可省略 |
 | 操作系统 | Windows | 已适配 Windows（透明悬浮窗/托盘）；其他平台未验证 |
 
-LLM 需要一个 **OpenAI 兼容的 API**（默认 DeepSeek，也可换任意端点）。语音合成/识别/OCR 全部本地推理，无需额外服务。
+LLM 需为 OpenAI 兼容端点（默认 DeepSeek）。语音/OCR 能力全部本地推理，无需外部服务。
 
-> 开始前先确认命令可用：`python --version` 和 `node --version` 能正常输出版本号。
+> 安装前确认 `python --version` 与 `node --version` 可正常执行。
 
 ## 安装与配置
 
-### 1. 后端
+### 1. 安装后端依赖
 
 ```bash
-# 克隆仓库后，在仓库根目录：
-python -m pip install -e .          # 安装依赖（langchain / onnxruntime / kokoro 等，约 2 分钟）
+# 仓库根目录
+python -m pip install -e .
 ```
 
 ### 2. 配置 LLM API
 
-在仓库根目录创建 `.env` 文件（已加入 .gitignore，不会提交）：
+在仓库根目录创建 `.env`（已加入 .gitignore）：
 
 ```bash
-# .env
 LLM_API_KEY=sk-xxxxxxxxxxxxxxxxxxxx   # 必填
-LLM_BASE_URL=https://api.deepseek.com # 可选，OpenAI 兼容端点
+LLM_BASE_URL=https://api.deepseek.com # 可选
 LLM_MODEL=deepseek-v4-flash           # 可选
 ```
 
-不创建 `.env` 也可以，直接在系统环境变量里设置 `LLM_API_KEY` 等。
+亦可直接设置同名系统环境变量。
 
 ### 3. 启动
 
-**方式一（推荐）：只起前端，后端自动拉起**
+**方式一（推荐）**：仅启动前端，后端自动拉起：
 
 ```bash
 cd frontend
 npm install        # 首次
-npm start          # 自动启动后端（用 PATH 里的 python）并打开悬浮窗
+npm start
 ```
 
-**方式二：分开启动**
-
-先起后端（监听 http://127.0.0.1:18771）：
+**方式二**：分别启动。先起后端：
 
 ```bash
-python -m planner
+python -m planner   # 监听 http://127.0.0.1:18771
 ```
 
-再开另一个终端起前端（后端已跑会直接复用）：
+再于另一终端启动前端（后端已运行则直接复用）：
 
 ```bash
 cd frontend
@@ -164,31 +161,31 @@ npm install
 npm start
 ```
 
-不想消耗 API 额度、只想看看长什么样？用 Mock 模式（脚本化假 LLM，可完整演示建任务→拆解→勾选闭环）：
+**Mock 模式**（脚本化假 LLM，不消耗 API 额度，可演示任务全流程）：
 
 ```bash
 set PLANNER_MOCK_LLM=1
 python -m planner
 ```
 
-第一次合成语音时，小助会去本地缓存目录下载 Kokoro 语音模型（约 120MB，仅一次），随后全部离线可用。
+首次合成语音时自动下载 Kokoro 模型（约 120MB，仅一次），此后离线可用。
 
 ### 4. 验证
 
-- 打开浏览器访问 `http://127.0.0.1:18771/init`，返回 `{"ok": true, "mode": "llm"}` 即后端就绪
-- 悬浮球单击 = 看它最近说了什么；长按 = 语音输入；拖到文件上 = 挂载文件后语音/文字一起发送
+- 访问 `http://127.0.0.1:18771/init`，返回 `{"ok": true, "mode": "llm"}` 即后端就绪；
+- 悬浮球：单击查看最近回复；长按语音输入；拖拽文件挂载后随消息发送。
 
-## 常用配置（环境变量）
+## 配置项（环境变量）
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
 | `PLANNER_PORT` | `18771` | 后端监听端口 |
-| `PLANNER_MOCK_LLM` | 关 | `=1` 脚本化假 LLM（演示/测试） |
-| `PLANNER_DATA_ROOT` | `data/` | 运行时数据目录（任务库/记忆树/日志） |
-| `PLANNER_PYTHON` | `python` | 前端拉起后端用的 Python 解释器 |
-| `XIAOB_SHARED_ENV` | 无 | 可选：共享 .env 路径（多项目复用同一份 LLM 配置） |
-| `PLANNER_HEARTBEAT_MIN_MINUTES` / `MAX` | `10` / `720` | LLM 自主心跳间隔护栏（分钟） |
-| `PLANNER_DND_START_HOUR` / `END_HOUR` | `22` / `8` | 默认免打扰窗口 |
+| `PLANNER_MOCK_LLM` | 关 | `=1` 使用脚本化假 LLM |
+| `PLANNER_DATA_ROOT` | `data/` | 运行时数据目录 |
+| `PLANNER_PYTHON` | `python` | 前端拉起后端所用解释器 |
+| `XIAOB_SHARED_ENV` | 无 | 共享 .env 路径（多项目复用 LLM 配置） |
+| `PLANNER_HEARTBEAT_MIN_MINUTES` / `MAX` | `10` / `720` | 心跳间隔护栏（分钟） |
+| `PLANNER_DND_START_HOUR` / `END_HOUR` | `22` / `8` | 免打扰窗口 |
 | `PLANNER_TTS_ENGINE` | `local` | `cloud` 时改用 DashScope 云合成 |
 
 ## 数据存储
@@ -200,7 +197,7 @@ data/
   logs/planner.log  运行日志（RotatingFileHandler）
 ```
 
-**重置数据**：停掉进程后删除整个 `data/` 目录即可（任务、记忆、日志全部清空，重新开始）。
+**数据重置**：停止进程后删除 `data/` 目录即可（任务、记忆、日志全部清空）。
 
 ## 测试
 
@@ -208,23 +205,4 @@ data/
 python -m pytest tests -v
 ```
 
-覆盖：记忆树存储、任务库 CRUD、agent 生成管线（mock 驱动建任务→拆解→勾选闭环）、心跳护栏与启动静默、免打扰、buffer 重启恢复、HTTP 全端点集成、语音合成/识别、事件 drain。全部测试 mock LLM + tmp_path 隔离，不调真实 API、不写真实数据。
-
-## 架构
-
-```
-后端（Python, http://127.0.0.1:18771）
-  server.py        ThreadingHTTPServer + JSON 端点（/chat /dequeue /settings /tts/* …）
-  session.py       PlannerSession：并发、调度线程、事件队列、免打扰
-  agent.py         create_agent 构建（LangGraph，无 checkpointer）
-  middleware.py    业务中间件链（免打扰/计划快照/玩家优先/压缩记忆树/调用上限）
-  tools.py         工具注册：create_task / break_down_task / continue_speaking /
-                   heartbeat / web_search / capture_screen …
-  tts.py / asr.py / ocr.py   本地语音合成 / 识别 / 图片文字识别
-  memory/          SQLite 分层摘要记忆树
-  store/           任务/计划/待办库（SQLite）
-前端（Electron）
-  main.js          主进程：悬浮球窗口 + 面板窗口、托盘、HTTP 代理（渲染进程直连被
-                   CORS/PNA 拦截，全部请求走主进程转发）
-  renderer/        悬浮球（bubble）与面板（index）页面、设置窗口
-```
+覆盖：记忆树存储、任务库 CRUD、agent 生成管线（mock 驱动任务闭环）、心跳护栏与启动静默、免打扰、buffer 重启恢复、HTTP 端点集成、语音合成/识别、事件消费。全部测试以 mock LLM + tmp_path 隔离，不调用真实 API、不写入真实数据。
