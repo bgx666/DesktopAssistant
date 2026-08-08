@@ -49,8 +49,8 @@ PLANNER_DND_END_HOUR: int = int(os.getenv("PLANNER_DND_END_HOUR", "8"))
 PLANNER_MORNING_HOUR: int = int(os.getenv("PLANNER_MORNING_HOUR", "8"))
 PLANNER_EVENING_HOUR: int = int(os.getenv("PLANNER_EVENING_HOUR", "21"))
 
-# 语音合成（DashScope Qwen-Audio-TTS/CosyVoice，整句合成）
-# PLANNER_TTS_API_KEY 缺省时回退 DASHSCOPE_API_KEY；两者都无 → 语音关闭
+# 语音合成（本地 Kokoro-82M-zh 默认；PLANNER_TTS_ENGINE=cloud 时用 DashScope）
+PLANNER_TTS_ENGINE: str = os.getenv("PLANNER_TTS_ENGINE", "local").strip().lower()
 PLANNER_TTS_API_KEY: str = os.getenv(
     "PLANNER_TTS_API_KEY", os.getenv("DASHSCOPE_API_KEY", "")).strip()
 PLANNER_TTS_MODEL: str = os.getenv("PLANNER_TTS_MODEL", "qwen-audio-3.0-tts-flash")

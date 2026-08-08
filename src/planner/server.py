@@ -99,10 +99,10 @@ class _Handler(BaseHTTPRequestHandler):
             # 动态待办队列（按紧急度排序）
             self._send_json({"ok": True, "queue": self.session.db.list_pending()})
         elif path.startswith("/tts/"):
-            # 合成音频下载（仅限 tts 目录内的 32 位 hex + .mp3，防路径穿越）
+            # 合成音频下载（仅限 tts 目录内的 32 位 hex + .mp3/.wav，防路径穿越）
             name = path[len("/tts/"):]
             import re as _re
-            if not _re.fullmatch(r"[0-9a-f]{32}\.mp3", name):
+            if not _re.fullmatch(r"[0-9a-f]{32}\.(mp3|wav)", name):
                 self._send_json({"ok": False, "error": "not_found"}, status=404)
                 return
             audio_file = self.session.tts.tts_dir / name
@@ -111,7 +111,8 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             body = audio_file.read_bytes()
             self.send_response(200)
-            self.send_header("Content-Type", "audio/mpeg")
+            content_type = ("audio/wav" if name.endswith(".wav") else "audio/mpeg")
+            self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()

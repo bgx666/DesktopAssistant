@@ -19,6 +19,9 @@ dependencies = [
     "mss>=10",
     "pymupdf",
     "python-docx",
+    "kokoro-onnx>=0.5.0",
+    "misaki[zh]>=0.8.2",
+    "soundfile",
 ]
 
 [project.optional-dependencies]

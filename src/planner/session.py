@@ -72,12 +72,13 @@ class PlannerSession:
         self.db = TasksDb(self.data_root / "planner.db")
         self.memory_tree: SQLiteMemoryTree | None = None
 
-        # 语音合成（整句，只读气泡；未配置 key 时静默关闭）
+        # 语音合成（本地 Kokoro 默认；云引擎需配置 key）
         self.tts = TtsClient(
-            _config.PLANNER_TTS_API_KEY,
-            _config.PLANNER_TTS_MODEL,
-            _config.PLANNER_TTS_VOICE,
             self.data_root,
+            engine=_config.PLANNER_TTS_ENGINE,
+            api_key=_config.PLANNER_TTS_API_KEY,
+            model=_config.PLANNER_TTS_MODEL,
+            voice=_config.PLANNER_TTS_VOICE if _config.PLANNER_TTS_ENGINE == "cloud" else "zf_001",
         )
 
         # 语音输入（SenseVoiceSmall-onnx 本地识别；依赖缺失时静默关闭）
@@ -266,8 +267,10 @@ class PlannerSession:
         """完整文本收束后后台合成语音（气泡朗读）。
 
         只发 audio 事件，播放与否由主进程按面板状态决定（悬浮球形态才播）；
-        失败/未配置 key 静默忽略，不影响生成。
+        失败/未配置 key 静默忽略，不影响生成。mock 模式不合成（测试/演示）。
         """
+        if self.mock:
+            return
         if not getattr(self, "tts", None) or not self.tts.enabled:
             return
         if not text or not str(text).strip():
