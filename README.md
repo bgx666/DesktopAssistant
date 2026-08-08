@@ -2,21 +2,21 @@
 
 「小助」是驻留在桌面悬浮窗里的学习/工作助理 Agent。它不只是记录待办：你告诉它目标，它帮你**拆解成阶段和逐日计划**、**安排每天做什么**、**主动回访进度**并**动态调整排期**。所有对话会被压缩进**分层摘要记忆树**长期保存，它能翻出几周前你随口说的决定。
 
-- 后端：Python + LangChain（`create_agent` + 中间件链），深度借鉴同机项目「小b」（`D:\xiaob`）的记忆树与「丫丫」（`D:\xiaob\unity\yaya\backend`）的 LangGraph 化 ReAct 模式
+- 后端：Python + LangChain（`create_agent` + 中间件链），深度借鉴同机项目「小b」的记忆树与「丫丫」的 LangGraph 化 ReAct 模式
 - 前端：Electron 悬浮球（桌面常驻小球，点击弹出对话面板、点击其他位置自动收起；可拖拽、右键菜单、自动拉起后端）
 - 记忆：独立实现的 SQLite 分层摘要记忆树（`src/planner/memory/`，与 xiaob 同构，不 import xiaob）
 
 ## 运行
 
 ```bash
-# 后端（真实 LLM 模式，从 D:\xiaob\.env 读 LLM_API_KEY，默认 DeepSeek）
-cd D:\xiaob\planner
-D:\Miniconda3\python.exe -m pip install -e .          # 首次
-D:\Miniconda3\python.exe -m planner                   # http://127.0.0.1:18771
+# 后端（真实 LLM 模式：从仓库根 .env 或 LLM_API_KEY 环境变量读取，默认 DeepSeek）
+cd planner
+python -m pip install -e .          # 首次
+python -m planner                   # http://127.0.0.1:18771
 
 # Mock 模式（脚本化假 LLM，不调真实 API，可完整演示建任务→拆解→勾选链路）
 set PLANNER_MOCK_LLM=1
-D:\Miniconda3\python.exe -m planner
+python -m planner
 
 # 前端悬浮窗（自动拉起后端；后端已跑会直接复用）
 cd frontend
@@ -28,8 +28,8 @@ npm start
 
 日常使用时**不要**在开发目录跑，用发版产物：
 
-1. 双击 `D:\xiaob\planner-release\start.bat`（独立 venv + 独立数据目录 `planner-release\data`，记忆/任务与开发互不影响）
-2. 每次开发完成后发版：`D:\xiaob\planner\build.bat`（或 `powershell -File build.ps1`），自动复制代码、生成 `start.bat`、打 `git tag vX.Y.Z`
+1. 双击仓库旁 `planner-release\start.bat`（独立 venv + 独立数据目录 `planner-release\data`，记忆/任务与开发互不影响）
+2. 每次开发完成后发版：`build.bat`（或 `powershell -File build.ps1`），自动复制代码、生成 `start.bat`、打 `git tag vX.Y.Z`
 3. 回滚 = `git checkout 旧tag` 后重跑 build.ps1（数据在 release `data\`，不受影响）
 4. 开发版（18771）与 release 版（18772）**可同时运行**：端口/URL/userData 全隔离
 
@@ -54,7 +54,7 @@ npm start
 
 ```
 src/planner/
-  config.py        环境配置（PLANNER_PORT/MOCK/DND 窗口/心跳护栏；.env 本地优先，其次 D:\xiaob\.env）
+  config.py        环境配置（PLANNER_PORT/MOCK/DND 窗口/心跳护栏；.env 本地优先，其次共享 .env）
   server.py        ThreadingHTTPServer + 契约端点（HTTP/1.0，规避 Windows 10053）
   session.py       PlannerSession：并发（chat_lock/buffer_lock/_inbox）、调度线程、事件队列、DND
   agent.py         create_agent 构建（LangGraph，无 checkpointer——DeepSeek 400 坑）
@@ -85,7 +85,7 @@ tests/            pytest（全部 mock LLM + tmp_path 隔离）
 | `PLANNER_DND_START_HOUR` / `END_HOUR` | `22` / `8` | 默认免打扰窗口 |
 | `PLANNER_MORNING_HOUR` / `EVENING_HOUR` | `8` / `21` | 定时触发点 |
 | `PLANNER_FALLBACK_MINUTES` | `60` | LLM 忘调 heartbeat 的兜底间隔 |
-| `LLM_*` | DeepSeek | 复用 D:\xiaob\.env 的 LLM 配置 |
+| `LLM_*` | DeepSeek | 复用共享 .env 的 LLM 配置 |
 
 ## 数据落盘（git 忽略）
 
@@ -120,8 +120,8 @@ data/
 ## 测试
 
 ```bash
-cd D:\xiaob\planner
-D:\Miniconda3\python.exe -m pytest tests -v
+cd planner
+python -m pytest tests -v
 ```
 
 覆盖：记忆树存储、任务库 CRUD、agent 生成管线（mock 驱动建任务→拆解→勾选闭环）、

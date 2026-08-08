@@ -2,29 +2,29 @@
 
 ## 项目身份
 
-独立仓库（`D:\xiaob\planner`，不随 xiaob 主仓库提交）。Python 后端（LangChain create_agent + 中间件链）+ Electron 悬浮球前端。单机运行，SQLite 存储，无外部服务依赖。数据在 `data/`（git 忽略）。
+独立仓库（本仓库，不随 xiaob 主仓库提交）。Python 后端（LangChain create_agent + 中间件链）+ Electron 悬浮球前端。单机运行，SQLite 存储，无外部服务依赖。数据在 `data/`（git 忽略）。
 
 ## 命令
 
 | 操作 | 命令 |
 |------|------|
-| 可编辑安装 | `D:\Miniconda3\python.exe -m pip install -e .` |
-| 启动后端 | `D:\Miniconda3\python.exe -m planner` → http://127.0.0.1:18771 |
+| 可编辑安装 | `python -m pip install -e .` |
+| 启动后端 | `python -m planner` → http://127.0.0.1:18771 |
 | Mock 模式 | `set PLANNER_MOCK_LLM=1` 后再启动 |
 | 前端 | `cd frontend && npm start`（自动拉起后端） |
-| 运行测试 | `D:\Miniconda3\python.exe -m pytest tests/ -v`（pytest，mock LLM，tmp_path 隔离） |
+| 运行测试 | `python -m pytest tests/ -v`（pytest，mock LLM，tmp_path 隔离） |
 
-LLM 配置走 `.env` / `D:\xiaob\.env`：`LLM_API_KEY` 必填，默认 DeepSeek。
+LLM 配置走仓库根 `.env`（或共享 `.env`）：`LLM_API_KEY` 必填，默认 DeepSeek。
 
 ## 发版（开发/使用分离）
 
-- **开发目录** `D:\xiaob\planner`（本仓库）：AI 改代码、跑测试；用户日常**不使用**开发目录
-- **使用目录** `D:\xiaob\planner-release`（独立数据 `data/`、独立 venv，git 不追踪）：用户日常用
+- **开发目录**（本仓库）：AI 改代码、跑测试；用户日常**不使用**开发目录
+- **使用目录** `planner-release`（仓库旁，独立数据 `data/`、独立 venv，git 不追踪）：用户日常用
 - 发版 = 开发完成后：`git commit`（工作区必须干净）→ 运行 `build.ps1`（或双击 `build.bat`）：
   自动 `vX.Y.Z` patch+1（可 `-Version` 手动）→ `robocopy /MIR` 复制 `src/`+`frontend/`（排除 node_modules）
   → venv 首次创建 + `pip install -e app`（可编辑，之后复制代码即生效）→ 首次 `npm install`
   → 首次迁移开发 `data/` 到 release → `git tag` + 生成 `start.bat`
-- 用户日常：双击 `D:\xiaob\planner-release\start.bat`（`PLANNER_PYTHON`=venv、`PLANNER_DATA_ROOT`=release data、`PLANNER_PORT`=18772、
+- 用户日常：双击 `planner-release\start.bat`（`PLANNER_PYTHON`=venv、`PLANNER_DATA_ROOT`=release data、`PLANNER_PORT`=18772、
   `PLANNER_URL`、`PLANNER_USER_DATA` 均注入，main.js/config 已支持环境变量）
 - 开发版（18771）与 release 版（18772）**可同时运行**：端口/URL/userData 全部隔离，互不抢占
 
@@ -52,12 +52,12 @@ userData、临时文件、端口）都必须经 `PLANNER_*` 环境变量注入 r
   ```
   - release 链路验证：`powershell -File tests\e2e_release.ps1`（内置隔离 + mock + 自动清理）
   - 真实 LLM 联调：`tests\live_check.py`（**永远 spawn 独立后端** 18773 + 隔离数据，不探测现有后端）
-- 启动后端/Electron 时继承该环境变量；测试完杀进程。**真实用户对话、记忆树、任务只存在于 release `D:\xiaob\planner-release\data`（或迁移前的开发目录 `data/`），验证脚本一律不许触碰；用户日常使用只走 `start.bat`。**
+- 启动后端/Electron 时继承该环境变量；测试完杀进程。**真实用户对话、记忆树、任务只存在于 release `planner-release\data`（或迁移前的开发目录 `data/`），验证脚本一律不许触碰；用户日常使用只走 `start.bat`。**
 - 深夜晚间（22:00-08:00）默认 DND 窗口会拦截心跳/自主生成——测试 nudge/心跳前先 `POST /dnd {"enabled": false}`。
 - Windows 端口复用坑：残留旧后端进程可能占着 18771（含真实模式），测试前 `Get-Process python | Stop-Process -Force` 清理。
 
 ### 架构要点
-- 记忆树：`memory/sqlite_memory_tree.py`（分层摘要树：叶子压缩 + 向上递归，阈值 60/20/6/3）；压缩输出 `MemoryNodeOutput`（summary + profile 画像四维度 + future_notes + meta.schema_version），pydantic 结构化 + 降级解析
+- 记忆树：`memory/sqlite_memory_tree.py`（分层摘要树：叶子压缩 + 向上递归，阈值 8 / 4 合 1，节点含时间范围）；压缩输出 `MemoryNodeOutput`（summary + profile 画像四维度 + future_notes + meta.schema_version），pydantic 结构化 + 降级解析
 - 节点字段演进：结构字段留列、内容字段进 JSON（profile/details/meta），加/删字段改 pydantic + 提示词即可，存储零迁移
 - 对话 buffer：内存 → 每次生成结束持久化到 memory_tree.db 的 buffer_state（重启恢复）
 - 全局状态用访问器：`game_state` 模式（session 状态机 `hidden → morphing_in → shown → morphing_out`）
