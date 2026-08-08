@@ -76,7 +76,8 @@ def save_settings(data_root: Path, updates: dict) -> dict:
                 raise ValueError(f"{k} 需在 {lo}~{hi} 之间")
             merged[k] = num
         else:
-            merged[k] = str(v or "")
+            # 布尔字段保真（tts_enabled）；其余字符串化（空值归一为 ""）
+            merged[k] = v if isinstance(v, bool) else str(v or "")
     # 交叉约束：keep < trigger；factor < threshold
     if merged["compress_keep"] >= merged["compress_trigger"]:
         raise ValueError("压缩后保留条数必须小于触发条数")

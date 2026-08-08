@@ -33,6 +33,15 @@ def test_unknown_keys_ignored(data_root):
     assert merged["press_ms"] == 300
 
 
+def test_tts_enabled_bool_roundtrip(data_root):
+    """布尔开关保真：false 不能存成 ""（曾致关闭后重开仍显示启用）。"""
+    merged = settings_mod.save_settings(data_root, {"tts_enabled": False})
+    assert merged["tts_enabled"] is False
+    assert settings_mod.load_settings(data_root)["tts_enabled"] is False
+    merged = settings_mod.save_settings(data_root, {"tts_enabled": True})
+    assert merged["tts_enabled"] is True
+
+
 def test_corrupted_file_falls_back(data_root, monkeypatch):
     p = settings_mod.settings_path(data_root)
     p.parent.mkdir(parents=True, exist_ok=True)
