@@ -209,11 +209,12 @@ def build_tools(session) -> list[BaseTool]:
 
     @tool(parse_docstring=True)
     def continue_speaking() -> str:
-        """需要分点、分段继续描述时调用本工具：每调用一次，接着说下一点。
+        """需要分点、分段描述时调用本工具：每调用一次，会暂停片刻，然后继续说下一点（一句一句地说）。
 
-        用法：每说一点之前调用一次，说完这一点、还想继续说下一点时再调用；
+        用法：每说一点之前调用一次；说完这一点、还想继续说下一点时再调用。
         所有点都说完了就不要再调用，正常收尾（如调用 heartbeat 结束本轮）。
         不要为了一句普通的话调用它。"""
+        session.pause_before_continue()
         return "（收到，继续。请接着说下一点。）"
 
     @tool(parse_docstring=True)

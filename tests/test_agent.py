@@ -248,9 +248,12 @@ def test_player_message_does_not_reset_heartbeat(data_root):
         s.close()
 
 
-def test_continue_speaking_tool(data_root):
-    """continue_speaking：分点描述时每调用一次继续说下一点（循环不退出）；
-    且该工具不产生前端工具卡片（连续说话视觉）。"""
+def test_continue_speaking_tool(data_root, monkeypatch):
+    """continue_speaking：分点描述时每调用一次暂停片刻再说下一点（循环不退出）；
+    暂停时长 = 2s + 每 10 字 +1s（上限 10s）；且该工具不产生前端工具卡片。"""
+    import planner.session as session_mod
+    pauses = []
+    monkeypatch.setattr(session_mod.time, "sleep", lambda s: pauses.append(s))
     s = PlannerSession(data_root, mock=True)
     try:
         _drive_generation(s, "帮我分点描述一下学习计划")
@@ -263,6 +266,9 @@ def test_continue_speaking_tool(data_root):
         assert any(getattr(m, "type", None) == "tool"
                    and getattr(m, "name", "") == "continue_speaking"
                    for m in s.recent_buffer)
+        # 暂停过（时长按公式：2s 基础 + 上段字数/10，封顶 10s）
+        assert pauses, "应触发暂停"
+        assert all(2.0 <= p <= 10.0 for p in pauses), f"暂停时长应在 2~10s，实际 {pauses}"
         # 不产生前端工具卡片事件
         events = s.drain_events()
         calls = [e for e in events if e["type"] == "tool_call"]

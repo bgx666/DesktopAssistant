@@ -103,6 +103,7 @@ class PlannerSession:
         self._generating: bool = False
         self._inbox: list[BaseMessage] = []
         self.pending_response: bool = False
+        self._last_text_len: int = 0   # 最近一轮模型文本长度（continue 分段暂停用）
         self.current_trigger: str = "player"   # player | heartbeat | scheduled | nudge
 
         # 对外状态
@@ -298,6 +299,15 @@ class PlannerSession:
             str(text),
             lambda url: url and self.push_event({"type": "audio", "url": url}),
         )
+
+    def pause_before_continue(self) -> None:
+        """continue_speaking 分段：按上段文本长度暂停，让回复一句一句出现。
+
+        公式：基础 2 秒 + 每 10 字 +1 秒（上限 10 秒，防呆）。
+        """
+        secs = min(10.0, 2.0 + (self._last_text_len or 0) / 10.0)
+        _logger.info("[continue] 暂停 %.1f 秒（上段 %d 字）", secs, self._last_text_len or 0)
+        time.sleep(secs)
 
     def push_log(self, text: str) -> None:
         self.push_event({"type": "log", "text": text})
@@ -1049,6 +1059,7 @@ class PlannerSession:
                     # 每轮模型文本收束 → 完整文本事件（气泡 toast 用）
                     if current_chunks:
                         full_text = "".join(current_chunks)
+                        self._last_text_len = len(full_text)   # continue 分段暂停按此计算
                         self.push_text(full_text)
                         self._save_log("assistant", full_text)
                         self._maybe_speak(full_text)
