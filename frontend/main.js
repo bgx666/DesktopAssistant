@@ -694,7 +694,17 @@ function openSettings() {
     });
     settingsWin.once('ready-to-show', () => {
       logSettingsDebug('ready-to-show，显示窗口');
-      if (settingsWin && !settingsWin.isDestroyed()) settingsWin.show();
+      if (settingsWin && !settingsWin.isDestroyed()) {
+        settingsWin.show();
+        settingsWin.center();        // 强制居中当前主屏
+        settingsWin.moveTop();       // 置顶
+        settingsWin.focus();
+        try {
+          const b = settingsWin.getBounds();
+          const displays = screen.getAllDisplays().length;
+          logSettingsDebug(`窗口位置 ${JSON.stringify(b)} 可见=${settingsWin.isVisible()} 屏数=${displays}`);
+        } catch (e2) { logSettingsDebug('位置日志失败: ' + e2); }
+      }
     });
     settingsWin.loadFile(path.join(__dirname, 'renderer', 'settings.html'));
     settingsWin.on('closed', () => { settingsWin = null; });
