@@ -60,6 +60,20 @@
       undo.textContent = '撤销';
       undo.title = '撤回这条消息及其之后的对话，内容恢复到输入框';
       undo.addEventListener('click', async () => {
+        // 两段式确认：第一次点击进入"确认撤销？"，3 秒内再点才执行
+        if (undo.dataset.confirm !== '1') {
+          undo.dataset.confirm = '1';
+          undo.textContent = '确认撤销？';
+          undo.classList.add('confirm');
+          clearTimeout(undo._confirmTimer);
+          undo._confirmTimer = setTimeout(() => {
+            delete undo.dataset.confirm;
+            undo.textContent = '撤销';
+            undo.classList.remove('confirm');
+          }, 3000);
+          return;
+        }
+        clearTimeout(undo._confirmTimer);
         undo.disabled = true;
         try {
           const r = await post('/undo', { msg_id: msgId });

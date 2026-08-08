@@ -395,6 +395,14 @@ body.drop-overlay::after {
 .undo-btn:hover { opacity: 1; }
 .undo-btn:hover { color: var(--danger); background: rgba(255, 107, 129, 0.10); }
 .undo-btn:disabled { opacity: 0.3; cursor: default; }
+/* 确认撤销态：红色高亮，醒目提示再次点击才执行 */
+.undo-btn.confirm {
+  opacity: 1;
+  color: #fff;
+  background: #e5484d;
+  font-weight: 700;
+  box-shadow: 0 2px 8px rgba(229, 72, 77, 0.4);
+}
 @keyframes msgIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 #input-bar {
   display: flex;
