@@ -350,10 +350,14 @@
     if (!url) return;
     try {
       const fileUrl = await window.planner.audioFile(url);
-      if (!fileUrl) return;
+      if (!fileUrl) { window.planner.reportLog('tts(bubble): audioFile null'); return; }
       ttsAudio.src = fileUrl;
       ttsAudio.onended = () => ttsAudio.removeAttribute('src');
       await ttsAudio.play();
-    } catch (e) { console.error('[tts] 气泡播放失败:', e); }
+      window.planner.reportLog('tts(bubble): play OK ' + fileUrl);
+    } catch (e) {
+      window.planner.reportLog('tts(bubble): play FAIL ' + e.name + ' ' + e.message);
+      console.error('[tts] 气泡播放失败:', e);
+    }
   });
 })();

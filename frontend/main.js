@@ -637,6 +637,9 @@ function toggleDndFromMain() {
 }
 
 // ── IPC：渲染进程 ↔ 主进程 ──────────────────────────────────
+// 渲染进程日志（诊断播放链路；start.bat 窗口可见）
+ipcMain.on('renderer-log', (e, msg) => console.log('[renderer]', msg));
+
 // ── 渲染进程 HTTP 代理 ────────────────────────────────
 // Electron 37 起 file:// 页面直连 127.0.0.1 被 CORS/PNA 全拦（GET/POST 均 Failed to fetch），
 // 渲染进程所有后端请求统一走主进程（无此限制）。
@@ -664,8 +667,10 @@ ipcMain.handle('api-audio', async (e, reqPath) => {
     fs.mkdirSync(dir, { recursive: true });
     const file = path.join(dir, name);
     fs.writeFileSync(file, buf);
-    return 'file:///' + file.replace(/\\/g, '/');
-  } catch { return null; }
+    const fileUrl = 'file:///' + file.replace(/\\/g, '/');
+    console.log('[tts] audioFile:', name, buf.length, 'bytes ->', fileUrl);
+    return fileUrl;
+  } catch (err) { console.log('[tts] audioFile FAIL:', name, err.message); return null; }
 });
 
 // 全局挂载文件（拖拽上传）：主进程单点持有，两窗口（悬浮球/面板）共享，

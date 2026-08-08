@@ -622,13 +622,19 @@
   async function playAudioUrl(url) {
     if (!url) return false;
     try {
+      const t0 = Date.now();
       const fileUrl = await window.planner.audioFile(url);
-      if (!fileUrl) return false;
+      if (!fileUrl) { window.planner.reportLog('tts: audioFile null for ' + url); return false; }
       ttsAudio.src = fileUrl;
       ttsAudio.onended = () => ttsAudio.removeAttribute('src');
       await ttsAudio.play();
+      window.planner.reportLog('tts: play OK ' + fileUrl + ' (' + (Date.now() - t0) + 'ms)');
       return true;
-    } catch (e) { console.error('[tts] 播放失败:', e); return false; }
+    } catch (e) {
+      window.planner.reportLog('tts: play FAIL ' + e.name + ' ' + e.message + ' src=' + ttsAudio.src);
+      console.error('[tts] 播放失败:', e);
+      return false;
+    }
   }
 
   // 自动朗读（audio 事件）
