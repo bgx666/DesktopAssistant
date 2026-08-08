@@ -637,8 +637,15 @@ function toggleDndFromMain() {
 }
 
 // ── IPC：渲染进程 ↔ 主进程 ──────────────────────────────────
-// 渲染进程日志（诊断播放链路；start.bat 窗口可见）
-ipcMain.on('renderer-log', (e, msg) => console.log('[renderer]', msg));
+// 主进程诊断日志：console 同时落盘（userData/app.log，无终端窗口也能排查）
+const APP_LOG_FILE = path.join(app.getPath('userData'), 'app.log');
+function appLog(msg) {
+  try { fs.appendFileSync(APP_LOG_FILE, `${new Date().toISOString()} ${msg}\n`); } catch { /* 忽略 */ }
+  console.log(msg);
+}
+
+// 渲染进程日志（诊断播放链路）
+ipcMain.on('renderer-log', (e, msg) => appLog('[renderer] ' + msg));
 
 // ── 渲染进程 HTTP 代理 ────────────────────────────────
 // Electron 37 起 file:// 页面直连 127.0.0.1 被 CORS/PNA 全拦（GET/POST 均 Failed to fetch），
@@ -668,9 +675,9 @@ ipcMain.handle('api-audio', async (e, reqPath) => {
     const file = path.join(dir, name);
     fs.writeFileSync(file, buf);
     const fileUrl = 'file:///' + file.replace(/\\/g, '/');
-    console.log('[tts] audioFile:', name, buf.length, 'bytes ->', fileUrl);
+    appLog('[tts] audioFile: ' + name + ' ' + buf.length + ' bytes -> ' + fileUrl);
     return fileUrl;
-  } catch (err) { console.log('[tts] audioFile FAIL:', name, err.message); return null; }
+  } catch (err) { appLog('[tts] audioFile FAIL: ' + name + ' ' + err.message); return null; }
 });
 
 // 全局挂载文件（拖拽上传）：主进程单点持有，两窗口（悬浮球/面板）共享，
