@@ -43,6 +43,7 @@ _TZ = timezone(timedelta(hours=8))
 FALLBACK_HEARTBEAT_MINUTES = _config.PLANNER_FALLBACK_MINUTES
 MAX_WORKER_ROUNDS = 3            # 生成期间到达的新消息最多再补 N 轮
 DEFAULT_WAKE_MINUTES = 30        # 首次启动/未调度时的默认唤醒间隔
+STARTUP_GRACE_SECONDS = 120      # 启动宽限期：打开后 2 分钟内不自动说话（心跳/逾期都不触发）
 
 # 心跳节奏：分钟级定时任务（一人一句，无秒级短心跳）
 # - 用户说话后不重置心跳（保持原定时，AI 不主动插话）
@@ -122,6 +123,7 @@ class PlannerSession:
         self._activity: str = ""
         self._heartbeat_thread: threading.Thread | None = None
         self._stop_event = threading.Event()
+        self._started_at = time.time()   # 启动宽限期起点（打开后 2 分钟不自动说话）
         self._wake_event = threading.Event()
 
         # 最后活动时间（epoch 秒，持久化）：程序关闭期间的离线时长据此补回归问候
@@ -612,10 +614,10 @@ class PlannerSession:
             self._last_player_message_at = datetime.fromtimestamp(ts, tz=_TZ)
 
     def _check_startup_heartbeat(self) -> None:
-        """启动时心跳已到期 → 立即补一次自主生成（剩余时间跨重启扣减）。
+        """启动时心跳已到期 → 不立即说话，顺延到下一周期（打开时静默）。
 
-        心跳到期时刻持久化：退出期间流逝的时间自动计入，重启后剩余时间
-        即为原剩余扣减离线时长；离线超过剩余时间（已到期）则启动即补唤醒。
+        原设计是"离线期间到点 → 启动补一次自主生成"，用户反馈打开就说话
+        太突兀——改为：到期只重新安排保底调度，绝不启动即生成。
         """
         if self._next_heartbeat_at <= 0:
             return
@@ -625,21 +627,10 @@ class PlannerSession:
         minutes = self._heartbeat_minutes or FALLBACK_HEARTBEAT_MINUTES
         note = self._heartbeat_note
         self._heartbeat_note = ""
-        if self.in_dnd():
-            # 与运行中心跳一致的统一语义：免打扰时段顺延（无任何时段特判）
-            _logger.info("[heartbeat] 启动时心跳到期遇免打扰，顺延")
-            self.schedule_heartbeat(minutes, note)
-            self._save_buffer_state()
-            return
-        _logger.info("[heartbeat] 启动时心跳已到期，触发")
-        # 先落保底调度（生成中 LLM 覆盖），防止中断/退出导致 next=0 落盘；
-        # 保底沿用原心跳间隔
+        _logger.info("[heartbeat] 启动时心跳已到期，顺延 %s（打开时静默不触发）",
+                     self._fmt_duration(minutes))
         self.schedule_heartbeat(minutes, note)
-        self._save_buffer_state()   # 立即落盘：退出/中断后重开恢复新计时而非旧值
-        text = (f"（系统：定时任务到点，主动和用户说说话。{note + '。' if note else ''}"
-                f"可以看看用户的任务进度，提醒用户该做的事，说说你的想法。）")
-        self._receive(text, trigger=True)
-        self._spawn_worker("heartbeat")
+        self._save_buffer_state()
 
     # ── 异步压缩（后台线程，不阻塞生成）──────────────────────
 
@@ -740,31 +731,29 @@ class PlannerSession:
             self._heartbeat_thread.join(timeout=2)
 
     def _schedule_loop(self) -> None:
-        """调度线程主循环：heartbeat 到点 + 定时触发点（早晨/晚间/逾期）。"""
-        last_morning = ""
-        last_evening = ""
+        """调度线程主循环：heartbeat 到点 + 逾期检查（启动宽限期内全部静默）。
+
+        启动宽限期（STARTUP_GRACE_SECONDS）内不触发任何自主行为——
+        定时唤醒/逾期提醒都不做，避免"一打开小助就说话"的突兀感。
+        """
         while not self._stop_event.is_set():
-            now = _now()
-            # 定时触发点（每天一次，跨天重置）
-            today = now.strftime("%Y-%m-%d")
-            if now.hour == _config.PLANNER_MORNING_HOUR and last_morning != today:
-                last_morning = today
-                self._fire_scheduled(f"（系统：现在是早上 {now.strftime('%H:%M')}，新的一天开始了。看看用户的待办队列，主动安排一下接下来做什么。）")
-            if now.hour == _config.PLANNER_EVENING_HOUR and last_evening != today:
-                last_evening = today
-                self._fire_scheduled(f"（系统：现在是晚上 {now.strftime('%H:%M')}，回顾一下用户今天做了什么，没做的提醒用户，调整接下来的安排。）")
-            # 逾期检查（每 10 分钟一次，避免重复轰炸）
-            if now.minute % 10 == 0:
-                self._check_overdue()
-            # 心跳到点
-            with self.buffer_lock:
-                next_at = self._next_heartbeat_at
-                phase_ok = True
-            if next_at > 0 and time.time() >= next_at:
-                self._fire_heartbeat()
+            if not self._in_startup_grace():
+                now = _now()
+                # 逾期检查（每 10 分钟一次，避免重复轰炸）
+                if now.minute % 10 == 0:
+                    self._check_overdue()
+                # 心跳到点
+                with self.buffer_lock:
+                    next_at = self._next_heartbeat_at
+                if next_at > 0 and time.time() >= next_at:
+                    self._fire_heartbeat()
             self._maybe_compress_async()   # 达到阈值 → 后台压缩（不阻塞）
             self._wake_event.wait(timeout=5)
             self._wake_event.clear()
+
+    def _in_startup_grace(self) -> bool:
+        """启动宽限期：启动后 STARTUP_GRACE_SECONDS 秒内不触发自主行为。"""
+        return time.time() - self._started_at < STARTUP_GRACE_SECONDS
 
     def _fire_heartbeat(self) -> None:
         with self.chat_lock:
@@ -796,17 +785,6 @@ class PlannerSession:
                     f"可以看看用户的任务进度，提醒用户该做的事，说说你的想法。）")
             self._receive(text, trigger=True)
             self._spawn_worker("heartbeat")
-
-    def _fire_scheduled(self, text: str) -> None:
-        if self.in_dnd():
-            return
-        with self.chat_lock:
-            with self.buffer_lock:
-                if self._generating:
-                    return
-            _logger.info("[scheduled] 定时触发: %s", text[:40])
-            self._receive(text, trigger=True)
-            self._spawn_worker("scheduled")
 
     def _check_overdue(self) -> None:
         """逾期任务检查（每天至多提醒一次，去重用集合）。"""

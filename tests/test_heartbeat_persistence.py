@@ -28,8 +28,8 @@ def test_heartbeat_persists_across_restart(data_root, monkeypatch):
         s2.close()
 
 
-def test_heartbeat_expired_while_offline_triggers_on_start(data_root, monkeypatch):
-    """离线期间心跳已到期 → 重启立即补一次自主生成。"""
+def test_heartbeat_expired_while_offline_defers_on_start(data_root, monkeypatch):
+    """离线期间心跳已到期 → 重启不立即说话，顺延到下一周期（打开时静默）。"""
     calls = []
     monkeypatch.setattr(PlannerSession, "_spawn_worker", lambda self, t: calls.append(t))
     s1 = PlannerSession(data_root, mock=True)
@@ -42,11 +42,11 @@ def test_heartbeat_expired_while_offline_triggers_on_start(data_root, monkeypatc
 
     s2 = PlannerSession(data_root, mock=True)
     try:
-        assert calls == ["heartbeat"], f"到期应触发: {calls}"
+        assert calls == [], f"启动不应补触发: {calls}"
+        assert s2._next_heartbeat_at > time.time(), "到期应顺延到未来"
         content = "\n".join(
             m.content for m in s2.recent_buffer if getattr(m, "type", "") == "human")
-        assert "定时任务到点" in content, "补唤醒文案应是指令式而非角色扮演"
-        assert "你醒" not in content, "不应出现'你醒了'这类角色扮演文案"
+        assert "定时任务到点" not in content, "启动不应生成任何内容"
     finally:
         s2.close()
 
@@ -67,24 +67,16 @@ def test_heartbeat_expired_in_dnd_deferred(data_root, monkeypatch):
         s.close()
 
 
-def test_startup_trigger_ignores_dnd(data_root, monkeypatch):
-    """启动补唤醒忽略免打扰：用户主动启动程序 = 人在场，到期即补唤醒。"""
-    calls = []
-    monkeypatch.setattr(PlannerSession, "_spawn_worker", lambda self, t: calls.append(t))
-    monkeypatch.setattr(PlannerSession, "in_dnd", lambda self, at=None: True)
-    s1 = PlannerSession(data_root, mock=True)
+def test_startup_grace_window(data_root):
+    """启动宽限期：打开后 STARTUP_GRACE_SECONDS 内不自动说话（_in_startup_grace）。"""
+    from planner.session import STARTUP_GRACE_SECONDS
+    s = PlannerSession(data_root, mock=True)
     try:
-        s1.schedule_heartbeat(1)
-        s1._next_heartbeat_at = time.time() - 60
-        s1._save_buffer_state()
+        assert s._in_startup_grace() is True, "刚启动应在宽限期内"
+        s._started_at = time.time() - (STARTUP_GRACE_SECONDS + 1)
+        assert s._in_startup_grace() is False, "宽限期过后应解除"
     finally:
-        s1.close()
-
-    s2 = PlannerSession(data_root, mock=True)   # DND 中重启
-    try:
-        assert calls == [], "DND 时启动心跳到期顺延（统一语义）"
-    finally:
-        s2.close()
+        s.close()
 
 
 def test_fire_heartbeat_leaves_scheduled_next(data_root, monkeypatch):
@@ -113,10 +105,10 @@ def test_fire_heartbeat_leaves_scheduled_next(data_root, monkeypatch):
         s2.close()
 
 
-def test_startup_trigger_keeps_original_interval(data_root, monkeypatch):
-    """启动补唤醒的保底沿用原心跳间隔（而非固定 60 分钟）。
+def test_startup_defer_keeps_original_interval(data_root, monkeypatch):
+    """启动顺延沿用原心跳间隔（而非固定 60 分钟）。
 
-    回归：短心跳（如 15 分钟）离线过期后重开，补唤醒保底应为原间隔，
+    回归：短心跳（如 15 分钟）离线过期后重开，顺延应为原间隔，
     否则显示"60 分钟后醒来"造成重置感。
     """
     calls = []
@@ -129,21 +121,21 @@ def test_startup_trigger_keeps_original_interval(data_root, monkeypatch):
     finally:
         s1.close()
 
-    s2 = PlannerSession(data_root, mock=True)        # 重启 → 补唤醒
+    s2 = PlannerSession(data_root, mock=True)        # 重启 → 顺延（不触发）
     try:
-        assert calls == ["heartbeat"], "到期应触发"
-        # 保底沿用原间隔：next ≈ now + 15 分钟（而非 60 分钟）
+        assert calls == [], "启动不应触发"
+        # 顺延沿用原间隔：next ≈ now + 15 分钟（而非 60 分钟）
         remain = s2._next_heartbeat_at - time.time()
-        assert 800 < remain < 1000, f"保底应≈原间隔 15 分钟，实际 {remain:.0f} 秒"
+        assert 800 < remain < 1000, f"顺延应≈原间隔 15 分钟，实际 {remain:.0f} 秒"
     finally:
         s2.close()
 
 
 def test_fallback_persisted_immediately(data_root, monkeypatch):
-    """触发后的保底立即落盘：退出/中断后重开恢复新计时，不再重复补唤醒。
+    """启动顺延的保底立即落盘：退出/中断后重开恢复新计时，不再重复顺延。
 
     回归：killBackend 退出不保存，若保底未落盘，重开恢复旧过期值 →
-    每次都重新补唤醒、显示固定 59 分钟（"重置感"）。
+    每次都重新顺延、显示固定 59 分钟（"重置感"）。
     """
     calls = []
     monkeypatch.setattr(PlannerSession, "_spawn_worker", lambda self, t: calls.append(t))
@@ -151,7 +143,7 @@ def test_fallback_persisted_immediately(data_root, monkeypatch):
     try:
         s1.schedule_heartbeat(1)
         s1._next_heartbeat_at = time.time() - 60     # 已过期
-        s1._check_startup_heartbeat()                # 补唤醒 → 保底应立即保存
+        s1._check_startup_heartbeat()                # 启动检查 → 顺延并立即保存
         saved_next = s1._next_heartbeat_at
         assert saved_next > time.time()
     finally:
@@ -161,7 +153,7 @@ def test_fallback_persisted_immediately(data_root, monkeypatch):
     monkeypatch.setattr(PlannerSession, "_spawn_worker", lambda self, t: calls2.append(t))
     s2 = PlannerSession(data_root, mock=True)        # 重开
     try:
-        assert calls2 == [], "保底已落盘 → 重开恢复新计时，不应再次补唤醒"
+        assert calls2 == [], "保底已落盘 → 重开恢复新计时，不应再次顺延"
         assert abs(s2._next_heartbeat_at - saved_next) < 5, "恢复的是新保底时刻"
     finally:
         s2.close()
