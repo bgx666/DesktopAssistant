@@ -63,6 +63,23 @@ def test_session_update_settings(data_root):
         s.close()
 
 
+def test_tts_settings_applied_on_startup(data_root, monkeypatch):
+    """重启场景：settings.json 里的 tts 配置（开关/音色）启动即生效——
+    曾 bug：只在保存时生效，重启后回到默认（语音莫名开启、音色丢失）。"""
+    import json
+    from planner.session import PlannerSession
+    p = settings_mod.settings_path(data_root)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps({"tts_enabled": False, "tts_voice": "zf_003"}),
+                 encoding="utf-8")
+    s = PlannerSession(data_root, mock=True)
+    try:
+        assert s.tts._enabled is False, "启动应应用 tts_enabled=false"
+        assert s.tts.voice == "zf_003", "启动应应用 tts_voice"
+    finally:
+        s.close()
+
+
 def test_compress_params_dynamic(data_root, monkeypatch):
     """压缩参数从 session.settings 动态读取（应用即生效）。"""
     from langchain_core.messages import HumanMessage

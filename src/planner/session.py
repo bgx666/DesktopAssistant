@@ -80,6 +80,14 @@ class PlannerSession:
             model=_config.PLANNER_TTS_MODEL,
             voice=_config.PLANNER_TTS_VOICE if _config.PLANNER_TTS_ENGINE == "cloud" else "zf_001",
         )
+        # 应用 settings.json 持久化的 TTS 配置（启动即生效，与保存时一致——
+        # 否则重启后音色/开关回到默认，设置形同虚设）
+        if self.settings.get("tts_voice"):
+            if self.settings["tts_voice"] in {v["id"] for v in self.tts.list_voices()}:
+                self.tts.voice = self.settings["tts_voice"]
+        if "tts_enabled" in self.settings and self.tts._engine_ok:
+            # 引擎不可用（如云引擎无 key）时保持禁用，不因默认设置开启
+            self.tts._enabled = bool(self.settings["tts_enabled"])
 
         # 语音输入（SenseVoiceSmall-onnx 本地识别；依赖缺失时静默关闭）
         self.asr = AsrClient()
