@@ -3,6 +3,7 @@
   'use strict';
 
   const $ = (sel) => document.querySelector(sel);
+  const sendBtn = $('#send');   // 发送/停止/语音 三合一按钮（模块级，多处引用）
   const state = { heartbeat: null, dnd: null, plan: null, lastPlanDate: '' };
 
   // ── HTTP（走主进程代理：file:// 页面直连被 CORS/PNA 拦）────────
@@ -172,7 +173,6 @@
     input.value = '';
     input.style.height = 'auto';             // 发送后重置高度
     syncTypingState();                       // 清空输入 → 退出"正在输入"状态
-    const sendBtn = $('#send');
     sendBtn.classList.add('stopping');       // 立即变"停止"（防快速双击重复提交）
     sendBtn.textContent = '停止';
     try {
@@ -241,33 +241,58 @@
   }
   window.planner.onMountedChanged(renderMountedBar);
 
-  // ── 语音输入（按住说话）：识别结果填入输入框 ──
-  const micBtn = $('#btn-mic');
-  let micStop = null;
-  let micActive = false;
+  // ── 语音输入（长按发送按钮）：长按录音 → 识别结果填入输入框；
+  //    短按 = 发送；生成中 = 停止。识别结果只填入输入框，不自动发送。──
+  let pressMs = 200;                     // 长按判定（复用设置里的长按时间）
   (async () => {
     try {
-      const r = await window.planner.apiFetch('/init');
-      const d = JSON.parse(r.text);
-      if (d.asr && d.asr.enabled) micBtn.classList.remove('hidden');
-    } catch { /* 后端不可用时不显示 */ }
+      const ui = await window.planner.getUiSettings();
+      if (ui && ui.press_ms != null) pressMs = ui.press_ms;
+    } catch { /* 主进程不可用用默认 */ }
   })();
-  micBtn.addEventListener('mousedown', async (e) => {
-    if (micActive) return;
-    try {
-      micStop = await window.mic.begin();
-      micActive = true;
-      micBtn.classList.add('recording');
-    } catch {
-      micBtn.title = '无法访问麦克风';
-    }
+  let pressTimer = null;
+  let micStop = null;
+  let micActive = false;
+  let longPressed = false;               // 长按结束 → 拦截随后的 click（不发送）
+  sendBtn.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return;
+    if (sendBtn.classList.contains('stopping')) return;   // 生成中长按无意义
+    longPressed = false;
+    pressTimer = setTimeout(async () => {
+      pressTimer = null;
+      longPressed = true;                // 进入录音模式，随后的 click 不再提交
+      sendBtn.classList.add('recording');
+      sendBtn.textContent = '🎤';
+      try {
+        micStop = await window.mic.begin();
+        micActive = true;
+      } catch {
+        sendBtn.classList.remove('recording');
+        sendBtn.textContent = sendBtn.classList.contains('stopping') ? '停止' : '发送';
+      }
+    }, pressMs);
   });
-  micBtn.addEventListener('mouseup', () => finishMic(false));
-  micBtn.addEventListener('mouseleave', () => finishMic(true));   // 拖开取消
+  sendBtn.addEventListener('mouseup', () => {
+    if (pressTimer) {                    // 短按：交给 click 提交
+      clearTimeout(pressTimer);
+      pressTimer = null;
+      return;
+    }
+    finishMic(false);
+  });
+  sendBtn.addEventListener('mouseleave', () => {
+    if (pressTimer) {                    // 拖开取消（未进入录音）
+      clearTimeout(pressTimer);
+      pressTimer = null;
+      return;
+    }
+    finishMic(true);                     // 录音中拖出 → 取消录音
+  });
   async function finishMic(cancel) {
     if (!micActive) return;
     micActive = false;
-    micBtn.classList.remove('recording');
+    sendBtn.classList.remove('recording');
+    sendBtn.textContent = sendBtn.classList.contains('stopping') ? '停止' : '发送';
     const stop = micStop;
     micStop = null;
     if (!stop) return;
@@ -286,10 +311,10 @@
         autoResizeInput();
         syncTypingState();
       } else {
-        micBtn.title = '识别失败（模型下载中？）';
+        addMessage('语音识别失败（模型下载中？）', 'log');
       }
     } catch {
-      micBtn.title = '识别失败（后端不可用）';
+      addMessage('语音识别失败（后端不可用）', 'log');
     }
   }
 
@@ -428,7 +453,6 @@
     $('#thinking').classList.toggle('hidden', !thinking);
     $('.dot').classList.toggle('thinking', thinking);
     // 发送/停止合并按钮：生成中变"停止"（点击打断），否则"发送"
-    const sendBtn = $('#send');
     sendBtn.classList.toggle('stopping', thinking);
     sendBtn.textContent = thinking ? '停止' : '发送';
     // 上下文 token 估算（字符数近似）
@@ -649,11 +673,14 @@
   // 自动朗读（audio 事件）
   window.planner.onAudio((url) => { playAudioUrl(url); });
 
-  // ── 发送/停止合并按钮：生成中点击打断小助，平时提交 ─────
-  $('#send').addEventListener('click', (e) => {
-    if (!$('#send').classList.contains('stopping')) return;   // 平时走表单提交
+  // ── 发送/停止合并按钮：生成中点击打断；长按录音后拦截随后的 click ──
+  sendBtn.addEventListener('click', (e) => {
+    if (longPressed) {                     // 长按结束 → 不发送
+      longPressed = false;
+      return;
+    }
+    if (!sendBtn.classList.contains('stopping')) return;   // 平时走表单提交
     e.preventDefault();
-    const sendBtn = $('#send');
     if (sendBtn.disabled) return;
     sendBtn.disabled = true;
     post('/stop').catch(() => { /* 忽略 */ }).finally(() => {
