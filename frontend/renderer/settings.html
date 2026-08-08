@@ -55,6 +55,31 @@
   .legend { font-size: 11px; color: var(--dim); margin-top: 6px; }
   .legend b { color: var(--blue); }
 
+  /* ── 语音开关/音色 ── */
+  .row select {
+    flex: 1; max-width: 210px; padding: 6px 10px; border: 1px solid #d6e2ec; border-radius: 8px;
+    font-size: 13px; outline: none; background: #fff; color: var(--text);
+  }
+  .row #btn_tts_test {
+    flex: none; padding: 6px 16px; border: none; border-radius: 8px; cursor: pointer;
+    background: linear-gradient(135deg, var(--cyan2), var(--cyan)); color: #fff;
+    font-size: 12.5px; font-weight: 700;
+  }
+  .row #btn_tts_test:disabled { opacity: .55; cursor: default; }
+  .switch { position: relative; width: 40px; height: 22px; flex: none; cursor: pointer; }
+  .switch input { display: none; }
+  .switch .slider {
+    position: absolute; inset: 0; border-radius: 11px; background: #cfdce8;
+    transition: background 0.15s;
+  }
+  .switch .slider::before {
+    content: ""; position: absolute; width: 16px; height: 16px; border-radius: 50%;
+    background: #fff; top: 3px; left: 3px; transition: transform 0.15s;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.25);
+  }
+  .switch input:checked + .slider { background: var(--cyan); }
+  .switch input:checked + .slider::before { transform: translateX(18px); }
+
   /* ── 底部：保存按钮固定右下角 ── */
   .footer {
     flex: none; display: flex; align-items: center; gap: 12px;
@@ -89,6 +114,25 @@
             <label>长按判定时间</label>
             <input type="number" id="press_ms" min="50" max="5000" step="10" />
             <span class="hint">毫秒（按住多久进入语音输入）</span>
+          </div>
+        </section>
+        <section>
+          <h2>语音播报</h2>
+          <div class="row">
+            <label>启用语音</label>
+            <label class="switch">
+              <input type="checkbox" id="tts_enabled" checked />
+              <span class="slider"></span>
+            </label>
+            <span class="hint">关闭后回复不再朗读（文字照常）</span>
+          </div>
+          <div class="row">
+            <label>音色</label>
+            <select id="tts_voice"></select>
+            <button id="btn_tts_test" type="button">试听</button>
+          </div>
+          <div class="row">
+            <span class="hint" style="width:100%">zf = 女声 · zm = 男声，试听立即合成当前选中音色</span>
           </div>
         </section>
       </div>
@@ -152,6 +196,7 @@
     <button id="save">保存设置</button>
   </div>
 
+<audio id="tts-audio" hidden></audio>
 <script src="settings.js"></script>
 </body>
 </html>

@@ -26,6 +26,8 @@ DEFAULT_SETTINGS: dict = {
     "llm_api_key": "",
     "llm_base_url": "",
     "llm_model": "",
+    "tts_enabled": True,
+    "tts_voice": "zf_001",
 }
 
 # 数值范围护栏（前端输入 + POST 双重校验）

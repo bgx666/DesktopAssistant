@@ -177,6 +177,23 @@ def test_tts_say_endpoint(backend):
     assert list(session.tts.tts_dir.glob("*")) == []
 
 
+def test_tts_voices_endpoint(backend, monkeypatch):
+    """/tts/voices：返回音色列表；/tts/say 校验非法音色。"""
+    import urllib.error
+    from urllib.parse import quote
+    session, base = backend
+    monkeypatch.setattr(session.tts, "list_voices", lambda: [
+        {"id": "zf_001", "label": "zf_001 · 女声"},
+        {"id": "zm_009", "label": "zm_009 · 男声"},
+    ])
+    r = _get(base, "/tts/voices")
+    assert r["ok"] is True
+    assert [v["id"] for v in r["voices"]] == ["zf_001", "zm_009"]
+    with pytest.raises(urllib.error.HTTPError) as e:
+        _get(base, "/tts/say?text=" + quote("你好") + "&voice=bad_voice")
+    assert e.value.code == 400
+
+
 def test_dnd_endpoint(backend):
     session, base = backend
     r = _post(base, "/dnd", {"enabled": True, "until_hour": 14})

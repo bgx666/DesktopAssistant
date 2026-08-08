@@ -154,13 +154,14 @@ class _KokoroLocal:
             _logger.exception("[tts] 音素化失败")
             return None
 
-    def synthesize(self, text: str) -> bytes | None:
-        """合成 → wav bytes（24kHz 16bit）；失败返回 None。"""
+    def synthesize(self, text: str, voice: str | None = None) -> bytes | None:
+        """合成 → wav bytes（24kHz 16bit）；失败返回 None。voice 非空时临时换音色。"""
         import numpy as np
 
         with self._lock:  # 并发调用共享 g2p/session/voice，整体串行化
             if not self._ensure():
                 return None
+            use_voice = voice or self.voice
             tokens = self._phonemes_to_tokens(text)
             if not tokens:
                 return None
@@ -169,7 +170,7 @@ class _KokoroLocal:
                 _logger.info("[tts] 文本过长，音素 %d → 截断至 %d", len(tokens), _MAX_TOKENS)
                 tokens = tokens[:_MAX_TOKENS]
             try:
-                style = self._voices[self.voice][len(tokens)]
+                style = self._voices[use_voice][len(tokens)]
                 out, _ = self._sess.run(None, {
                     "input_ids": np.array([[0, *tokens, 0]], dtype=np.int64),
                     "style": np.array(style, dtype=np.float32)[None, :],
@@ -187,7 +188,7 @@ class _KokoroLocal:
                     self._provider = "CPU(int8)"
                     out, _ = self._sess.run(None, {
                         "input_ids": np.array([[0, *tokens, 0]], dtype=np.int64),
-                        "style": self._voices[self.voice][len(tokens)].astype(np.float32)[None, :],
+                        "style": self._voices[use_voice][len(tokens)].astype(np.float32)[None, :],
                         "speed": np.array([1.0], dtype=np.float32),
                     })
                     wav = np.asarray(out, dtype=np.float32).reshape(-1)
@@ -230,16 +231,35 @@ class TtsClient:
     def enabled(self) -> bool:
         return self._enabled
 
-    def synthesize(self, text: str) -> str | None:
-        """阻塞合成整句 → 保存音频 → 返回 /tts/{name} URL；失败/未启用返回 None。"""
+    def list_voices(self) -> list[dict]:
+        """可用音色列表（zf_xxx 女声 / zm_xxx 男声），按编号排序。"""
+        voices_dir = _KOKORO_MODEL_DIR / "voices"
+        if not voices_dir.is_dir():
+            return []
+        names = sorted(f.stem for f in voices_dir.glob("*.bin"))
+        out = []
+        for n in names:
+            if n.startswith("zf"):
+                label = f"{n} · 女声"
+            elif n.startswith("zm"):
+                label = f"{n} · 男声"
+            else:
+                label = n
+            out.append({"id": n, "label": label})
+        return out
+
+    def synthesize(self, text: str, voice: str | None = None) -> str | None:
+        """阻塞合成整句 → 保存音频 → 返回 /tts/{name} URL；失败/未启用返回 None。
+        voice 非空时临时用该音色（不改变全局 self.voice）。"""
         if not self._enabled:
             return None
         content = clean_speech_text(text)
         if not content:
             return None
+        use_voice = voice or self.voice
         try:
             if self.engine == "local":
-                audio = self._local.synthesize(content)
+                audio = self._local.synthesize(content, voice=use_voice)
                 ext = ".wav"
             else:
                 dashscope.api_key = self.api_key

@@ -37,8 +37,23 @@
       $('#llm_api_key').value = current.llm_api_key || '';
       $('#llm_base_url').value = current.llm_base_url || '';
       $('#llm_model').value = current.llm_model || '';
+      $('#tts_enabled').checked = current.tts_enabled !== false;
+      if (current.tts_voice) $('#tts_voice').value = current.tts_voice;
       drawChart();
     } catch { $('#msg').textContent = '后端不可用，无法读取压缩/LLM 设置'; }
+    try {
+      // 音色列表（下拉 + 保留当前选中）
+      const r = await window.planner.apiFetch('/tts/voices');
+      const d = JSON.parse(r.text);
+      const sel = $('#tts_voice');
+      (d.voices || []).forEach((v) => {
+        const opt = document.createElement('option');
+        opt.value = v.id;
+        opt.textContent = v.label;
+        sel.appendChild(opt);
+      });
+      if (current.tts_voice) sel.value = current.tts_voice;
+    } catch { /* 后端不可用：音色列表留空 */ }
   }
 
   // ── 压缩示意图：只算"每次压缩触发前"的峰值点（性能优先）──
@@ -207,6 +222,8 @@
     updates.llm_api_key = $('#llm_api_key').value.trim();
     updates.llm_base_url = $('#llm_base_url').value.trim();
     updates.llm_model = $('#llm_model').value.trim();
+    updates.tts_enabled = $('#tts_enabled').checked;
+    updates.tts_voice = $('#tts_voice').value;
     try {
       const r = await window.planner.apiFetch('/settings', {
         method: 'POST',
@@ -229,4 +246,35 @@
   });
 
   loadSettings();
+
+  // ── 试听：合成当前选中音色并播放（不保存）────────────
+  const ttsAudio = document.getElementById('tts-audio');
+  $('#btn_tts_test').addEventListener('click', async () => {
+    const btn = $('#btn_tts_test');
+    const voice = $('#tts_voice').value;
+    if (!voice || btn.disabled) return;
+    btn.disabled = true;
+    btn.textContent = '合成中…';
+    try {
+      const r = await window.planner.apiFetch('/tts/say?text=' +
+        encodeURIComponent('你好，我是小助，这是我的声音。') + '&voice=' + encodeURIComponent(voice));
+      const d = JSON.parse(r.text);
+      if (d.ok && d.url) {
+        const fileUrl = await window.planner.audioFile(d.url);
+        if (fileUrl) {
+          ttsAudio.src = fileUrl;
+          ttsAudio.onended = () => ttsAudio.removeAttribute('src');
+          await ttsAudio.play();
+        } else {
+          $('#msg').textContent = '试听下载失败';
+        }
+      } else {
+        $('#msg').textContent = '语音合成失败（' + (d.error || '') + '）';
+      }
+    } catch {
+      $('#msg').textContent = '试听失败（后端不可用）';
+    }
+    btn.disabled = false;
+    btn.textContent = '试听';
+  });
 })();

@@ -209,6 +209,17 @@ class PlannerSession:
             self._summary_model = None
             self._agent_obj = None
             _logger.info("[settings] LLM 配置变更，已重建模型")
+        # TTS 设置即时生效：音色校验 + 启用开关
+        tts_voice = self.settings.get("tts_voice")
+        if tts_voice and tts_voice != getattr(self.tts, "voice", None):
+            if tts_voice in {v["id"] for v in self.tts.list_voices()}:
+                self.tts.voice = tts_voice
+                _logger.info("[settings] 音色切换为 %s", tts_voice)
+            else:
+                _logger.warning("[settings] 未知音色 %s，忽略", tts_voice)
+        if "tts_enabled" in self.settings:
+            self.tts._enabled = bool(self.settings["tts_enabled"])
+            _logger.info("[settings] 语音播报 %s", "开启" if self.tts._enabled else "关闭")
         _logger.info("[settings] 设置已保存并应用: %s", {k: self.settings[k] for k in updates if k in self.settings})
         return dict(self.settings)
 
