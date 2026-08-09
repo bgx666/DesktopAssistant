@@ -98,7 +98,7 @@
 
 ## 使用的开源模型
 
-语音与视觉能力基于开源模型本地推理（数据不出本机）。模型于首次使用时自动下载至用户缓存目录（`~/.cache/planner_tts`、`~/.cache/planner_asr`），此后离线可用：
+语音与视觉能力基于开源模型本地推理（数据不出本机）。语音识别与图片识别模型首次使用时自动下载；语音合成模型需按下方命令手动下载至缓存目录（`~/.cache/planner_tts`），此后离线可用：
 
 | 模型 | 用途 | 说明 |
 |---|---|---|
@@ -172,7 +172,12 @@ set PLANNER_MOCK_LLM=1
 python -m planner
 ```
 
-首次合成语音时自动下载 Kokoro 模型（约 120MB，仅一次），此后离线可用。
+语音合成模型（Kokoro-82M-zh，约 320MB，仅需下载一次）：
+
+```bash
+pip install "huggingface_hub[cli]"
+hf download onnx-community/Kokoro-82M-v1.1-zh-ONNX --include "model.onnx" "voices/*" "tokenizer.json" --local-dir "%USERPROFILE%\.cache\planner_tts\models\onnx-community--Kokoro-82M-v1.1-zh-ONNX\snapshots\master"
+```
 
 ### 4. 验证
 
