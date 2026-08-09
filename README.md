@@ -1,5 +1,9 @@
 # DesktopAssistant（小助）
 
+<p align="center">
+  <img src="docs/images/bubble.png" width="96" alt="小助">
+</p>
+
 面向个人学习的桌面 AI 助手。与以"代完成任务"为目标的主流 coding agent（Codex、Claude Code、OpenCode 等）不同，本项目的定位是**长期陪伴式学习辅助**：系统不代替用户完成工作，而是负责目标的拆解、进度的记录与提醒，并通过持久化的记忆结构维持对用户长期状态的认知。
 
 核心设计要点：
