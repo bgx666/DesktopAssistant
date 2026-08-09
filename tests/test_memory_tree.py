@@ -37,6 +37,21 @@ def test_compact_raises_on_empty(data_root):
     tree.close()
 
 
+def test_get_root_id_and_explore_root(data_root):
+    """get_root_id 返回最高层节点；explore_memory_tree 留空参数 → 根节点概览。"""
+    tree = SQLiteMemoryTree("assistant", data_root / "memory_tree.db")
+    assert tree.get_root_id() is None   # 空树
+    leaf_ids = [tree.add_leaf(f"摘要{i}", (i * 2, i * 2 + 1), None) for i in range(4)]
+    p1 = tree.compact(leaf_ids[:2], "合并A")
+    p2 = tree.compact(leaf_ids[2:], "合并B")
+    root = tree.compact([p1, p2], "根摘要")
+    assert tree.get_root_id() == root
+    info = tree.get_node_children_info(tree.get_root_id())
+    assert len(info["children"]) == 2   # 根下两个分支（node1_001/002 的概要）
+    assert {c["node_id"] for c in info["children"]} == {p1, p2}
+    tree.close()
+
+
 def test_node_ids_resume_after_restart(data_root):
     db = data_root / "memory_tree.db"
     t1 = SQLiteMemoryTree("assistant", db)

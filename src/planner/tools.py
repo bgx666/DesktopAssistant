@@ -346,16 +346,27 @@ def build_tools(session) -> list[BaseTool]:
         return f"「{target['content']}」已提到队列最前，接下来先做它。"
 
     @tool(parse_docstring=True)
-    def explore_memory_tree(node_id: str) -> str:
-        """翻开记忆笔记，查看以前和用户说过的话、做过的决定。
+    def explore_memory_tree(node_id: str = "") -> str:
+        """翻阅记忆树，查看某个历史节点下的记录（对话浓缩摘要）。回忆过去说过的话、做过的决定时用。
+
+        搜索策略：先想清楚要找的内容大概发生在什么时间；如果对单次搜索结果
+        不够自信，不要只查一次就放弃——从根节点（node2_xxx）开始逐层往下
+        多搜几次，或直接选一个时间范围覆盖目标时段的中间节点（node1_xxx）
+        展开；每看一层概要，再决定继续展开哪个子节点，直到找到对应的
+        叶子（node0_xxx，含原文）。节点都带时间范围，可按时间缩小范围。
 
         Args:
-            node_id: 笔记编号——对话里出现的 [node0_001] 这种
+            node_id: 节点编号（node0_xxx / node1_xxx / node2_xxx）。
+                     留空或传 "root" 时返回根节点概览（整棵树的浓缩与各分支摘要）。
         """
         tree = session.get_memory_tree()
+        if not node_id or node_id.strip().lower() in ("root", "根"):
+            node_id = tree.get_root_id() or ""
+            if not node_id:
+                return "记忆树还没有节点（对话尚未触发压缩）。"
         info = tree.get_node_children_info(node_id)
         if info is None:
-            return f"找不到第 {node_id} 页的记录。"
+            return f"找不到节点 {node_id} 的记录。"
         return json.dumps(info, ensure_ascii=False)
 
     # ── 文件读取（只读；本工具集不存在任何写文件工具）──────────

@@ -167,6 +167,15 @@ class SQLiteMemoryTree:
 
     # ── 公开查询接口 ──────────────────────────────────────────
 
+    def get_root_id(self) -> str | None:
+        """返回根节点 id（level 最高的节点，多个取最早创建的）。"""
+        cur = self._execute_with_retry(
+            "SELECT id FROM nodes WHERE character_id = ? ORDER BY level DESC, id LIMIT 1",
+            (self._character_id,),
+        )
+        row = cur.fetchone()
+        return row["id"] if row else None
+
     def get_node_children_info(self, node_id: str) -> dict | None:
         """获取节点的子节点信息或叶子详情（含画像、后续说明与 meta）。"""
         cur = self._execute_with_retry(
