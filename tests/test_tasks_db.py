@@ -90,7 +90,10 @@ def test_pending_queue_sorted_by_priority_and_due(data_root):
     db.close()
 
 
-def test_break_down_items_have_no_fixed_date(data_root):
+def test_break_down_items_have_suggested_date(data_root):
+    """拆解后待办带建议日期（拆解日 + date_offset）：跨天后 LLM/前端能看出
+    日期已过——修复"明晚"这类相对时间表述被当成永远的未来。"""
+    from datetime import date, timedelta
     from planner.session import PlannerSession
     from planner.tools import build_tools
     s = PlannerSession(data_root, mock=True)
@@ -100,10 +103,13 @@ def test_break_down_items_have_no_fixed_date(data_root):
         tools["break_down_task"].invoke({
             "task_id": tid,
             "phases": [{"title": "语法", "days": 2,
-                        "items": [{"date_offset": 0, "content": "读第一章"}]}],
+                        "items": [{"date_offset": 0, "content": "通读教材"},
+                                  {"date_offset": 1, "content": "写练习"}]}],
         })
         items = s.db.get_plan(task_id=tid)
-        assert len(items) == 1
-        assert items[0]["date"] is None, "动态待办不应有固定日期"
+        assert len(items) == 2
+        today = date.today().isoformat()
+        assert items[0]["date"] == today, "offset=0 → 当天"
+        assert items[1]["date"] == (date.today() + timedelta(days=1)).isoformat(), "offset=1 → 明天"
     finally:
         s.close()

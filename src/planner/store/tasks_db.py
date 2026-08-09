@@ -265,7 +265,7 @@ class TasksDb:
         return [dict(r) for r in rows]
 
     def list_pending(self) -> list[dict]:
-        """动态待办队列：全部未完成条目，按 优先级权重 → 任务截止日期近 → 创建序 排序。"""
+        """动态待办队列：全部未完成条目，按 优先级权重 → 任务截止日期近 → 条目日期近 → 创建序 排序。"""
         rows = self._exec(
             "SELECT p.*, t.title AS task_title, t.due_date AS task_due, "
             "t.status AS task_status, t.priority AS task_priority, ph.title AS phase_title "
@@ -275,7 +275,8 @@ class TasksDb:
             "WHERE p.status != 'done' AND p.status != 'skipped' "
             "AND t.status NOT IN ('done', 'abandoned') "
             "ORDER BY p.priority DESC, "
-            "CASE WHEN t.due_date IS NULL THEN 1 ELSE 0 END, t.due_date, p.id",
+            "CASE WHEN t.due_date IS NULL THEN 1 ELSE 0 END, t.due_date, "
+            "CASE WHEN p.date IS NULL THEN 1 ELSE 0 END, p.date, p.id",
             mode="all")
         return [dict(r) for r in rows]
 

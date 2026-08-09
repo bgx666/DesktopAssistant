@@ -110,8 +110,11 @@ def build_tools(session) -> list[BaseTool]:
 
     @tool(args_schema=BreakDownInput)
     def break_down_task(task_id: int, phases: list[PhaseInput]) -> str:
-        """把任务拆解成阶段 + 待办条目（接下来要做什么）。拆解不排固定日期——
-        每天做什么由 get_next_actions 按紧急度动态安排。"""
+        """把任务拆解成阶段 + 待办条目（接下来要做什么）。
+
+        每个待办都要给出具体日期：date_offset 是距阶段开始日的第几天
+        （0=当天、1=明天…），系统会换算成具体日期写入队列——不要在内容里
+        写"明天/明晚/后天"这类相对时间，它们会随时间失效。"""
         err = _require_db()
         if err:
             return err
@@ -122,6 +125,7 @@ def build_tools(session) -> list[BaseTool]:
             return "phases 不能为空。"
         total_items = 0
         lines = [f"「{task['title']}」拆解完成："]
+        acc_days = 0   # 阶段起始日 = 拆解日 + 之前各阶段天数累计
         for seq, ph in enumerate(phases):
             title = str(ph.title or "").strip()
             days = max(1, int(ph.days or 1))
@@ -129,15 +133,19 @@ def build_tools(session) -> list[BaseTool]:
                 return f"第 {seq + 1} 个阶段缺少 title。"
             pid = db.add_phase(task_id, seq, title, str(ph.description or ""), days)
             lines.append(f"- 阶段{seq + 1}《{title}》（约{days} 天）：")
+            phase_start = date.today() + timedelta(days=acc_days)
             for it in ph.items:
                 content = str(it.content or "").strip()
                 if not content:
                     continue
                 est = max(0, int(it.est_minutes or 0))
-                # 动态待办：不排固定日期，由优先级/截止时间决定先后
-                db.add_plan_item(task_id, pid, None, total_items, content, est, priority=0)
-                lines.append(f"  · {content}" + (f"（约{est}分钟）" if est else ""))
+                item_date = (phase_start + timedelta(days=int(it.date_offset or 0))).isoformat()
+                # 待办带建议日期：跨天后 LLM/前端可见日期已过，不会把
+                # "明晚"这类内容当成永远的未来
+                db.add_plan_item(task_id, pid, item_date, total_items, content, est, priority=0)
+                lines.append(f"  · {content}（{item_date}）" + (f"约{est}分钟" if est else ""))
                 total_items += 1
+            acc_days += days
         if total_items == 0:
             return "拆解失败：没有任何待办条目。"
         db.update_task_status(task_id, "in_progress", f"拆解为 {len(phases)} 个阶段、{total_items} 条待办")
@@ -300,20 +308,21 @@ def build_tools(session) -> list[BaseTool]:
             return err
         s = db.summary(_today())
         queue = s["queue"]
-        lines = [f"动态待办队列（共 {len(queue)} 项未完成）："]
+        lines = [f"今天是 {_today()}。动态待办队列（{len(queue)} 项未完成）："]
         if not queue:
-            lines.append("（目前没有待办，可以问问用户最近想做什么。）")
+            lines.append("目前没有待办，可以问问用户想做什么。")
         for i, p in enumerate(queue, 1):
             due = p.get("task_due") or ""
             due_txt = f"，截止 {due}" if due else ""
             prio_txt = f"，权重 {p['priority']}" if p["priority"] else ""
-            lines.append(f"  {i}. #{p['id']} {p['content']}（{p['task_title']}{due_txt}{prio_txt}）")
+            date_txt = f"（计划 {p['date']}）" if p.get("date") else "（日期待安排）"
+            lines.append(f"  {i}. #{p['id']} {p['content']}{date_txt}（{p['task_title']}{due_txt}{prio_txt}）")
         if s["overdue_tasks"]:
-            lines.append("已逾期任务（优先处理）：")
+            lines.append("以下任务已逾期，优先处理：")
             for t in s["overdue_tasks"]:
-                lines.append(f"  ! #{t['id']}「{t['title']}」截止 {t['due_date']}")
+                lines.append(f"  ! #{t['id']}：{t['title']}，截止 {t['due_date']}")
         if s["tasks"]["in_progress"] or s["tasks"]["todo"]:
-            lines.append(f"进行中任务 {s['tasks']['in_progress']} 个，待开始 {s['tasks']['todo']} 个。")
+            lines.append(f"进行中 {s['tasks']['in_progress']} 项，待开始 {s['tasks']['todo']} 项。")
         return "\n".join(lines)
 
     @tool(parse_docstring=True)

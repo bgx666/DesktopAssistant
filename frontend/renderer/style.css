@@ -599,6 +599,7 @@ body.drop-overlay::after {
   box-shadow: 0 2px 6px rgba(91, 124, 250, 0.35);
 }
 .plan-card .p-due { display: block; font-size: 11px; color: var(--danger); margin-top: 2px; }
+.plan-card .p-date { display: block; font-size: 11px; color: var(--text-soft); margin-top: 2px; }
 .plan-card input[type="checkbox"] { margin-top: 3px; accent-color: var(--ok); cursor: pointer; }
 .plan-card .p-content { flex: 1; }
 .plan-card .p-task { font-size: 11px; color: var(--primary); margin-bottom: 2px; }

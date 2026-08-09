@@ -535,13 +535,14 @@
       queue.forEach((p, idx) => {
         const card = document.createElement('div');
         card.className = 'plan-card';
+        const start = p.date ? `<span class="p-date">开始 ${escapeHtml(p.date)}</span>` : '<span class="p-date">日期待安排</span>';
         const due = p.task_due ? `<span class="p-due">截止 ${escapeHtml(p.task_due)}</span>` : '';
         card.innerHTML = `
           <span class="p-rank">${idx + 1}</span>
           <div class="p-content">
             <div class="p-task">${escapeHtml(p.task_title)}${p.phase_title ? ' · ' + escapeHtml(p.phase_title) : ''}</div>
             <div>${escapeHtml(p.content)}</div>
-            ${due}
+            ${start}${due}
           </div>
           <input type="checkbox" data-id="${p.id}" title="做完了勾选" />`;
         card.querySelector('input').addEventListener('change', async (e) => {
