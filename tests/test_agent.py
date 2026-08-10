@@ -313,6 +313,36 @@ def test_continue_pause_interruptible(data_root):
         s.close()
 
 
+def test_parent_node_renders_time_range(data_root):
+    """父节点（level>0）buffer 消息必须渲染 [时间] 行——模型回忆时按时间定位。
+    回归：_compact_level 曾漏传 time_range，只有叶子显示时间。"""
+    from langchain_core.messages import HumanMessage
+    from planner.middleware import SummarizationMiddleware
+    from planner.session import PlannerSession
+    s = PlannerSession(data_root, mock=True)
+    try:
+        tree = s.get_memory_tree()
+        msgs = []
+        for i in range(8):
+            t0 = f"2026-08-0{1 + i // 5} 0{i % 5}:00:00"
+            t1 = f"2026-08-0{1 + i // 5} 0{i % 5}:30:00"
+            nid = tree.add_leaf(f"摘要{i}", (i * 2, i * 2 + 1), None,
+                                time_range=(t0, t1))
+            msgs.append(HumanMessage(
+                content=f"[{nid}] 第{i * 2}-{i * 2 + 1}条\n[摘要] 摘要{i}",
+                metadata={"node_id": nid, "node_start": i * 2}))
+        comp = SummarizationMiddleware(s)
+        removes, adds = comp.compress_snapshot(msgs)
+        parents = [m for m in adds
+                   if str((getattr(m, "metadata", None) or {}).get("node_id", "")).startswith("node1_")]
+        assert parents, "8 片叶子应触发向上合并，生成父节点"
+        content = parents[0].content
+        assert "[时间]" in content, f"父节点渲染应含 [时间]，实际: {content[:200]}"
+        assert "2026-08-01" in content, "时间范围应来自子节点聚合"
+    finally:
+        s.close()
+
+
 def test_silent_escalation(data_root):
     """连续自主唤醒用户没反应 → 心跳逐步加长（10 → 20 → … → 120 上限）。"""
     from planner import config as _config

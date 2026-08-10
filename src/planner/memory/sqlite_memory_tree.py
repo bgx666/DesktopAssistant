@@ -176,6 +176,35 @@ class SQLiteMemoryTree:
         row = cur.fetchone()
         return row["id"] if row else None
 
+    def get_effective_time_range(self, node_id: str) -> tuple[str, str] | None:
+        """节点有效时间范围 (start, end)：自身 time_start/time_end 优先；
+        为 NULL（时间范围功能上线前压缩的历史节点）时递归聚合子节点 min/max。"""
+        cur = self._execute_with_retry(
+            "SELECT time_start, time_end FROM nodes WHERE id = ? AND character_id = ?",
+            (node_id, self._character_id),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return None
+        own = (row["time_start"], row["time_end"])
+        if own[0] and own[1]:
+            return own
+        cur = self._execute_with_retry(
+            "SELECT id FROM nodes WHERE parent_id = ? AND character_id = ?",
+            (node_id, self._character_id),
+        )
+        children = [r["id"] for r in cur.fetchall()]
+        start, end = own[0], own[1]
+        for cid in children:
+            rng = self.get_effective_time_range(cid)
+            if not rng:
+                continue
+            if not start or rng[0] < start:
+                start = rng[0]
+            if not end or rng[1] > end:
+                end = rng[1]
+        return (start, end) if (start and end) else None
+
     def get_node_children_info(self, node_id: str) -> dict | None:
         """获取节点的子节点信息或叶子详情（含画像、后续说明与 meta）。"""
         cur = self._execute_with_retry(

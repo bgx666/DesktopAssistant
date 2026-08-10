@@ -556,7 +556,12 @@ class SummarizationMiddleware(AgentMiddleware):
             except (TypeError, ValueError, IndexError):
                 pass
         node_start = min(child_starts) if child_starts else 0
-        parent_text = self._render_node_text(parent_id, rr0[0], rr1[1], out)
+        # 父节点渲染必须带时间范围（自身优先，历史数据从子节点聚合）——
+        # 否则模型在 buffer 里看不到 [时间]，回忆时无从按时间定位
+        parent_text = self._render_node_text(
+            parent_id, rr0[0], rr1[1], out,
+            time_range=tree.get_effective_time_range(parent_id),
+        )
         parent_msg = HumanMessage(
             content=parent_text,
             metadata={"node_id": parent_id, "node_start": node_start},

@@ -52,6 +52,23 @@ def test_get_root_id_and_explore_root(data_root):
     tree.close()
 
 
+def test_effective_time_range(data_root):
+    """get_effective_time_range：自身有值直接返回；为 NULL 时聚合子节点 min/max。"""
+    tree = SQLiteMemoryTree("assistant", data_root / "memory_tree.db")
+    t1, t2, t3, t4 = ("2026-08-01 09:00:00", "2026-08-02 18:00:00",
+                      "2026-08-03 08:30:00", "2026-08-04 22:15:00")
+    a = tree.add_leaf("摘要A", (0, 1), None, time_range=(t1, t2))
+    b = tree.add_leaf("摘要B", (2, 3), None, time_range=(t3, t4))
+    parent = tree.compact([a, b], "合并")
+    assert tree.get_effective_time_range(parent) == (t1, t4), "父节点 = 子节点 min/max"
+    # 历史数据：父节点时间戳为 NULL → 从子节点聚合
+    tree._execute_with_retry(
+        "UPDATE nodes SET time_start = NULL, time_end = NULL WHERE id = ?",
+        (parent,))
+    assert tree.get_effective_time_range(parent) == (t1, t4), "NULL 时应聚合子节点"
+    tree.close()
+
+
 def test_node_ids_resume_after_restart(data_root):
     db = data_root / "memory_tree.db"
     t1 = SQLiteMemoryTree("assistant", db)
