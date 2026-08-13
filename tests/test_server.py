@@ -61,6 +61,39 @@ def _wait_events(base, pred, timeout=8.0):
     return None
 
 
+def test_dequeue_no_wait_immediate(backend):
+    """不带 wait 参数：/dequeue 立即返回（旧行为，测试/旧客户端兼容）。"""
+    _, base = backend
+    t0 = time.time()
+    data = _get(base, "/dequeue")
+    assert data["ok"] and "events" in data
+    assert time.time() - t0 < 1.0, "不带 wait 应立即返回"
+
+
+def test_dequeue_longpoll_waits_timeout(backend):
+    """/dequeue?wait=N 无事件时挂起约 N 秒后返回空（长轮询超时）。"""
+    _, base = backend
+    t0 = time.time()
+    data = _get(base, "/dequeue?wait=0.3")
+    assert data["ok"] and data["events"] == []
+    elapsed = time.time() - t0
+    assert 0.2 <= elapsed < 2.0, f"wait=0.3 应挂起约 0.3s，实际 {elapsed:.2f}s"
+
+
+def test_dequeue_longpoll_wakes_on_event(backend):
+    """长轮询挂起期间有新事件到达 → 立即返回该事件（接近零延迟推送）。"""
+    session, base = backend
+    threading.Timer(0.3, session.push_event,
+                    args=({"type": "log", "text": "wake"},)).start()
+    t0 = time.time()
+    data = _get(base, "/dequeue?wait=2")
+    elapsed = time.time() - t0
+    assert data["ok"]
+    assert any(e["type"] == "log" and e["text"] == "wake" for e in data["events"]), \
+        "挂起期间到达的事件应立即返回"
+    assert elapsed < 1.5, f"事件到达应唤醒长轮询，实际 {elapsed:.2f}s"
+
+
 def test_init_and_state(backend):
     _, base = backend
     data = _get(base, "/init")

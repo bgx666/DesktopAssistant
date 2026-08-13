@@ -16,6 +16,52 @@ def _drive_generation(session, content: str, trigger: str = "player") -> None:
     session._generate_response(trigger)
 
 
+def test_stop_interrupts_streaming_generation(data_root):
+    """打断（_stop_requested）应在流式模型调用中途立即停止，不等其自然结束。
+
+    回归：旧实现只在 StopRequestMiddleware.before_model 检查停止标志——
+    正在流式的这次模型调用会一直流到底，用户说话/点停止后 AI 仍继续吐字。
+    现在 _run_agent 的流式循环内检查并 break。
+    """
+    import threading
+
+    from langchain_core.language_models.chat_models import BaseChatModel
+    from langchain_core.messages import AIMessage, AIMessageChunk
+    from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
+
+    yielded: list[int] = []
+
+    class _SlowStreamModel(BaseChatModel):
+        def _llm_type(self) -> str:
+            return "slow-stream"
+
+        def bind_tools(self, tools, **kwargs):
+            return self
+
+        def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+            return ChatResult(generations=[ChatGeneration(message=AIMessage(content="done"))])
+
+        def _stream(self, messages, stop=None, run_manager=None, **kwargs):
+            for i in range(200):
+                time.sleep(0.03)          # 总时长 ~6s，若不打断会跑满
+                yielded.append(i)
+                yield ChatGenerationChunk(message=AIMessageChunk(content=f"字{i}"))
+
+    s = PlannerSession(data_root, mock=True)
+    try:
+        s.set_chat_model(_SlowStreamModel())
+        threading.Timer(0.3, s.request_stop).start()   # 0.3s 后请求停止
+        s._receive("你好", trigger=True)
+        s.pending_response = False
+        t0 = time.time()
+        s._generate_response("player")
+        elapsed = time.time() - t0
+        assert yielded, "测试模型应真正流式产出 chunk（否则测试无意义）"
+        assert elapsed < 2.0, f"打断应立即停止流式生成（而非跑满 ~6s），实际 {elapsed:.1f}s"
+    finally:
+        s.close()
+
+
 def test_player_message_creates_task(data_root):
     s = PlannerSession(data_root, mock=True)
     try:

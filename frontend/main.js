@@ -1,4 +1,4 @@
-﻿// main.js —— Electron 悬浮球主进程
+// main.js —— Electron 悬浮球主进程
 // 悬浮球（常驻置顶，可拖拽） + 对话面板（点击球"变形"展开，失焦"变形"收回）
 
 const { app, BrowserWindow, Tray, Menu, nativeImage, screen, ipcMain, session } = require('electron');
@@ -603,27 +603,35 @@ function showBubble() {
   if (!bubbleWin.isVisible()) bubbleWin.show();
 }
 
-// ── 主进程 /dequeue 轮询（唯一消费者）────────────────────
+// ── 主进程 /dequeue 长轮询（唯一消费者）────────────────────
 // 事件 + 状态统一由主进程分发：事件按面板状态（气泡/面板），
 // 状态广播给所有窗口（bubble/面板），各窗口不再各自轮询 /state。
 async function pollDequeue() {
   if (quitting) return;
+  let online = false;
   try {
-    const res = await fetch(BACKEND_URL + '/dequeue', { signal: AbortSignal.timeout(3000) });
+    // 长轮询：后端最多挂 25s（有事件立即返回），客户端 30s 超时兜底。
+    // 相比固定 800ms 轮询，事件投递延迟从 ~400ms 降到接近 0（真"实时"）。
+    const res = await fetch(BACKEND_URL + '/dequeue?wait=25', { signal: AbortSignal.timeout(30000) });
     if (!res.ok) return;
+    online = true;
     const data = await res.json();
     const events = data.events || [];
     broadcastState(data.state);
+    broadcastPanelState();
     if (!events.length) return;
     pendingEvents.push(...events);
     if (pendingEvents.length > 60) pendingEvents.splice(0, pendingEvents.length - 60);
     if (panelState === 'hidden') {
-      // 悬浮球形态：文本事件冒气泡；audio 事件 → 气泡窗口播放
+      // 悬浮球形态：文本事件冒气泡；audio 事件 → 气泡窗口播放；
+      // text_stream 也转发（语音对话模式的流式 TTS 在悬浮球形态同样可用）
       for (const ev of events) {
         if (ev.type === 'text' && ev.content) {
           showToast(ev.content);
         } else if (ev.type === 'audio' && ev.url && bubbleWin && !bubbleWin.isDestroyed()) {
           bubbleWin.webContents.send('audio', ev.url);
+        } else if (ev.type === 'text_stream' && ev.content && bubbleWin && !bubbleWin.isDestroyed()) {
+          bubbleWin.webContents.send('events', [ev]);
         }
       }
     } else if (panelLoaded && panelWin && !panelWin.isDestroyed()) {
@@ -640,6 +648,9 @@ async function pollDequeue() {
   } catch {
     // 后端不可达 → 广播离线状态，各窗口状态点变红
     broadcastState({ offline: true });
+  } finally {
+    // 在线 → 立即发起下一次长轮询；离线 → 短暂退避后重试（避免空转）
+    if (!quitting) dequeueTimer = setTimeout(pollDequeue, online ? 0 : 1000);
   }
 }
 
@@ -655,10 +666,21 @@ function broadcastState(state) {
   } catch { /* 窗口销毁中忽略 */ }
 }
 
+// 面板形态广播：语音连续对话模式的 active 窗口判定（bubble ↔ 悬浮球形态）
+function broadcastPanelState() {
+  try {
+    if (bubbleWin && !bubbleWin.isDestroyed()) {
+      bubbleWin.webContents.send('panel-state', panelState);
+    }
+    if (panelWin && !panelWin.isDestroyed()) {
+      panelWin.webContents.send('panel-state', panelState);
+    }
+  } catch { /* 窗口销毁中忽略 */ }
+}
+
 function startDequeuePoll() {
   if (dequeueTimer) return;
-  dequeueTimer = setInterval(pollDequeue, 800);
-  pollDequeue();
+  pollDequeue();   // 自调度长轮询：pollDequeue 完成后再 setTimeout 下一次
 }
 
 function toggleDndFromMain() {
@@ -793,6 +815,24 @@ ipcMain.on('save-ui-settings', (e, updates) => {
   }
   saveUiSettingsFile();
   broadcastUiSettings();
+});
+// ── 语音连续对话模式：主进程统一开关（菜单/按钮 → 持久化 → 双窗口广播）──
+function broadcastVoiceMode() {
+  const on = !!uiSettings.voice_mode;
+  try {
+    if (bubbleWin && !bubbleWin.isDestroyed()) bubbleWin.webContents.send('voice-mode', on);
+    if (panelWin && !panelWin.isDestroyed()) panelWin.webContents.send('voice-mode', on);
+  } catch { /* 窗口销毁中忽略 */ }
+}
+function toggleVoiceMode() {
+  uiSettings.voice_mode = !uiSettings.voice_mode;
+  saveUiSettingsFile();
+  broadcastVoiceMode();
+}
+ipcMain.on('voice-mode-set', (e, on) => {
+  uiSettings.voice_mode = !!on;
+  saveUiSettingsFile();
+  broadcastVoiceMode();
 });
 ipcMain.on('toggle-panel', () => togglePanel());
 // ── 设置窗口 ─────────────────────────────────────────────
@@ -966,6 +1006,8 @@ ipcMain.on('move-bubble', (e, x, y) => {
 ipcMain.on('quit-app', () => doQuit());ipcMain.on('bubble-menu', (e) => {
   const items = [
     { label: '放大', click: () => togglePanel() },
+    { label: '语音对话模式', type: 'checkbox', checked: !!uiSettings.voice_mode,
+      click: () => toggleVoiceMode() },
     { label: '切换免打扰', click: () => toggleDndFromMain() },
     { label: '设置', click: () => openSettings() },
   ];

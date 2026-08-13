@@ -54,6 +54,49 @@ html, body {
   animation: pulse 0.9s infinite;
 }
 
+/* 语音连续对话模式（voice-on）：球体青色呼吸环 + 状态点青色脉冲
+   （VAD 待命中；说话录音时叠加 .recording 柔紫状态） */
+#core.voice-on {
+  border-color: #00f0ff;
+  box-shadow: 0 0 0 2px rgba(0, 240, 255, 0.7), 0 0 16px rgba(0, 240, 255, 0.45);
+  animation: voice-breathe 2.4s ease-in-out infinite;
+}
+@keyframes voice-breathe {
+  0%, 100% { box-shadow: 0 0 0 2px rgba(0, 240, 255, 0.7), 0 0 16px rgba(0, 240, 255, 0.45); }
+  50% { box-shadow: 0 0 0 3px rgba(0, 240, 255, 0.9), 0 0 26px rgba(0, 240, 255, 0.7); }
+}
+#core.voice-on #status-dot {
+  background: #00f0ff;
+  animation: pulse 1.6s infinite;
+}
+
+/* 生成中（thinking）：呼吸式闪烁——球体粉蓝辉光呼吸 + 状态点脉冲 */
+#core.thinking {
+  border-color: rgba(77, 166, 255, 0.9);
+  animation: think-breathe 1.2s ease-in-out infinite;
+}
+@keyframes think-breathe {
+  0%, 100% {
+    box-shadow: 0 0 0 2px rgba(77, 166, 255, 0.5), 0 0 12px rgba(77, 166, 255, 0.35);
+  }
+  50% {
+    box-shadow: 0 0 0 3px rgba(77, 166, 255, 0.95), 0 0 26px rgba(77, 166, 255, 0.75);
+  }
+}
+/* 语音对话模式下的思考：青色系快速呼吸（覆盖 voice-on 的慢呼吸，闪烁感更强） */
+#core.voice-on.thinking {
+  border-color: #00f0ff;
+  animation: think-breathe-cyan 1s ease-in-out infinite;
+}
+@keyframes think-breathe-cyan {
+  0%, 100% {
+    box-shadow: 0 0 0 2px rgba(0, 240, 255, 0.55), 0 0 12px rgba(0, 240, 255, 0.35);
+  }
+  50% {
+    box-shadow: 0 0 0 3px rgba(0, 240, 255, 1), 0 0 28px rgba(0, 240, 255, 0.85);
+  }
+}
+
 /* ── 录音雷达环：贴蓝色球体边缘的闭合多边形波形（雷达图效果）── */
 #ball { position: relative; }   /* SVG 绝对定位基准（此前缺失导致环中心偏移） */
 

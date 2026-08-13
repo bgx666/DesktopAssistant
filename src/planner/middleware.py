@@ -302,6 +302,55 @@ _PARENT_INSTRUCTION = (
     "请给出压缩结果："
 )
 
+# ── 英文压缩指令（评测用：LoCoMo-Refined 英文对话，session.summary_language="en"）──
+
+_LEAF_INSTRUCTION_EN = (
+    "Please compress the content below into structured JSON (output ONLY JSON, no other text).\n"
+    "**Always write the summary, profile, and future_notes in English.**\n"
+    "**Fill each field according to actual content: keep fields with no relevant information empty "
+    "(profile dimensions as empty arrays, future_notes as empty array); do not fabricate, guess, "
+    "or repeat existing content just to fill them.**\n"
+    "Field description:\n"
+    "1. summary: content summary — summarize only events, decisions, and conversation progress; "
+    "do not include user profile information.\n"
+    "   **Compress tool results heavily**: tool results in the content are often verbatim tool output "
+    "(e.g., old conversations returned by memory tree exploration, file contents). The summary only "
+    "needs to distill what is of actual value to later conversation (key conclusions, data, decisions, "
+    "user's exact words), in one or two sentences about what was gained from it; "
+    "**do not paraphrase, repeat, or condense details of the tool-returned text** — "
+    "the original text is saved with the node, the summary need not carry it.\n"
+    "2. profile: user profile — extract the user's traits from this conversation; leave dimensions "
+    "with no relevant information as empty arrays:\n"
+    "   preferences likes and preferences / personality character and style / habits routine behavior / goals motives\n"
+    "   You may reference existing node profiles in context: continue known knowledge, add new observations, "
+    "do not repeat or contradict.\n"
+    "3. future_notes: later clarifications — look at the raw messages AFTER the region being compressed; "
+    "fill only when later messages directly explain/clarify/correct/supplement this region's content "
+    "(note which point of this region + what the later messages say); if unrelated, leave empty; "
+    "if there are no raw messages after this region, leave empty array\n\n"
+    "Content to compress:\n"
+    "{original_text}\n"
+    "Please give the compression result:"
+)
+
+_PARENT_INSTRUCTION_EN = (
+    "Please compress the following {n} nodes into structured JSON (output ONLY JSON, no other text).\n"
+    "**Always write the summary, profile, and future_notes in English.**\n"
+    "**Fill each field according to actual content: keep fields with no relevant information empty "
+    "(profile dimensions as empty arrays, future_notes as empty array); do not fabricate, guess, "
+    "or repeat existing content just to fill them.**\n"
+    "Field description:\n"
+    "1. summary: a distillation of the child nodes' summaries\n"
+    "2. profile: a rolled-up distillation of the child nodes' profiles (merge same dimensions; "
+    "leave dimensions with no information as empty arrays):\n"
+    "   preferences likes and preferences / personality character and style / habits routine behavior / goals motives\n"
+    "3. future_notes: if a child's future_notes is already absorbed by the parent summary/profile, "
+    "do not repeat; only fill new clarifications that have not been absorbed\n\n"
+    "Node information:\n"
+    "{child_summaries}\n"
+    "Please give the compression result:"
+)
+
 
 class SummarizationMiddleware(AgentMiddleware):
     """压缩 + 记忆树一体化（移植自 yaya YayaSummarizationMiddleware，扩展画像字段）。
@@ -326,6 +375,16 @@ class SummarizationMiddleware(AgentMiddleware):
     def __init__(self, session) -> None:
         super().__init__()
         self.session = session
+        # 压缩摘要语言（评测用）：session.summary_language="en" → 英文指令
+        self.language: str = (getattr(session, "summary_language", None) or "zh").lower()
+
+    def _leaf_instruction(self, original_text: str) -> str:
+        tpl = _LEAF_INSTRUCTION_EN if self.language == "en" else _LEAF_INSTRUCTION
+        return tpl.format(original_text=original_text)
+
+    def _parent_instruction(self, n: int, child_summaries: str) -> str:
+        tpl = _PARENT_INSTRUCTION_EN if self.language == "en" else _PARENT_INSTRUCTION
+        return tpl.format(n=n, child_summaries=child_summaries)
 
     def before_model(self, state: PlannerState, runtime: Runtime) -> dict | None:
         # 压缩已改为异步线程（session._maybe_compress_async / _run_async_compression）：
@@ -459,8 +518,7 @@ class SummarizationMiddleware(AgentMiddleware):
         end_pos = start_pos + len(batch) - 1
 
         original_text = "\n".join(self._speaker_text(m) for m in batch)
-        instruction = HumanMessage(
-            content=_LEAF_INSTRUCTION.format(original_text=original_text))
+        instruction = HumanMessage(content=self._leaf_instruction(original_text))
         out = self._call_compress(msgs, instruction)
         if not out or not out.summary or not out.summary.strip():
             _logger.warning("[compress] 叶子摘要为空，跳过")
@@ -529,8 +587,7 @@ class SummarizationMiddleware(AgentMiddleware):
                     metadata={"node_id": n["id"]}))
 
         child_summaries = "\n".join(self._node_full_text(n) for n in to_compact)
-        instruction = HumanMessage(
-            content=_PARENT_INSTRUCTION.format(n=len(to_compact), child_summaries=child_summaries))
+        instruction = HumanMessage(content=self._parent_instruction(len(to_compact), child_summaries))
         out = self._call_compress(child_msgs, instruction)
         if not out or not out.summary or not out.summary.strip():
             _logger.warning("[compress] 父节点摘要为空，停止向上压缩")
@@ -587,7 +644,11 @@ class SummarizationMiddleware(AgentMiddleware):
         """
         from langchain_core.messages import SystemMessage
         model = self.session._get_summary_model()
-        request = [SystemMessage(content=self.session.system_prompt)]
+        # 评测/多语言场景可覆盖压缩用 system prompt（默认 = 主会话角色卡）：
+        # 中文角色卡会压过英文压缩指令，导致摘要语言不受控
+        sys_prompt = (getattr(self.session, "summary_system_prompt", None)
+                      or self.session.system_prompt)
+        request = [SystemMessage(content=sys_prompt)]
         request.extend(context_msgs)
         request.append(instruction)
         try:
@@ -601,7 +662,7 @@ class SummarizationMiddleware(AgentMiddleware):
             _logger.warning("[compress] with_structured_output 失败，降级解析")
         try:
             r = model.invoke(request)
-            text = (r.content or "").strip()
+            text = _strip_json_fence((r.content or "").strip())
             return MemoryNodeOutput.model_validate_json(text)
         except Exception:
             _logger.warning("[compress] JSON 解析失败，降级为纯摘要")
@@ -616,3 +677,16 @@ class SummarizationMiddleware(AgentMiddleware):
     def _speaker_text(m) -> str:
         role = {"human": "用户", "ai": "小助", "tool": "工具结果"}.get(m.type, m.type)
         return f"{role}: {m.content}"
+
+
+def _strip_json_fence(text: str) -> str:
+    """剥掉模型输出的 markdown ```json 代码块围栏（降级解析前清洗）。"""
+    s = text.strip()
+    if s.startswith("```"):
+        first_nl = s.find("\n")
+        if first_nl != -1:
+            s = s[first_nl + 1:]
+        if s.rstrip().endswith("```"):
+            s = s.rstrip()[:-3]
+        s = s.strip()
+    return s

@@ -674,8 +674,41 @@
     }
   }
 
-  // 自动朗读（audio 事件）
-  window.planner.onAudio((url) => { playAudioUrl(url); });
+  // 自动朗读（audio 事件）——语音连续对话模式下抑制（流式 TTS 接管）
+  window.planner.onAudio((url) => {
+    if (window.voiceMode && window.voiceMode.shouldSuppressAudio()) return;
+    playAudioUrl(url);
+  });
+
+  // ── 语音连续对话模式（免按 VAD + 打断 + 流式 TTS）─────────
+  const voiceBtn = $('#voice-btn');
+  voiceBtn.addEventListener('click', () => {
+    if (window.voiceMode) window.voiceMode.requestToggle();
+  });
+  // active 判定：面板形态（本窗口 = 面板）时负责语音收发；
+  // 面板窗口在 morphing_out（收起动画中）仍视为面板形态
+  let voicePanelShown = true;
+  window.planner.onPanelState((s) => {
+    const shown = s === 'shown' || s === 'morphing_in' || s === 'morphing_out';
+    if (shown !== voicePanelShown) {
+      voicePanelShown = shown;
+      if (window.voiceMode) window.voiceMode.notifyVisibility();
+    }
+  });
+  window.voiceMode.attach({
+    audioEl: ttsAudio,
+    isActive: () => voicePanelShown,
+    onUi: {
+      setState: (state, enabled) => {
+        voiceBtn.classList.toggle('active', enabled);
+        voiceBtn.title = enabled
+          ? '语音对话中（' + (state === 'recording' ? '正在听你说话…' : '待命中，直接说话')
+            + '）——点击关闭'
+          : '语音对话模式（免按连续对话，说话可打断小助）';
+      },
+      interruptSpeech: () => { /* voiceMode 已 pause ttsAudio */ },
+    },
+  });
 
   // ── 发送/停止合并按钮：生成中点击打断；长按录音后拦截随后的 click ──
   sendBtn.addEventListener('click', (e) => {

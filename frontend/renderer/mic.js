@@ -22,9 +22,18 @@
   }
 
   // 确保常驻流就绪（幂等；失败可重试）
+  // 显式开启回声消除（AEC）+ 降噪 + 自动增益：自己的 TTS 从扬声器出来会被
+  // 麦克风重新捕获，AEC 在源头消掉（依赖 Chromium/系统实现，效果随环境）——
+  // 不够的部分由 voiceMode 的"播放中提高 VAD 阈值"兜底
   function init() {
     if (!streamPromise) {
-      streamPromise = navigator.mediaDevices.getUserMedia({ audio: true })
+      streamPromise = navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+      })
         .then((s) => {
           sharedStream = s;
           return s;

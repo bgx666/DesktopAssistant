@@ -492,6 +492,28 @@ body.drop-overlay::after {
 #send:hover { transform: translateY(-1px); box-shadow: 0 6px 16px rgba(91, 124, 250, 0.4); }
 #send:active { transform: translateY(0); }
 #send:disabled { opacity: 0.5; }
+
+/* 语音对话模式按钮（麦克风 toggle）：次按钮样式，开启时青色呼吸 */
+#voice-btn {
+  border: 1px solid var(--line); border-radius: 12px; padding: 0; cursor: pointer;
+  width: 42px; height: 38px; font-size: 15px; line-height: 1;
+  background: var(--glass-strong);
+  color: #7a8aa5;
+  transition: transform 0.15s, border-color 0.2s, color 0.2s, box-shadow 0.2s;
+}
+#voice-btn:hover { transform: translateY(-1px); border-color: var(--primary-2); color: var(--primary); }
+#voice-btn:active { transform: translateY(0); }
+#voice-btn.active {
+  border-color: #00c9d0;
+  color: #00c9d0;
+  background: rgba(0, 201, 208, 0.12);
+  box-shadow: 0 0 0 3px rgba(0, 201, 208, 0.18), 0 0 14px rgba(0, 201, 208, 0.35);
+  animation: voice-breathe-btn 2.4s ease-in-out infinite;
+}
+@keyframes voice-breathe-btn {
+  0%, 100% { box-shadow: 0 0 0 3px rgba(0, 201, 208, 0.18), 0 0 14px rgba(0, 201, 208, 0.35); }
+  50% { box-shadow: 0 0 0 4px rgba(0, 201, 208, 0.3), 0 0 22px rgba(0, 201, 208, 0.6); }
+}
 /* 生成中：发送按钮变"停止"（红色） */
 #send.stopping {
   background: linear-gradient(135deg, #ff8a97, #e5484d);

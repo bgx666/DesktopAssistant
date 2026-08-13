@@ -44,12 +44,16 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _send_json(self, obj: dict, status: int = 200) -> None:
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            # 客户端已断开（长轮询中途退出/窗口关闭）：静默忽略，不刷错误栈
+            pass
 
     def _read_json_body(self) -> dict:
         length = int(self.headers.get("Content-Length") or 0)
@@ -85,7 +89,17 @@ class _Handler(BaseHTTPRequestHandler):
         elif path == "/settings":
             self._send_json({"ok": True, "settings": self.session.settings})
         elif path == "/dequeue":
-            events = self.session.drain_events()
+            # 长轮询：?wait=N（秒，0~30）→ 无事件时服务端等待至多有事件/超时；
+            # 不带 wait 保持立即返回（测试/旧客户端兼容）。前端 main.js 传 ?wait=25。
+            query = parse_qs(parsed.query)
+            wait = query.get("wait", [None])[0]
+            timeout = None
+            if wait is not None:
+                try:
+                    timeout = max(0.0, min(30.0, float(wait)))
+                except (TypeError, ValueError):
+                    timeout = None
+            events = self.session.drain_events(timeout=timeout)
             self._send_json({"ok": True, "events": events, "state": self.session.state_dict()})
         elif path == "/tasks":
             query = parse_qs(parsed.query)

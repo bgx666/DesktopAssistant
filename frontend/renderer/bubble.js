@@ -90,11 +90,10 @@
   function startSoundRing() {
     if (ringRaf) return;
     window.mic.getAnalyser().then((analyser) => {
-      if (!analyser || !longPress) return;
+      if (!analyser) return;
       const data = new Uint8Array(analyser.frequencyBinCount);
       ring.classList.add('active');
       const step = () => {
-        if (!longPress) { stopSoundRing(); return; }
         analyser.getByteFrequencyData(data);
         let sum = 0;
         for (let i = 0; i < 48; i++) sum += data[i];          // 低频段平均音量
@@ -172,7 +171,7 @@
 
   function cancelMic() {
     core.classList.remove('recording');
-    stopSoundRing();
+    stopRingIfVoiceIdle();
     if (micStop) {
       const s = micStop;
       micStop = null;
@@ -183,6 +182,16 @@
     if (p) {
       p.then((s2) => { if (s2) s2(true); }).catch(() => {});   // 未就绪：就绪后立即丢弃
     }
+  }
+
+  function stopRingIfVoiceIdle() {
+    // 语音对话模式聆听/录音中：环由 voiceMode 管理，长按结束不误停
+    const vm = window.voiceMode;
+    if (vm && vm.isEnabled() &&
+        (vm.state() === 'listening' || vm.state() === 'recording')) {
+      return;
+    }
+    stopSoundRing();
   }
 
   document.addEventListener('mousemove', (e) => {
@@ -213,7 +222,7 @@
     const dy = e.screenY - startY;
     const isClick = Math.abs(dx) < 6 && Math.abs(dy) < 6;
     core.classList.remove('recording');
-    stopSoundRing();
+    stopRingIfVoiceIdle();
     if (!isClick) {
       if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
       cancelMic();
@@ -335,10 +344,12 @@
     if (!s) return;
     if (s.offline) {
       dot.classList.remove('thinking');
+      core.classList.remove('thinking');
       dot.classList.add('offline');
       return;
     }
     dot.classList.toggle('thinking', !!s.thinking);
+    core.classList.toggle('thinking', !!s.thinking);   // 呼吸式闪烁（球体辉光）
     dot.classList.remove('offline');
     const overdue = (s.plan && s.plan.overdue_count) || 0;
     badge.classList.toggle('hidden', !overdue);
@@ -349,6 +360,8 @@
   // ── 语音播报（气泡朗读）：audio 事件 → 主进程下载为 file:// 后播放 ──
   const ttsAudio = document.getElementById('tts-audio');
   window.planner.onAudio(async (url) => {
+    // 语音连续对话模式：流式 TTS 接管朗读，抑制整句合成（防双播）
+    if (window.voiceMode && window.voiceMode.shouldSuppressAudio()) return;
     if (!url) return;
     try {
       const fileUrl = await window.planner.audioFile(url);
@@ -361,5 +374,37 @@
       window.planner.reportLog('tts(bubble): play FAIL ' + e.name + ' ' + e.message);
       console.error('[tts] 气泡播放失败:', e);
     }
+  });
+
+  // ── 语音连续对话模式（免按 VAD + 打断 + 流式 TTS）─────────
+  // active 判定：悬浮球形态（面板未展开）时本窗口负责语音收发
+  let panelShown = false;               // 面板是否展开（主进程广播）
+  window.planner.onPanelState((s) => {
+    const shown = s === 'shown' || s === 'morphing_in';
+    if (shown !== panelShown) {
+      panelShown = shown;
+      if (window.voiceMode) window.voiceMode.notifyVisibility();
+    }
+  });
+  window.voiceMode.attach({
+    audioEl: ttsAudio,
+    isActive: () => !panelShown,
+    onUi: {
+      setState: (state, enabled) => {
+        core.classList.toggle('voice-on', enabled);
+        const recording = enabled && state === 'recording';
+        core.classList.toggle('recording', recording);
+        core.title = enabled
+          ? '语音对话中（直接说话即可，说话可打断小助）；单击：看最近回复；长按：按住说话；右键：更多'
+          : '单击：看小助最近说了什么；长按：说话；拖文件到这里：挂载后语音一起发送；右键：更多';
+        // 雷达环：聆听（listening/recording）时随音量伸缩（与长按录音同款）
+        if (enabled && (state === 'listening' || state === 'recording')) {
+          startSoundRing();
+        } else {
+          stopSoundRing();
+        }
+      },
+      interruptSpeech: () => { /* voiceMode 已 pause ttsAudio */ },
+    },
   });
 })();

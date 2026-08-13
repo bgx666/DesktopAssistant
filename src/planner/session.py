@@ -56,6 +56,20 @@ def _now() -> datetime:
     return datetime.now(_TZ)
 
 
+def _close_stream_bg(gen) -> None:
+    """后台关闭 langgraph 同步流。
+
+    langgraph 的 sync stream 被 close 时会等底层模型流自然结束
+    （BackgroundExecutor.__exit__ 里 concurrent.futures.wait(pending)），
+    若在主线程 close 会阻塞整轮生成——放到 daemon 线程做，主线程立即返回，
+    chat_lock / _generating 尽快释放给下一条消息。
+    """
+    try:
+        gen.close()
+    except Exception:
+        pass
+
+
 class PlannerSession:
     """小助的会话状态：任务库、对话 buffer、事件队列、调度线程、免打扰、记忆树。"""
 
@@ -68,6 +82,12 @@ class PlannerSession:
         # 用户设置（data/settings.json；压缩参数/长按时间/LLM 配置）
         from .settings import load_settings
         self.settings: dict = load_settings(self.data_root)
+
+        # 压缩摘要语言（评测用）：None/zh = 中文指令（生产默认），"en" = 英文
+        self.summary_language: str | None = None
+        # 压缩用 system prompt 覆盖（评测用英文摘要系统提示，否则中文角色卡
+        # 会压过英文压缩指令导致摘要语言不受控）；None = 主会话角色卡
+        self.summary_system_prompt: str | None = None
 
         # 存储
         self.db = TasksDb(self.data_root / "planner.db")
@@ -111,9 +131,9 @@ class PlannerSession:
         # 对外状态
         self.thinking: bool = False
 
-        # 事件队列（/dequeue drain）
+        # 事件队列（/dequeue drain）：Condition 支持长轮询（无事件时 wait 到有事件/超时）
         self._events: list[dict] = []
-        self._events_lock = threading.Lock()
+        self._events_cond = threading.Condition()
 
         # 心跳调度（分钟级）
         self._next_heartbeat_at: float = 0.0
@@ -280,8 +300,9 @@ class PlannerSession:
     # ── 事件队列 ──────────────────────────────────────────────
 
     def push_event(self, ev: dict) -> None:
-        with self._events_lock:
+        with self._events_cond:
             self._events.append(ev)
+            self._events_cond.notify_all()
 
     def push_text(self, content: str) -> None:
         self.push_event({"type": "text", "content": content, "from": CHARACTER_ID})
@@ -325,8 +346,21 @@ class PlannerSession:
     def push_plan_update(self) -> None:
         self.push_event({"type": "plan_update", "date": _now().strftime("%Y-%m-%d")})
 
-    def drain_events(self) -> list[dict]:
-        with self._events_lock:
+    def drain_events(self, timeout: float | None = None) -> list[dict]:
+        """一次性 drain 事件队列。
+
+        timeout 为 None/0 → 立即返回（现有行为，测试兼容）；
+        timeout > 0 → 无事件时等待至多 timeout 秒（长轮询，供 /dequeue?wait=N 用），
+        有事件或超时即返回。
+        """
+        with self._events_cond:
+            if timeout:
+                deadline = time.time() + timeout
+                while not self._events:
+                    remaining = deadline - time.time()
+                    if remaining <= 0:
+                        break
+                    self._events_cond.wait(timeout=remaining)
             events = self._events
             self._events = []
             return events
@@ -1005,12 +1039,19 @@ class PlannerSession:
         # 收缩消息列表，按长度增量会漏掉压缩后新增的 ToolMessage → 工具卡片
         # 永远停在"正在执行"转圈。按消息 id 去重，与列表收缩无关。
         seen_msg_ids = {getattr(m, "id", None) or id(m) for m in input_msgs}
+        interrupted = False
         try:
             stream = self._agent.stream(
                 {"messages": input_msgs, "model_call_count": 0, "set_heartbeat_called": False},
                 stream_mode=["messages", "values"],
             )
             for item in stream:
+                # 真打断：用户说话/点停止 → 立即停止消费流。已流式的半句留在面板
+                # （text_stream），不落 buffer（被打断的回复不入上下文，下一轮从
+                # 干净状态续接）。
+                if self._stop_requested:
+                    interrupted = True
+                    break
                 kind = item[0]
                 data = item[1]
                 if kind == "messages":
@@ -1058,6 +1099,14 @@ class PlannerSession:
             self.push_log(f"小助走神了一下（生成出错：{exc}）")
             self.schedule_heartbeat(self._next_silent_minutes())
             return
+        if interrupted:
+            _logger.info("[agent] 用户打断，立即停止当前生成")
+            # 后台关闭流：langgraph sync stream 的 close() 会阻塞等待底层模型流
+            # 自然结束，放 daemon 线程做——主线程立即返回，chat_lock/_generating
+            # 尽快释放给下一条消息。del stream 移除本地引用，返回时不再二次 close。
+            threading.Thread(target=_close_stream_bg, args=(stream,),
+                             name="planner-stream-close", daemon=True).start()
+            del stream
         if final_messages:
             with self.buffer_lock:
                 # 过滤"无话可说"的空回复（无文本且无工具调用）：

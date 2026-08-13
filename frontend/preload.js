@@ -27,6 +27,11 @@ contextBridge.exposeInMainWorld('planner', {
   onUiSettings: (cb) => ipcRenderer.on('ui-settings', (e, s) => cb(s)),
   onSettings: (cb) => ipcRenderer.on('settings', (e, s) => cb(s)),
   settingsSaved: () => ipcRenderer.send('settings-saved'),
+  // 语音连续对话模式（主进程统一持有开关，双窗口广播）
+  setVoiceMode: (on) => ipcRenderer.send('voice-mode-set', !!on),
+  onVoiceMode: (cb) => ipcRenderer.on('voice-mode', (e, on) => cb(on)),
+  // 面板形态广播（hidden/shown/morphing_*）：语音模式 active 窗口判定用
+  onPanelState: (cb) => ipcRenderer.on('panel-state', (e, s) => cb(s)),
   // 悬浮球
   togglePanel: () => ipcRenderer.send('toggle-panel'),
   bubbleMenu: () => ipcRenderer.send('bubble-menu'),
