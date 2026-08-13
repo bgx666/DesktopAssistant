@@ -65,7 +65,7 @@ if (-not (Test-Path $venvPythonExe)) {
     if ($LASTEXITCODE -ne 0) { throw "venv 创建失败" }
 }
 Write-Host "[build] 同步依赖（pip install -e）..."
-& $venvPythonExe -m pip install -e $AppDir
+& $venvPythonExe -m pip install -e $AppDir 2>&1
 if ($LASTEXITCODE -ne 0) { throw "pip install 失败" }
 
 # ── 5. frontend 依赖（首次 npm install，electron 已缓存则快）─
@@ -73,7 +73,7 @@ if (-not (Test-Path (Join-Path $AppDir "frontend\node_modules"))) {
     Write-Host "[build] 首次 npm install..."
     Push-Location (Join-Path $AppDir "frontend")
     try {
-        & npm install
+        & npm install 2>&1
         if ($LASTEXITCODE -ne 0) { throw "npm install 失败" }
     } finally { Pop-Location }
 }
