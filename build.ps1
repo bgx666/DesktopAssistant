@@ -1,4 +1,4 @@
-# build.ps1 —— 一键发版：复制代码到仓库上一级 planner-release 并生成 start.bat
+﻿# build.ps1 —— 一键发版：复制代码到仓库上一级 planner-release 并生成 start.bat
 # 用法：
 #   powershell -File build.ps1            # 自动 vX.Y.Z patch+1
 #   powershell -File build.ps1 -Version v0.2.0   # 手动指定
@@ -7,8 +7,7 @@
 
 param(
     [string]$Version = "",
-    [string]$ReleaseRoot = "",   # 默认 = 仓库上一级 planner-release
-    [switch]$SkipPip             # 已有 venv 时跳过 pip install -e（代码复制后即生效）
+    [string]$ReleaseRoot = ""   # 默认 = 仓库上一级 planner-release
 )
 
 $ErrorActionPreference = "Stop"
@@ -61,18 +60,13 @@ Copy-Item (Join-Path $DevRoot "pyproject.toml") $AppDir -Force
 
 # ── 4. venv（可编辑安装：代码复制即更新；每次构建同步依赖，新依赖自动进 release）──
 if (-not (Test-Path $venvPythonExe)) {
-    if ($SkipPip) { throw "-SkipPip 需要已存在的 venv：$venvPythonExe" }
     Write-Host "[build] 首次创建 venv..."
     & $MinicondaPython -m venv $VenvDir
     if ($LASTEXITCODE -ne 0) { throw "venv 创建失败" }
 }
-if ($SkipPip) {
-    Write-Host "[build] 跳过 pip install（-SkipPip，使用现有 release venv）"
-} else {
-    Write-Host "[build] 同步依赖（pip install -e）..."
-    & $venvPythonExe -m pip install -e $AppDir 2>&1
-    if ($LASTEXITCODE -ne 0) { throw "pip install 失败" }
-}
+Write-Host "[build] 同步依赖（pip install -e）..."
+& $venvPythonExe -m pip install -e $AppDir 2>&1
+if ($LASTEXITCODE -ne 0) { throw "pip install 失败" }
 
 # ── 5. frontend 依赖（首次 npm install，electron 已缓存则快）─
 if (-not (Test-Path (Join-Path $AppDir "frontend\node_modules"))) {
