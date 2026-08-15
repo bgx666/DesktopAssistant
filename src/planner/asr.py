@@ -96,15 +96,29 @@ class AsrClient:
         self._lock = threading.Lock()
         self._load_error = ""
         self._enabled = _HAS_DEP
+        self._prepare_started = False
         if not self._enabled:
             _logger.info("[asr] 语音输入未启用：funasr_onnx 未安装")
             return
-        if auto_prepare is None:
-            from . import config as _config
-            auto_prepare = not _config.PLANNER_MOCK_LLM
-        if auto_prepare:
-            # 模型未就绪：后台下载 + 加载（不阻塞启动，幂等：已缓存则秒回）
-            threading.Thread(target=self._prepare, name="planner-asr-prep", daemon=True).start()
+        # 默认不在构造时自动加载：由 server.main 在 HTTP 服务监听后再调用
+        # start_prepare()，避免模型初始化拖慢 /init 与首个 /dequeue。
+        # 保留 auto_prepare=True 作为显式立即预加载的兼容入口。
+        if auto_prepare is True:
+            self.start_prepare()
+
+    def start_prepare(self) -> None:
+        """启动后台模型预加载（幂等）。
+
+        模型仍在启动阶段加载，但调用方应确保 HTTP 服务已先监听，
+        这样红点变绿不会被模型初始化阻塞。
+        """
+        if not self._enabled:
+            return
+        with self._lock:
+            if self._prepare_started:
+                return
+            self._prepare_started = True
+        threading.Thread(target=self._prepare, name="planner-asr-prep", daemon=True).start()
 
     @property
     def enabled(self) -> bool:

@@ -75,7 +75,7 @@ function saveBubbleState(bounds) {
 
 async function backendAlive() {
   try {
-    const res = await fetch(BACKEND_URL + '/init', { signal: AbortSignal.timeout(2500) });
+    const res = await fetch(BACKEND_URL + '/init', { signal: AbortSignal.timeout(1000) });
     return res.ok;
   } catch {
     return false;
@@ -606,8 +606,28 @@ function showBubble() {
 // ── 主进程 /dequeue 长轮询（唯一消费者）────────────────────
 // 事件 + 状态统一由主进程分发：事件按面板状态（气泡/面板），
 // 状态广播给所有窗口（bubble/面板），各窗口不再各自轮询 /state。
+// 主进程健康检查：用轻量接口判断后端是否在线，成功后立刻广播状态（变绿），
+// 再开始 /dequeue 长轮询。避免首次长轮询无事件时挂 25 秒导致红点迟迟不灭。
+async function checkBackend() {
+  if (quitting) return;
+  dequeueTimer = null;
+  try {
+    const res = await fetch(BACKEND_URL + '/state', { signal: AbortSignal.timeout(2000) });
+    if (!res.ok) throw new Error('bad status');
+    const data = await res.json();
+    broadcastState(data.state);
+    broadcastPanelState();
+    startDequeuePoll();
+  } catch {
+    // 后端尚未就绪 → 广播离线状态，短暂退避后重试健康检查
+    broadcastState({ offline: true });
+    if (!quitting) dequeueTimer = setTimeout(checkBackend, 1000);
+  }
+}
+
 async function pollDequeue() {
   if (quitting) return;
+  dequeueTimer = null;
   let online = false;
   try {
     // 长轮询：后端最多挂 25s（有事件立即返回），客户端 30s 超时兜底。
@@ -649,8 +669,10 @@ async function pollDequeue() {
     // 后端不可达 → 广播离线状态，各窗口状态点变红
     broadcastState({ offline: true });
   } finally {
-    // 在线 → 立即发起下一次长轮询；离线 → 短暂退避后重试（避免空转）
-    if (!quitting) dequeueTimer = setTimeout(pollDequeue, online ? 0 : 1000);
+    // 在线 → 立即发起下一次长轮询；离线 → 回到健康检查，等后端恢复后快速变绿
+    if (!quitting) {
+      dequeueTimer = setTimeout(online ? pollDequeue : checkBackend, online ? 0 : 1000);
+    }
   }
 }
 
@@ -681,6 +703,12 @@ function broadcastPanelState() {
 function startDequeuePoll() {
   if (dequeueTimer) return;
   pollDequeue();   // 自调度长轮询：pollDequeue 完成后再 setTimeout 下一次
+}
+
+// 启动总入口：先做健康检查，确认在线后再进入长轮询
+function startBackendMonitor() {
+  if (dequeueTimer) return;
+  checkBackend();
 }
 
 function toggleDndFromMain() {
@@ -1044,7 +1072,7 @@ if (!gotSingleLock) {
     createBubble();
     createTray();
     ensureBackend(); // 后端不在线则自动拉起
-    startDequeuePoll(); // 主进程独占 /dequeue 消费，按面板状态分发
+    startBackendMonitor(); // 先健康检查，确认在线后再进入 /dequeue 长轮询
   });
 }
 

@@ -325,6 +325,13 @@ def main() -> None:
     _setup_logging(session.data_root)
     session.start_heartbeat()
     httpd = create_server(session, port=port)
+    # 服务已监听后再预加载 ASR 模型：模型初始化是 CPU/GIL 密集操作，
+    # 若在 PlannerSession 构造时启动会拖慢 /init 与首个 /dequeue。
+    # 这里仍然满足“首次启动就加载”，只是不再抢在 HTTP 响应之前。
+    if not session.mock:
+        timer = threading.Timer(0.2, session.asr.start_prepare)
+        timer.daemon = True
+        timer.start()
     mode = "MOCK（脚本化假 LLM）" if session.mock else "真实 LLM"
     _logger.info("planner 后端启动: http://127.0.0.1:%d 模式=%s 数据目录=%s",
                  port, mode, session.data_root)
