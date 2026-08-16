@@ -20,6 +20,7 @@ import logging
 import os
 import re
 import threading
+import time
 import uuid
 from pathlib import Path
 
@@ -254,6 +255,7 @@ class TtsClient:
         self.base_url = base_url
         self.tts_dir = Path(data_root) / "tts"
         self._lock = threading.Lock()
+        self._cleanup_old_audio()   # 启动时清理历史临时音频
         self._local = _KokoroLocal(_KOKORO_MODEL_DIR, voice)
         if engine == "local":
             self._engine_ok = True      # 懒加载，可用性在首次合成时确认
@@ -273,6 +275,52 @@ class TtsClient:
             if not self._engine_ok:
                 _logger.info("[tts] 云引擎未启用：%s",
                              "未配置 PLANNER_TTS_API_KEY" if not api_key else "dashscope SDK 缺失")
+
+    def _cleanup_old_audio(self, max_age_seconds: int = 7 * 24 * 3600,
+                           max_files: int = 200,
+                           max_bytes: int = 200 * 1024 * 1024) -> None:
+        """清理历史合成音频：删除过期文件，并控制总数量/总大小上限。
+
+        data/tts 里的文件只是临时播放用，前端会下载到自己的 tts_cache，
+        后端不需要长期保留。默认保留 7 天以内、最多 200 个文件、200MB。
+        """
+        try:
+            if not self.tts_dir.is_dir():
+                return
+            now = time.time()
+            files = []
+            total = 0
+            for f in self.tts_dir.iterdir():
+                if not f.is_file():
+                    continue
+                try:
+                    st = f.stat()
+                    age = now - st.st_mtime
+                    size = st.st_size
+                except OSError:
+                    continue
+                files.append([age, size, f])
+                total += size
+            # 先删过期文件
+            for item in files:
+                if item[0] > max_age_seconds:
+                    try:
+                        item[2].unlink()
+                        total -= item[1]
+                    except OSError:
+                        pass
+            # 再按“最旧优先”删除，直到数量/大小不超限
+            remaining = [x for x in files if x[2].exists()]
+            remaining.sort(key=lambda x: x[0], reverse=True)   # 最旧在前
+            while remaining and (len(remaining) > max_files or total > max_bytes):
+                item = remaining.pop(0)
+                try:
+                    item[2].unlink()
+                    total -= item[1]
+                except OSError:
+                    pass
+        except Exception:
+            _logger.exception("[tts] 清理旧音频失败")
 
     @property
     def enabled(self) -> bool:
@@ -325,6 +373,7 @@ class TtsClient:
             name = uuid.uuid4().hex + ext
             with self._lock:
                 (self.tts_dir / name).write_bytes(audio)
+            self._cleanup_old_audio()   # 控制目录体积，防止无限增长
             _logger.info("[tts] 合成完成 %s（%d 字节）", name, len(audio))
             return "/tts/" + name
         except Exception:

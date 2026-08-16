@@ -753,6 +753,34 @@ ipcMain.handle('api-fetch', async (e, reqPath, opts = {}) => {
   return { status: res.status, ok: res.ok, text };
 });
 
+// 清理前端 TTS 缓存：只保留最近 7 天、最多 200 个文件 / 200MB
+function cleanupTtsCache(maxAgeMs = 7 * 24 * 3600 * 1000, maxFiles = 200, maxBytes = 200 * 1024 * 1024) {
+  try {
+    const dir = path.join(app.getPath('userData'), 'tts_cache');
+    if (!fs.existsSync(dir)) return;
+    const files = fs.readdirSync(dir).map((name) => {
+      const p = path.join(dir, name);
+      try {
+        const st = fs.statSync(p);
+        return { p, mtimeMs: st.mtimeMs, size: st.size };
+      } catch { return null; }
+    }).filter(Boolean);
+    const now = Date.now();
+    let total = files.reduce((s, f) => s + f.size, 0);
+    const expired = files.filter((f) => now - f.mtimeMs > maxAgeMs);
+    for (const f of expired) {
+      try { fs.unlinkSync(f.p); total -= f.size; } catch { /* 忽略 */ }
+    }
+    let remaining = files.filter((f) => now - f.mtimeMs <= maxAgeMs && fs.existsSync(f.p));
+    remaining.sort((a, b) => a.mtimeMs - b.mtimeMs);   // 最旧在前
+    while (remaining.length > maxFiles || total > maxBytes) {
+      const f = remaining.shift();
+      if (!f) break;
+      try { fs.unlinkSync(f.p); total -= f.size; } catch { /* 忽略 */ }
+    }
+  } catch { /* 清理失败不影响播放 */ }
+}
+
 // 语音下载：主进程拉 wav/mp3 → 写 userData/tts_cache → 返回 file:// 路径（渲染直接播放）
 ipcMain.handle('api-audio', async (e, reqPath) => {
   const name = String(reqPath || '').split('/').pop();
@@ -765,6 +793,7 @@ ipcMain.handle('api-audio', async (e, reqPath) => {
     fs.mkdirSync(dir, { recursive: true });
     const file = path.join(dir, name);
     fs.writeFileSync(file, buf);
+    cleanupTtsCache();
     const fileUrl = 'file:///' + file.replace(/\\/g, '/');
     appLog('[tts] audioFile: ' + name + ' ' + buf.length + ' bytes -> ' + fileUrl);
     return fileUrl;
@@ -1073,6 +1102,7 @@ if (!gotSingleLock) {
     });
     createBubble();
     createTray();
+    cleanupTtsCache(); // 启动时清理旧 TTS 缓存
     ensureBackend(); // 后端不在线则自动拉起
     startBackendMonitor(); // 先健康检查，确认在线后再进入 /dequeue 长轮询
   });
