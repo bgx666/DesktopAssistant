@@ -54,6 +54,7 @@
   let playing = false;
   let ttsAudio = null;        // attach 注入的 audio 元素
   let audioFetch = null;      // window.planner.audioFile（主进程代理）
+  let prefetchMap = new Map(); // text -> Promise<fileUrl>，下一句提前合成/下载
 
   function apiFetch(path, opts) {
     return window.planner.apiFetch(path, opts || {});
@@ -212,6 +213,7 @@
     if (ttsAudio) { try { ttsAudio.pause(); } catch { /* 忽略 */ } }
     if (onUi && typeof onUi.interruptSpeech === 'function') onUi.interruptSpeech();
     playQueue = [];
+    prefetchMap = new Map();
     // 停止后端生成（安全位置收尾，已生成文本保留）
     if (thinking || sending) {
       thinking = false;
@@ -254,7 +256,23 @@
   function queueSpeak(text) {
     if (!ttsEnabled || !text || text.length < 2) return;
     playQueue.push(text);
+    // 入队即预取音频：轮到播放时不用再等合成/下载
+    if (!prefetchMap.has(text)) {
+      prefetchMap.set(text, fetchTtsFile(text));
+    }
     pumpPlay();
+  }
+
+  async function fetchTtsFile(text) {
+    try {
+      const r = await apiFetch('/tts/say?text=' + encodeURIComponent(text));
+      const d = JSON.parse(r.text);
+      if (d.ok && d.url) {
+        const fileUrl = await audioFetch(d.url);
+        return fileUrl || null;
+      }
+    } catch { /* 静默 */ }
+    return null;
   }
 
   async function pumpPlay() {
@@ -263,19 +281,25 @@
     const text = playQueue.shift();
     try {
       if (!mutedTts) {
-        const r = await apiFetch('/tts/say?text=' + encodeURIComponent(text));
-        const d = JSON.parse(r.text);
-        if (d.ok && d.url) {
-          const fileUrl = await audioFetch(d.url);
-          if (fileUrl && !mutedTts) {
-            await new Promise((resolve) => {
-              const onEnd = () => { ttsAudio.removeEventListener('ended', onEnd); resolve(); };
-              ttsAudio.addEventListener('ended', onEnd);
-              ttsAudio.onerror = () => { try { ttsAudio.removeAttribute('src'); } catch { /* 忽略 */ } resolve(); };
-              ttsAudio.src = fileUrl;
-              ttsAudio.play().catch(() => resolve());
-            });
-          }
+        let fileUrl = null;
+        if (prefetchMap.has(text)) {
+          fileUrl = await prefetchMap.get(text);
+          prefetchMap.delete(text);
+        } else {
+          fileUrl = await fetchTtsFile(text);
+        }
+        // 提前预取下一条：当前句播放期间，下一句已经在合成/下载
+        if (playQueue.length && !prefetchMap.has(playQueue[0])) {
+          prefetchMap.set(playQueue[0], fetchTtsFile(playQueue[0]));
+        }
+        if (fileUrl && !mutedTts) {
+          await new Promise((resolve) => {
+            const onEnd = () => { ttsAudio.removeEventListener('ended', onEnd); resolve(); };
+            ttsAudio.addEventListener('ended', onEnd);
+            ttsAudio.onerror = () => { try { ttsAudio.removeAttribute('src'); } catch { /* 忽略 */ } resolve(); };
+            ttsAudio.src = fileUrl;
+            ttsAudio.play().catch(() => resolve());
+          });
         }
       }
     } catch { /* 静默 */ } finally {
@@ -292,6 +316,7 @@
     if (stopRec) { try { stopRec(true); } catch { /* 忽略 */ } stopRec = null; }
     if (ttsAudio) { try { ttsAudio.pause(); } catch { /* 忽略 */ } }
     playQueue = [];
+    prefetchMap = new Map();
     streamBuf = '';
     setState('off');
   }

@@ -640,7 +640,9 @@ async function pollDequeue() {
     broadcastState(data.state);
     broadcastPanelState();
     if (!events.length) return;
-    pendingEvents.push(...events);
+    // text_stream 是瞬态流式事件：如果已经发给当前窗口，面板展开时不能重放，
+    // 否则同一句话会被流式 TTS 再播一遍（重复说话）。
+    pendingEvents.push(...events.filter((ev) => ev.type !== 'text_stream'));
     if (pendingEvents.length > 60) pendingEvents.splice(0, pendingEvents.length - 60);
     if (panelState === 'hidden') {
       // 悬浮球形态：文本事件冒气泡；audio 事件 → 气泡窗口播放；
