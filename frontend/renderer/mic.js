@@ -13,6 +13,8 @@
   let audioCtx = null;
   let sharedStream = null;    // 常驻麦克风流（应用生命周期内不释放）
   let streamPromise = null;   // init 幂等（并发调用共享同一个初始化）
+  let processedStream = null; // 高通滤波后的录音流（常驻，幂等创建）
+  let processedPromise = null;
 
   async function getCtx() {
     if (!audioCtx) {
@@ -69,8 +71,33 @@
     return analyserNode;
   }
 
+  // 录音用流：在原始麦克风上串一个 80Hz 高通滤波，减少低频杂音/隆隆声
+  async function getProcessedStream() {
+    if (processedStream) return processedStream;
+    if (!processedPromise) {
+      processedPromise = (async () => {
+        const stream = await init();
+        const ctx = await getCtx();
+        if (ctx.state === 'suspended') { try { await ctx.resume(); } catch { /* 忽略 */ } }
+        const src = ctx.createMediaStreamSource(stream);
+        const filter = ctx.createBiquadFilter();
+        filter.type = 'highpass';
+        filter.frequency.value = 80;
+        const dest = ctx.createMediaStreamDestination();
+        src.connect(filter);
+        filter.connect(dest);
+        processedStream = dest.stream;
+        return processedStream;
+      })().catch((e) => {
+        processedPromise = null;
+        throw e;
+      });
+    }
+    return processedPromise;
+  }
+
   async function begin() {
-    const stream = await init();   // 常驻流：首次启动 0.4~1.3s，之后 ~0ms
+    const stream = await getProcessedStream();   // 常驻流：首次启动 0.4~1.3s，之后 ~0ms
     const rec = new MediaRecorder(stream);
     const chunks = [];
     rec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };

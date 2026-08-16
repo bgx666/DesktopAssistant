@@ -48,6 +48,9 @@
   let ownAudio = false;       // 自己的 TTS 正在播放（扬声器出声 → 麦克风可能捕获）
   let cooldownUntil = 0;      // 播放停止后的冷却截止时间（防回声尾音误触发）
   let ttsEnabled = true;      // 自动语音播报开关（来自后端 settings.tts_enabled）
+  // 自适应噪声底噪：环境越吵，说话开始阈值越高
+  let noiseFloor = 0;
+  let noiseFrames = 0;
 
   // 流式 TTS 状态
   let streamBuf = '';
@@ -126,9 +129,19 @@
       }
       const rms = Math.sqrt(sum / buf.length);
       const now = Date.now();
+      // 自适应噪声底噪：仅在安静、非播放、非冷却时更新
+      if (!speechActive && !ownAudio && rms < END_DB && now >= cooldownUntil) {
+        if (noiseFrames < 50) {
+          noiseFrames++;
+          noiseFloor = (noiseFloor * (noiseFrames - 1) + rms) / noiseFrames;
+        } else {
+          noiseFloor = noiseFloor * 0.98 + rms * 0.02;
+        }
+      }
       // 自己的 TTS 播放中：需要明显大声（且持续更久）才判定为"用户说话/打断"，
       // 避免扬声器声音自我触发；冷却期内不启动新的说话判定
-      const threshold = ownAudio ? START_DB_HIGH : START_DB;
+      const baseThreshold = ownAudio ? START_DB_HIGH : START_DB;
+      const threshold = Math.max(baseThreshold, noiseFloor * 3 + 0.008);
       const holdMs = ownAudio ? START_MS_HIGH : START_MS;
       if (rms > threshold) {
         // 有声音
@@ -196,7 +209,7 @@
           body: wav,
         });
         const d = JSON.parse(r.text);
-        if (d.ok && d.text) {
+        if (d.ok && d.text && isValidAsrText(d.text)) {
           await apiFetch('/chat', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -228,6 +241,16 @@
       thinking = false;
       apiFetch('/stop', { method: 'POST' }).catch(() => { /* 静默 */ });
     }
+  }
+
+  // ASR 结果门控：空/纯标点/纯语气词不触发 LLM
+  function isValidAsrText(text) {
+    if (!text) return false;
+    const t = String(text).replace(/[\s\W_]+/g, '').trim();
+    if (!t) return false;
+    const fillers = new Set(['嗯','啊','哦','呃','唉','哼','哈','呀','吧','呢','嘛','咯','呗','唔','诶','哎']);
+    if (t.length <= 3 && [...t].every((ch) => fillers.has(ch))) return false;
+    return true;
   }
 
   // ── 流式 TTS（text_stream 驱动）──────────────────────────

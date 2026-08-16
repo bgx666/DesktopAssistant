@@ -46,11 +46,31 @@ _TARGET_SR = 16000
 _MAX_WAV_BYTES = 20 * 1024 * 1024
 
 _TAG_RE = re.compile(r"<\|[^|]*\|>")
+# 纯标点/空格/符号清洗用：去掉非文字字符
+_NON_TEXT_RE = re.compile(r"[\W_]+", re.UNICODE)
+# 常见语气词/口头禅：单独出现时不算有效语音输入
+_FILLER_CHARS = set("嗯啊哦呃唉哼哈呀吧呢嘛咯呗唔诶哎")
 
 
 def strip_tags(text: str) -> str:
     """去掉 SenseVoice 输出标签（<|zh|><|NEUTRAL|><|Speech|>…），保留正文。"""
     return _TAG_RE.sub("", text).strip()
+
+
+def _is_useful_text(text: str) -> bool:
+    """判断 ASR 结果是否值得触发 LLM。
+
+    过滤：
+    - 空文本
+    - 只有标点/符号（如“。”）
+    - 只有语气词（如“嗯”“啊”“哦”）
+    """
+    t = _NON_TEXT_RE.sub("", text or "").strip()
+    if not t:
+        return False
+    if len(t) <= 3 and all(ch in _FILLER_CHARS for ch in t):
+        return False
+    return True
 
 
 def wav_to_float32(wav_bytes: bytes) -> np.ndarray | None:
@@ -178,7 +198,8 @@ class AsrClient:
         try:
             raw = model(waveform, language="zh", textnorm="withitn")[0]
             text = strip_tags(raw)
-            if not text:
+            if not _is_useful_text(text):
+                _logger.info("[asr] 识别结果无效，丢弃：%r", text[:60])
                 return None
             _logger.info("[asr] 识别：%s", text[:60])
             return text
