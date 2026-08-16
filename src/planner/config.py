@@ -50,12 +50,21 @@ PLANNER_DND_END_HOUR: int = int(os.getenv("PLANNER_DND_END_HOUR", "8"))
 PLANNER_MORNING_HOUR: int = int(os.getenv("PLANNER_MORNING_HOUR", "8"))
 PLANNER_EVENING_HOUR: int = int(os.getenv("PLANNER_EVENING_HOUR", "21"))
 
-# 语音合成（本地 Kokoro-82M-zh 默认；PLANNER_TTS_ENGINE=cloud 时用 DashScope）
+# 语音合成（本地 Kokoro-82M-zh 默认；PLANNER_TTS_ENGINE=cloud 时用 DashScope；
+# PLANNER_TTS_ENGINE=mimo 时用小米 MiMo TTS，OpenAI 兼容接口）
 PLANNER_TTS_ENGINE: str = os.getenv("PLANNER_TTS_ENGINE", "local").strip().lower()
 PLANNER_TTS_API_KEY: str = os.getenv(
     "PLANNER_TTS_API_KEY", os.getenv("DASHSCOPE_API_KEY", "")).strip()
 PLANNER_TTS_MODEL: str = os.getenv("PLANNER_TTS_MODEL", "qwen-audio-3.0-tts-flash")
 PLANNER_TTS_VOICE: str = os.getenv("PLANNER_TTS_VOICE", "longanhuan_v3.6")
+
+# 小米 MiMo TTS（OpenAI 兼容 /v1/chat/completions，TTS 系列当前限时免费）
+PLANNER_MIMO_API_KEY: str = os.getenv(
+    "PLANNER_MIMO_API_KEY", os.getenv("PLANNER_TTS_API_KEY", "")).strip()
+PLANNER_MIMO_BASE_URL: str = os.getenv(
+    "PLANNER_MIMO_BASE_URL", "https://api.xiaomimimo.com/v1").strip()
+PLANNER_MIMO_MODEL: str = os.getenv("PLANNER_MIMO_MODEL", "mimo-v2.5-tts").strip()
+PLANNER_MIMO_VOICE: str = os.getenv("PLANNER_MIMO_VOICE", "mimo_default").strip()
 
 # LLM 兜底心跳（LLM 没调 heartbeat 时）
 PLANNER_FALLBACK_MINUTES: int = int(os.getenv("PLANNER_FALLBACK_MINUTES", "60"))

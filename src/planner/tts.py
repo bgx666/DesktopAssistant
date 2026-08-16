@@ -1,9 +1,11 @@
-"""语音合成：本地 Kokoro-82M-zh（默认，免费离线）+ DashScope 云引擎（可选）。
+"""语音合成：本地 Kokoro-82M-zh（默认，免费离线）+ DashScope 云引擎 + 小米 MiMo TTS。
 
-引擎选择：PLANNER_TTS_ENGINE = local（默认）| cloud。
+引擎选择：PLANNER_TTS_ENGINE = local（默认）| cloud | mimo。
 - local：Kokoro v1.1-zh onnx（onnxruntime 推理，无 torch）——中文音素用 misaki[zh]，
   模型缓存 ~/.cache/planner_tts（共享，dev/release 共用，下载一次离线可用）
 - cloud：DashScope Qwen-Audio-TTS/CosyVoice（需 PLANNER_TTS_API_KEY）
+- mimo：小米 MiMo TTS（OpenAI 兼容 /v1/chat/completions，需 PLANNER_MIMO_API_KEY；
+  TTS 系列当前限时免费）
 
 引擎不可用/合成失败 → enabled=False 或返回 None，全链路静默降级（不朗读、不影响生成）。
 
@@ -51,6 +53,19 @@ _CHAR_MAP = {
     "\u027b": "\u0292",     # ʕ → ʐ
     "\uab67": "\u03c7",     # ꭓ → χ
 }
+
+# 小米 MiMo TTS 预置音色（官方文档 2026-08 版本）
+_MIMO_VOICES = [
+    {"id": "mimo_default", "label": "MiMo 默认（中国集群=冰糖）"},
+    {"id": "冰糖", "label": "冰糖 · 中文女声"},
+    {"id": "茉莉", "label": "茉莉 · 中文女声"},
+    {"id": "苏打", "label": "苏打 · 中文男声"},
+    {"id": "白桦", "label": "白桦 · 中文男声"},
+    {"id": "Mia", "label": "Mia · 英文女声"},
+    {"id": "Chloe", "label": "Chloe · 英文女声"},
+    {"id": "Milo", "label": "Milo · 英文男声"},
+    {"id": "Dean", "label": "Dean · 英文男声"},
+]
 
 
 def clean_speech_text(text: str) -> str:
@@ -227,20 +242,31 @@ class _KokoroLocal:
 
 
 class TtsClient:
-    """语音合成客户端（engine: local=Kokoro / cloud=DashScope）。"""
+    """语音合成客户端（engine: local=Kokoro / cloud=DashScope / mimo=小米 MiMo）。"""
 
     def __init__(self, data_root: Path, engine: str = "local",
-                 api_key: str = "", model: str = "", voice: str = "zf_001") -> None:
+                 api_key: str = "", model: str = "", voice: str = "zf_001",
+                 base_url: str = "") -> None:
         self.engine = engine
         self.api_key = api_key
         self.model = model
         self.voice = voice
+        self.base_url = base_url
         self.tts_dir = Path(data_root) / "tts"
         self._lock = threading.Lock()
         self._local = _KokoroLocal(_KOKORO_MODEL_DIR, voice)
         if engine == "local":
             self._engine_ok = True      # 懒加载，可用性在首次合成时确认
             self._enabled = True        # 自动播报开关（设置里可关；手动喇叭不受限）
+        elif engine == "mimo":
+            # 小米 MiMo TTS：OpenAI 兼容 HTTP 接口，无需额外 SDK
+            self.model = model or "mimo-v2.5-tts"
+            self.voice = voice or "mimo_default"
+            self.base_url = base_url or "https://api.xiaomimimo.com/v1"
+            self._engine_ok = bool(api_key)
+            self._enabled = self._engine_ok
+            if not self._engine_ok:
+                _logger.info("[tts] MiMo 引擎未启用：未配置 PLANNER_MIMO_API_KEY")
         else:
             self._engine_ok = bool(api_key and _HAS_DASHSCOPE)
             self._enabled = self._engine_ok
@@ -254,7 +280,9 @@ class TtsClient:
         return self._enabled
 
     def list_voices(self) -> list[dict]:
-        """可用音色列表（zf_xxx 女声 / zm_xxx 男声），按编号排序。"""
+        """可用音色列表（按引擎返回：Kokoro 本地音色 / MiMo 预置音色）。"""
+        if self.engine == "mimo":
+            return list(_MIMO_VOICES)
         voices_dir = _KOKORO_MODEL_DIR / "voices"
         if not voices_dir.is_dir():
             return []
@@ -283,6 +311,9 @@ class TtsClient:
             if self.engine == "local":
                 audio = self._local.synthesize(content, voice=use_voice)
                 ext = ".wav"
+            elif self.engine == "mimo":
+                audio = self._synthesize_mimo(content, use_voice)
+                ext = ".wav"
             else:
                 dashscope.api_key = self.api_key
                 synthesizer = SpeechSynthesizer(model=self.model, voice=self.voice)
@@ -298,6 +329,41 @@ class TtsClient:
             return "/tts/" + name
         except Exception:
             _logger.exception("[tts] 合成失败")
+            return None
+
+    def _synthesize_mimo(self, text: str, voice: str) -> bytes | None:
+        """调用小米 MiMo TTS（OpenAI 兼容 /chat/completions）→ wav bytes。"""
+        import base64
+        import json
+
+        import httpx
+
+        url = self.base_url.rstrip("/") + "/chat/completions"
+        payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "user",
+                 "content": "请用自然、亲切、清晰的中文语气朗读。"},
+                {"role": "assistant", "content": text},
+            ],
+            "audio": {"format": "wav", "voice": voice},
+        }
+        try:
+            r = httpx.post(
+                url,
+                headers={
+                    "api-key": self.api_key,
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+                timeout=60,
+            )
+            r.raise_for_status()
+            data = r.json()
+            audio_b64 = data["choices"][0]["message"]["audio"]["data"]
+            return base64.b64decode(audio_b64)
+        except Exception:
+            _logger.exception("[tts] MiMo 合成失败")
             return None
 
     def synthesize_async(self, text: str, on_done) -> None:

@@ -93,14 +93,24 @@ class PlannerSession:
         self.db = TasksDb(self.data_root / "planner.db")
         self.memory_tree: SQLiteMemoryTree | None = None
 
-        # 语音合成（本地 Kokoro 默认；云引擎需配置 key）
-        self.tts = TtsClient(
-            self.data_root,
-            engine=_config.PLANNER_TTS_ENGINE,
-            api_key=_config.PLANNER_TTS_API_KEY,
-            model=_config.PLANNER_TTS_MODEL,
-            voice=_config.PLANNER_TTS_VOICE if _config.PLANNER_TTS_ENGINE == "cloud" else "zf_001",
-        )
+        # 语音合成（本地 Kokoro 默认；cloud=DashScope；mimo=小米 MiMo）
+        if _config.PLANNER_TTS_ENGINE == "mimo":
+            self.tts = TtsClient(
+                self.data_root,
+                engine=_config.PLANNER_TTS_ENGINE,
+                api_key=_config.PLANNER_MIMO_API_KEY,
+                model=_config.PLANNER_MIMO_MODEL,
+                voice=_config.PLANNER_MIMO_VOICE,
+                base_url=_config.PLANNER_MIMO_BASE_URL,
+            )
+        else:
+            self.tts = TtsClient(
+                self.data_root,
+                engine=_config.PLANNER_TTS_ENGINE,
+                api_key=_config.PLANNER_TTS_API_KEY,
+                model=_config.PLANNER_TTS_MODEL,
+                voice=_config.PLANNER_TTS_VOICE if _config.PLANNER_TTS_ENGINE == "cloud" else "zf_001",
+            )
         # 应用 settings.json 持久化的 TTS 配置（启动即生效，与保存时一致——
         # 否则重启后音色/开关回到默认，设置形同虚设）
         if self.settings.get("tts_voice"):
