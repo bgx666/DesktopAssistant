@@ -89,7 +89,12 @@ def clean_speech_text(text: str) -> str:
         return ""
     t = str(text)
     t = _MD_LINK_RE.sub(r"\1", t)                # 链接保留文字
-    t = _PAREN_RE.sub("", t)                     # 括号内容不朗读
+    # 括号内容不朗读：循环清理，直到没有可匹配的括号对（支持嵌套括号）
+    while True:
+        new_t = _PAREN_RE.sub("", t)
+        if new_t == t:
+            break
+        t = new_t
     t = _EMOJI_RE.sub("", t)                     # emoji 不朗读
     for ch in ("**", "```", "`", "#", "*", "_", "~", ">"):
         t = t.replace(ch, "")
