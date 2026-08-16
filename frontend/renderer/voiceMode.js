@@ -19,7 +19,8 @@
   const START_MS = 150;           // 音量持续 150ms 判定为说话开始
   const END_MS = 700;             // 静音持续 700ms 判定说话结束
   const MAX_UTTERANCE_MS = 30000; // 单句最长 30s 强制切（防挂起）
-  const SPEAK_MAX_CHARS = 96;     // 流式 TTS 单句最长（防超 Kokoro 限制）
+  const SPEAK_MAX_CHARS = 96;     // 流式 TTS 单块最长（防单次合成过长）
+  const GROUP_MIN_CHARS = 50;     // 完整文本超过该字数后合并成一个大块合成，减少小段碎片
 
   // 回声防护：自己的 TTS 播放中，扬声器声音会被麦克风捕获——
   // 播放中提高说话开始阈值 + 延长判定（要打断必须明显大声），
@@ -244,21 +245,44 @@
   }
 
   function splitAndQueue(force) {
-    const parts = streamBuf.split(SPLIT_RE);
-    while (parts.length > 1) {
-      const seg = parts.shift().trim();
-      if (seg) queueSpeak(seg);
+    // 取到最后一个标点为止的“完整文本”，剩余部分留在 streamBuf
+    const m = streamBuf.match(/.*[。！？…；\n，,.]/);
+    if (m) {
+      const completeText = m[0].trim();
+      streamBuf = streamBuf.slice(m[0].length);
+      if (completeText.length >= GROUP_MIN_CHARS) {
+        // 超过阈值：合并成一个大块，不要拆成一堆小句
+        queueChunk(completeText);
+      } else {
+        // 小于阈值：按短句快速出声，保证第一句话尽快出来
+        const parts = completeText.split(SPLIT_RE).map((s) => s.trim()).filter(Boolean);
+        for (const seg of parts) queueSpeak(seg);
+      }
     }
-    streamBuf = parts[0] || '';
     if (force) {
       const rest = streamBuf.trim();
-      if (rest) queueSpeak(rest);
+      if (rest) queueChunk(rest);
       streamBuf = '';
     } else if (streamBuf.length > SPEAK_MAX_CHARS) {
       const rest = streamBuf.trim();
-      if (rest) queueSpeak(rest);
+      if (rest) queueChunk(rest);
       streamBuf = '';
     }
+  }
+
+  // 把一个较长的文本块切成不超过 SPEAK_MAX_CHARS 的片段依次入队
+  function queueChunk(text) {
+    let t = (text || '').trim();
+    while (t.length > SPEAK_MAX_CHARS) {
+      // 优先在逗号/句号附近切，避免硬切句子
+      let cut = t.lastIndexOf('，', SPEAK_MAX_CHARS);
+      if (cut < SPEAK_MAX_CHARS * 0.5) cut = t.lastIndexOf('。', SPEAK_MAX_CHARS);
+      if (cut <= 0) cut = SPEAK_MAX_CHARS;
+      const seg = t.slice(0, cut + 1).trim();
+      if (seg) queueSpeak(seg);
+      t = t.slice(cut + 1).trim();
+    }
+    if (t) queueSpeak(t);
   }
 
   function queueSpeak(text) {
