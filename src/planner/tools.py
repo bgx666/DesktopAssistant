@@ -487,7 +487,8 @@ def build_tools(session) -> list[BaseTool]:
         try:
             r = httpx.get(
                 "https://www.bing.com/search",
-                params={"q": q, "count": str(limit)},
+                # format=rss 返回结构化 XML，比解析 HTML 更稳定，能拿到多条结果
+                params={"q": q, "format": "rss", "count": str(limit)},
                 headers=_WEB_HEADERS,
                 timeout=15,
                 follow_redirects=True,
@@ -495,7 +496,9 @@ def build_tools(session) -> list[BaseTool]:
             r.raise_for_status()
         except Exception as exc:
             return f"（搜索失败：{exc}）"
-        items = _parse_bing_results(r.text, limit)
+        items = _parse_bing_rss(r.text, limit)
+        if not items:
+            items = _parse_bing_results(r.text, limit)   # RSS 失败时回退 HTML 解析
         if not items:
             return "（没有搜到结果，换个关键词试试）"
         lines = [f"「{q}」搜索结果（{len(items)} 条）："]
@@ -550,6 +553,32 @@ def all_tool_schemas() -> list[dict]:
     """OpenAI function-calling schema 列表（测试/文档用）。"""
     from langchain_core.utils.function_calling import convert_to_openai_tool
     return [convert_to_openai_tool(t) for t in build_tools(None)]
+
+
+def _parse_bing_rss(xml_text: str, limit: int) -> list[dict]:
+    """解析必应 RSS 搜索结果 → [{title, url, snippet}]（比 HTML 稳定）。"""
+    import re as _re
+    import xml.etree.ElementTree as ET
+
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return []
+    items = []
+    for item in root.iter("item"):
+        def _text(tag):
+            el = item.find(tag)
+            return el.text or "" if el is not None and el.text else ""
+        title = _text("title").strip()
+        url = _text("link").strip()
+        snippet = _text("description").strip()
+        snippet = _re.sub(r"(?s)<[^>]+>", "", snippet).strip()
+        if not title or not url.startswith("http"):
+            continue
+        items.append({"title": title[:120], "url": url[:300], "snippet": snippet[:300]})
+        if len(items) >= limit:
+            break
+    return items
 
 
 def _parse_bing_results(html: str, limit: int) -> list[dict]:
