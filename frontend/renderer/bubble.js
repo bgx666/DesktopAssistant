@@ -166,6 +166,8 @@
       longPress = true;
       core.classList.add('recording');
       startSoundRing();
+      // 用户开始语音输入：立即打断小助正在播放的语音/生成
+      if (window.voiceMode) window.voiceMode.interrupt();
     }, pressMs);
   });
 

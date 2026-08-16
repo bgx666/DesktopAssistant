@@ -259,13 +259,14 @@
   let longPressed = false;               // 长按结束 → 拦截随后的 click（不发送）
   sendBtn.addEventListener('mousedown', (e) => {
     if (e.button !== 0) return;
-    if (sendBtn.classList.contains('stopping')) return;   // 生成中长按无意义
     longPressed = false;
     pressTimer = setTimeout(async () => {
       pressTimer = null;
       longPressed = true;                // 进入录音模式，随后的 click 不再提交
       sendBtn.classList.add('recording');
       sendBtn.textContent = '🎤';
+      // 用户开始语音输入：立即打断小助正在播放的语音/生成
+      if (window.voiceMode) window.voiceMode.interrupt();
       try {
         micStop = await window.mic.begin();
         micActive = true;

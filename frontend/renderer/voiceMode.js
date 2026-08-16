@@ -46,6 +46,7 @@
   let mutedTts = false;       // 主动停嘴（打断/关闭模式）——流式队列停止播放
   let ownAudio = false;       // 自己的 TTS 正在播放（扬声器出声 → 麦克风可能捕获）
   let cooldownUntil = 0;      // 播放停止后的冷却截止时间（防回声尾音误触发）
+  let ttsEnabled = true;      // 自动语音播报开关（来自后端 settings.tts_enabled）
 
   // 流式 TTS 状态
   let streamBuf = '';
@@ -68,7 +69,11 @@
         startVAD();
       }
     } else {
-      stopEverything();
+      // 关闭语音连续对话：只停 VAD/录音，不停流式 TTS（普通模式仍可逐句朗读）
+      stopVADLoop();
+      speechActive = false;
+      sending = false;
+      if (stopRec) { try { stopRec(true); } catch { /* 忽略 */ } stopRec = null; }
     }
     applyState();
   }
@@ -216,7 +221,8 @@
 
   // ── 流式 TTS（text_stream 驱动）──────────────────────────
   function handleTextStream(content) {
-    if (!enabled || !isActive()) return;
+    // 普通模式也走流式 TTS：不依赖 voice_mode 开关，只要有 text_stream 就尽早出声
+    if (!isActive()) return;
     if (mutedTts) mutedTts = false;    // 新一轮生成恢复播放
     streamBuf += content;
     splitAndQueue(false);
@@ -246,7 +252,7 @@
   }
 
   function queueSpeak(text) {
-    if (!text || text.length < 2) return;
+    if (!ttsEnabled || !text || text.length < 2) return;
     playQueue.push(text);
     pumpPlay();
   }
@@ -320,7 +326,6 @@
     }
     window.planner.onState((s) => setThinking(!!(s && s.thinking)));
     window.planner.onEvents((events) => {
-      if (!enabled) return;
       for (const ev of events || []) {
         if (ev.type === 'text_stream' && ev.content) {
           handleTextStream(ev.content);
@@ -332,6 +337,18 @@
       setEnabled(!!(s && s.voice_mode));
     });
     window.planner.onVoiceMode((on) => setEnabled(on));
+    // 自动语音播报开关（普通模式流式 TTS 也遵守）
+    window.planner.onSettings((s) => {
+      if (s && typeof s.tts_enabled !== 'undefined') ttsEnabled = !!s.tts_enabled;
+    });
+    apiFetch('/settings').then((r) => {
+      try {
+        const d = JSON.parse(r.text);
+        if (d && d.settings && typeof d.settings.tts_enabled !== 'undefined') {
+          ttsEnabled = !!d.settings.tts_enabled;
+        }
+      } catch { /* 忽略 */ }
+    }).catch(() => { /* 忽略 */ });
     window.planner.getUiSettings().then((s) => {
       enabled = !!(s && s.voice_mode);
       if (enabled && isActive()) startVAD();
@@ -347,13 +364,13 @@
     notifyVisibility,
     isEnabled: () => enabled,
     state: () => state,
-    // 窗口播放 audio 事件前询问：语音模式下抑制整句合成（防双播）
-    shouldSuppressAudio: () => enabled,
+    // 流式 TTS 接管后，抑制后端整句 audio 事件（防双播）
+    shouldSuppressAudio: () => true,
     suppressAudio: () => {
-      if (enabled) {
-        mutedTts = true;
-        if (ttsAudio) { try { ttsAudio.pause(); } catch { /* 忽略 */ } }
-      }
+      mutedTts = true;
+      if (ttsAudio) { try { ttsAudio.pause(); } catch { /* 忽略 */ } }
     },
+    // 用户开始语音输入/打断时调用：停嘴 + 停止后端生成
+    interrupt,
   };
 })();
