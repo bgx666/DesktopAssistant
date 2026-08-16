@@ -648,23 +648,20 @@ class PlannerSession:
             self._last_player_message_at = datetime.fromtimestamp(ts, tz=_TZ)
 
     def _check_startup_heartbeat(self) -> None:
-        """启动时心跳已到期 → 不立即说话，顺延到下一周期（打开时静默）。
+        """启动时检查心跳：未到期保留剩余时间；已到期立即补触发一次。
 
-        原设计是"离线期间到点 → 启动补一次自主生成"，用户反馈打开就说话
-        太突兀——改为：到期只重新安排保底调度，绝不启动即生成。
+        需求：跨重启继承心跳进度，而不是完全重置。
+        - 离线时长未超过剩余时间 → 保留原到期时刻（剩余时间自动扣减离线时长）。
+        - 离线时长已超过剩余时间 → 启动时立即触发一次心跳，并落保底调度。
         """
         if self._next_heartbeat_at <= 0:
             return
         if time.time() < self._next_heartbeat_at:
+            remain = self._next_heartbeat_at - time.time()
+            _logger.info("[heartbeat] 恢复调度：剩余 %.0f 秒", max(0, remain))
             return   # 还没到期：保留原到期时刻（剩余时间已扣减离线时长）
-        self._next_heartbeat_at = 0.0
-        minutes = self._heartbeat_minutes or FALLBACK_HEARTBEAT_MINUTES
-        note = self._heartbeat_note
-        self._heartbeat_note = ""
-        _logger.info("[heartbeat] 启动时心跳已到期，顺延 %s（打开时静默不触发）",
-                     self._fmt_duration(minutes))
-        self.schedule_heartbeat(minutes, note)
-        self._save_buffer_state()
+        _logger.info("[heartbeat] 启动时心跳已到期，立即补触发")
+        self._fire_heartbeat()
 
     # ── 异步压缩（后台线程，不阻塞生成）──────────────────────
 
