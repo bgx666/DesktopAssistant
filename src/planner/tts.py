@@ -38,6 +38,8 @@ except Exception:  # SDK 缺失：云引擎不可用
 
 # 链接 [文字](url) → 保留文字；其余 markdown 符号删掉，避免被 TTS 读出来
 _MD_LINK_RE = re.compile(r"\[([^\]]*)\]\([^)]*\)")
+# 括号/方括号里的内容不朗读（如（笑）、[备注]、【系统提示】等）
+_PAREN_RE = re.compile(r"[（(【\[][^（()【】\[\]）]*[)）】\]]")
 _MAX_TEXT = 2000   # 单次合成文本上限（本地推理留余量）
 
 # Kokoro 本地引擎：共享缓存（与 ASR 模型同模式，dev/release 共用）
@@ -75,6 +77,7 @@ def clean_speech_text(text: str) -> str:
         return ""
     t = str(text)
     t = _MD_LINK_RE.sub(r"\1", t)                # 链接保留文字
+    t = _PAREN_RE.sub("", t)                     # 括号内容不朗读
     for ch in ("**", "```", "`", "#", "*", "_", "~", ">"):
         t = t.replace(ch, "")
     t = t.replace("\r", " ").replace("\n\n", "\n")
