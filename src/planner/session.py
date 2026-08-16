@@ -142,6 +142,10 @@ class PlannerSession:
         # 停止请求（用户点"停止"打断当前生成）：after_model/before_model
         # 中间件检查后跳转 end；每次生成开始时重置
         self._stop_requested: bool = False
+        # 本次生成调用过的工具名（用于识别“自主学习”心跳，决定是否朗读）
+        self._generation_tool_names: set[str] = set()
+        # 是否已向前端发送“自主学习静音”信号
+        self._self_learning_mute_sent: bool = False
         # 异步压缩：达到阈值后由后台线程压缩，空闲时原子替换 buffer
         self._compressing: bool = False
         self._closing: bool = False   # close 信号：压缩线程尽快应用退出
@@ -835,8 +839,13 @@ class PlannerSession:
             # 保底沿用原心跳间隔，避免"重置感"
             self.schedule_heartbeat(minutes, note)
             self._save_buffer_state()   # 立即落盘：退出/中断后重开恢复新计时
-            text = (f"（系统：定时任务到点，主动和用户说说话。{note + '。' if note else ''}"
-                    f"可以看看用户的任务进度，提醒用户该做的事，说说你的想法。）")
+            text = (
+                f"（系统：定时任务到点。用户最近没有回复你（已沉默 {self._heartbeat_silent_count} 次）。"
+                f"你可以选择：1) 如果用户可能有需要、或你有值得主动说的事，就和用户说话；"
+                f"2) 如果用户没回复，也可以选择自主学习：用 web_search / fetch_web / "
+                f"explore_memory_tree / read_file 去了解你好奇的东西，把学到的内容用文字写下来，"
+                f"它会进入你的长期记忆。自主学习时文字正常显示，但不要朗读。"
+                f"{note + '。' if note else ''}）")
             self._receive(text, trigger=True)
             self._spawn_worker("heartbeat")
 
@@ -1020,6 +1029,8 @@ class PlannerSession:
         with self.buffer_lock:
             self._generating = True
             self._stop_requested = False   # 每次生成重置停止标志
+            self._generation_tool_names = set()
+            self._self_learning_mute_sent = False
             self.current_trigger = trigger
         self._set_thinking(True)
         try:
@@ -1036,6 +1047,19 @@ class PlannerSession:
                     self._msg_counter += 1
                     self.pending_response = True
             self._save_buffer_state()
+            if self._self_learning_mute_sent:
+                self.push_event({"type": "tts_mute", "value": False})
+
+    def _is_self_learning_generation(self) -> bool:
+        """判断本次心跳是否属于“自主学习”：使用了搜索/阅读/记忆类工具。
+
+        自主学习时文字正常显示并进入记忆树，但不朗读，避免打扰用户。
+        """
+        if self.current_trigger != "heartbeat":
+            return False
+        learning_tools = {"web_search", "fetch_web", "explore_memory_tree",
+                          "read_file", "list_dir"}
+        return bool(self._generation_tool_names & learning_tools)
 
     def _run_agent(self) -> None:
         """agent.stream：model ↔ tools 循环直到停止（无工具调用 / heartbeat / 玩家让位）。
@@ -1111,7 +1135,8 @@ class PlannerSession:
                         self._last_text_len = len(full_text)   # continue 分段暂停按此计算
                         self.push_text(full_text)
                         self._save_log("assistant", full_text)
-                        self._maybe_speak(full_text)
+                        if not self._is_self_learning_generation():
+                            self._maybe_speak(full_text)
                         current_chunks = []
                         current_msg_id = None
         except Exception as exc:
@@ -1172,6 +1197,14 @@ class PlannerSession:
         if mtype == "ai" and getattr(m, "tool_calls", None):
             for tc in m.tool_calls:
                 name = tc.get("name", "?")
+                if name:
+                    self._generation_tool_names.add(name)
+                    if (name in {"web_search", "fetch_web", "explore_memory_tree",
+                                 "read_file", "list_dir"}
+                            and not self._self_learning_mute_sent):
+                        # 检测到自主学习：通知前端本次生成静音（不朗读）
+                        self._self_learning_mute_sent = True
+                        self.push_event({"type": "tts_mute", "value": True})
                 if name == "continue_speaking":
                     continue   # 分段工具不展示卡片（视觉上就是连续说话）
                 try:
