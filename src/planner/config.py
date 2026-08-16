@@ -68,6 +68,9 @@ PLANNER_MIMO_VOICE: str = os.getenv("PLANNER_MIMO_VOICE", "mimo_default").strip(
 
 # LLM 兜底心跳（LLM 没调 heartbeat 时）
 PLANNER_FALLBACK_MINUTES: int = int(os.getenv("PLANNER_FALLBACK_MINUTES", "60"))
+# 自主学习保底间隔（模型自主学习后忘记设置心跳时兜底）
+PLANNER_LEARNING_HEARTBEAT_MINUTES: int = int(
+    os.getenv("PLANNER_LEARNING_HEARTBEAT_MINUTES", "30"))
 
 
 def data_root() -> Path:

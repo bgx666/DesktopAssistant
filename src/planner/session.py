@@ -146,6 +146,8 @@ class PlannerSession:
         self._generation_tool_names: set[str] = set()
         # 是否已向前端发送“自主学习静音”信号
         self._self_learning_mute_sent: bool = False
+        # 本次生成是否由模型主动设置了 heartbeat（用于自主学习兜底判断）
+        self._heartbeat_set_this_generation: bool = False
         # 异步压缩：达到阈值后由后台线程压缩，空闲时原子替换 buffer
         self._compressing: bool = False
         self._closing: bool = False   # close 信号：压缩线程尽快应用退出
@@ -1031,11 +1033,13 @@ class PlannerSession:
             self._stop_requested = False   # 每次生成重置停止标志
             self._generation_tool_names = set()
             self._self_learning_mute_sent = False
+            self._heartbeat_set_this_generation = False
             self.current_trigger = trigger
         self._set_thinking(True)
         try:
             self._run_agent()
         finally:
+            was_self_learning = self._is_self_learning_generation()
             self._set_thinking(False)
             with self.buffer_lock:
                 self._generating = False
@@ -1049,6 +1053,11 @@ class PlannerSession:
             self._save_buffer_state()
             if self._self_learning_mute_sent:
                 self.push_event({"type": "tts_mute", "value": False})
+            # 自主学习且模型没设置下一次心跳 → 用学习保底间隔兜底
+            if was_self_learning and not self._heartbeat_set_this_generation:
+                self.schedule_heartbeat(
+                    _config.PLANNER_LEARNING_HEARTBEAT_MINUTES,
+                    "自主学习后继续学习")
 
     def _is_self_learning_generation(self) -> bool:
         """判断本次心跳是否属于“自主学习”：使用了搜索/阅读/记忆类工具。
@@ -1142,7 +1151,12 @@ class PlannerSession:
         except Exception as exc:
             _logger.exception("[agent] stream 异常")
             self.push_log(f"小助走神了一下（生成出错：{exc}）")
-            self.schedule_heartbeat(self._next_silent_minutes())
+            if self._is_self_learning_generation():
+                self.schedule_heartbeat(
+                    _config.PLANNER_LEARNING_HEARTBEAT_MINUTES,
+                    "自主学习后继续学习")
+            else:
+                self.schedule_heartbeat(self._next_silent_minutes())
             return
         if interrupted:
             _logger.info("[agent] 用户打断，立即停止当前生成")
@@ -1199,6 +1213,8 @@ class PlannerSession:
                 name = tc.get("name", "?")
                 if name:
                     self._generation_tool_names.add(name)
+                    if name == "heartbeat":
+                        self._heartbeat_set_this_generation = True
                     if (name in {"web_search", "fetch_web", "explore_memory_tree",
                                  "read_file", "list_dir"}
                             and not self._self_learning_mute_sent):
