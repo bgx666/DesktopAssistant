@@ -38,23 +38,38 @@
       $('#llm_base_url').value = current.llm_base_url || '';
       $('#llm_model').value = current.llm_model || '';
       $('#tts_enabled').checked = current.tts_enabled !== false;
-      if (current.tts_voice) $('#tts_voice').value = current.tts_voice;
+      $('#tts_engine').value = current.tts_engine || '';
       drawChart();
     } catch { $('#msg').textContent = '后端不可用，无法读取压缩/LLM 设置'; }
+    await loadVoices($('#tts_engine').value);
+  }
+
+  // 按引擎加载音色列表（保留当前已选音色；没有则清空）
+  async function loadVoices(engine) {
+    const sel = $('#tts_voice');
+    const prev = sel.value;
+    sel.innerHTML = '';
     try {
-      // 音色列表（下拉 + 保留当前选中）
-      const r = await window.planner.apiFetch('/tts/voices');
+      const q = engine ? '?engine=' + encodeURIComponent(engine) : '';
+      const r = await window.planner.apiFetch('/tts/voices' + q);
       const d = JSON.parse(r.text);
-      const sel = $('#tts_voice');
       (d.voices || []).forEach((v) => {
         const opt = document.createElement('option');
         opt.value = v.id;
         opt.textContent = v.label;
         sel.appendChild(opt);
       });
-      if (current.tts_voice) sel.value = current.tts_voice;
+      if (prev && [...sel.options].some((o) => o.value === prev)) {
+        sel.value = prev;
+      } else if (current.tts_voice && [...sel.options].some((o) => o.value === current.tts_voice)) {
+        sel.value = current.tts_voice;
+      }
     } catch { /* 后端不可用：音色列表留空 */ }
   }
+
+  $('#tts_engine').addEventListener('change', () => {
+    loadVoices($('#tts_engine').value);
+  });
 
   // ── 压缩示意图：只算"每次压缩触发前"的峰值点（性能优先）──
   // 模拟：每事件压缩 (trigger-keep) 条消息；节点逐层 ≥threshold 合并 factor 个。
@@ -223,6 +238,7 @@
     updates.llm_base_url = $('#llm_base_url').value.trim();
     updates.llm_model = $('#llm_model').value.trim();
     updates.tts_enabled = $('#tts_enabled').checked;
+    updates.tts_engine = $('#tts_engine').value;
     updates.tts_voice = $('#tts_voice').value;
     try {
       const r = await window.planner.apiFetch('/settings', {

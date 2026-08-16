@@ -127,12 +127,21 @@
             <span class="hint">关闭后回复不再朗读（文字照常）</span>
           </div>
           <div class="row">
+            <label>语音合成引擎</label>
+            <select id="tts_engine">
+              <option value="">跟随环境变量</option>
+              <option value="local">本地 Kokoro</option>
+              <option value="mimo">小米 MiMo</option>
+              <option value="cloud">阿里云 DashScope</option>
+            </select>
+          </div>
+          <div class="row">
             <label>音色</label>
             <select id="tts_voice"></select>
             <button id="btn_tts_test" type="button">试听</button>
           </div>
           <div class="row">
-            <span class="hint" style="width:100%">zf = 女声 · zm = 男声，试听立即合成当前选中音色</span>
+            <span class="hint" style="width:100%">切换引擎后音色列表会自动刷新；试听立即合成当前选中音色</span>
           </div>
         </section>
       </div>

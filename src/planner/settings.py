@@ -27,6 +27,7 @@ DEFAULT_SETTINGS: dict = {
     "llm_base_url": "",
     "llm_model": "",
     "tts_enabled": True,
+    "tts_engine": "",          # 留空 = 跟随环境变量 PLANNER_TTS_ENGINE；local / mimo / cloud
     "tts_voice": "zf_001",
 }
 

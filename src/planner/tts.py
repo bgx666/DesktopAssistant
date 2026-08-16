@@ -327,10 +327,14 @@ class TtsClient:
         """自动播报开关（关闭后仅手动喇叭/试听可用）。"""
         return self._enabled
 
-    def list_voices(self) -> list[dict]:
-        """可用音色列表（按引擎返回：Kokoro 本地音色 / MiMo 预置音色）。"""
-        if self.engine == "mimo":
+    def list_voices(self, engine: str | None = None) -> list[dict]:
+        """可用音色列表（按引擎返回：Kokoro 本地音色 / MiMo 预置音色）。
+        engine 可覆盖当前引擎，供设置页在保存前预览其它引擎的音色。"""
+        engine = (engine or self.engine).lower()
+        if engine == "mimo":
             return list(_MIMO_VOICES)
+        if engine != "local":
+            return []   # 云引擎/DashScope 暂不提供预置音色列表
         voices_dir = _KOKORO_MODEL_DIR / "voices"
         if not voices_dir.is_dir():
             return []

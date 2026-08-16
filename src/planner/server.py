@@ -113,8 +113,10 @@ class _Handler(BaseHTTPRequestHandler):
             # 动态待办队列（按紧急度排序）
             self._send_json({"ok": True, "queue": self.session.db.list_pending()})
         elif path == "/tts/voices":
-            # 可用音色列表（设置界面下拉）
-            self._send_json({"ok": True, "voices": self.session.tts.list_voices()})
+            # 可用音色列表（设置界面下拉；?engine=mimo/local/cloud 可预览指定引擎）
+            query = parse_qs(parsed.query)
+            engine = (query.get("engine") or [None])[0]
+            self._send_json({"ok": True, "voices": self.session.tts.list_voices(engine=engine)})
         elif path == "/tts/say":
             # 喇叭按钮/试听：按需合成整句（text → wav），返回 /tts/{name} URL
             query = parse_qs(parsed.query)

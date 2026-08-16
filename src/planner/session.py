@@ -93,32 +93,8 @@ class PlannerSession:
         self.db = TasksDb(self.data_root / "planner.db")
         self.memory_tree: SQLiteMemoryTree | None = None
 
-        # 语音合成（本地 Kokoro 默认；cloud=DashScope；mimo=小米 MiMo）
-        if _config.PLANNER_TTS_ENGINE == "mimo":
-            self.tts = TtsClient(
-                self.data_root,
-                engine=_config.PLANNER_TTS_ENGINE,
-                api_key=_config.PLANNER_MIMO_API_KEY,
-                model=_config.PLANNER_MIMO_MODEL,
-                voice=_config.PLANNER_MIMO_VOICE,
-                base_url=_config.PLANNER_MIMO_BASE_URL,
-            )
-        else:
-            self.tts = TtsClient(
-                self.data_root,
-                engine=_config.PLANNER_TTS_ENGINE,
-                api_key=_config.PLANNER_TTS_API_KEY,
-                model=_config.PLANNER_TTS_MODEL,
-                voice=_config.PLANNER_TTS_VOICE if _config.PLANNER_TTS_ENGINE == "cloud" else "zf_001",
-            )
-        # 应用 settings.json 持久化的 TTS 配置（启动即生效，与保存时一致——
-        # 否则重启后音色/开关回到默认，设置形同虚设）
-        if self.settings.get("tts_voice"):
-            if self.settings["tts_voice"] in {v["id"] for v in self.tts.list_voices()}:
-                self.tts.voice = self.settings["tts_voice"]
-        if "tts_enabled" in self.settings and self.tts._engine_ok:
-            # 引擎不可用（如云引擎无 key）时保持禁用，不因默认设置开启
-            self.tts._enabled = bool(self.settings["tts_enabled"])
+        # 语音合成（本地 Kokoro / 小米 MiMo / DashScope，按 settings + env 创建）
+        self.tts = self._create_tts()
 
         # 语音输入（SenseVoiceSmall-onnx 本地识别；依赖缺失时静默关闭）
         self.asr = AsrClient()
@@ -193,6 +169,38 @@ class PlannerSession:
 
     # ── 懒加载 ────────────────────────────────────────────────
 
+    def _create_tts(self) -> TtsClient:
+        """按当前 settings + 环境变量创建 TTS 客户端。
+
+        settings.tts_engine 留空时跟随 PLANNER_TTS_ENGINE；
+        保存设置切换引擎后调用本方法重建，立即生效。
+        """
+        engine = (self.settings.get("tts_engine") or _config.PLANNER_TTS_ENGINE).strip().lower()
+        if engine == "mimo":
+            tts = TtsClient(
+                self.data_root,
+                engine="mimo",
+                api_key=_config.PLANNER_MIMO_API_KEY,
+                model=_config.PLANNER_MIMO_MODEL,
+                voice=_config.PLANNER_MIMO_VOICE,
+                base_url=_config.PLANNER_MIMO_BASE_URL,
+            )
+        else:
+            tts = TtsClient(
+                self.data_root,
+                engine=engine,
+                api_key=_config.PLANNER_TTS_API_KEY,
+                model=_config.PLANNER_TTS_MODEL,
+                voice=_config.PLANNER_TTS_VOICE if engine == "cloud" else "zf_001",
+            )
+        # 应用持久化音色/开关（与保存时一致）
+        voice = self.settings.get("tts_voice")
+        if voice and voice in {v["id"] for v in tts.list_voices()}:
+            tts.voice = voice
+        if "tts_enabled" in self.settings and tts._engine_ok:
+            tts._enabled = bool(self.settings["tts_enabled"])
+        return tts
+
     def _get_llm(self):
         if self._llm is None:
             if self.mock:
@@ -251,17 +259,22 @@ class PlannerSession:
             self._summary_model = None
             self._agent_obj = None
             _logger.info("[settings] LLM 配置变更，已重建模型")
-        # TTS 设置即时生效：音色校验 + 启用开关
-        tts_voice = self.settings.get("tts_voice")
-        if tts_voice and tts_voice != getattr(self.tts, "voice", None):
-            if tts_voice in {v["id"] for v in self.tts.list_voices()}:
-                self.tts.voice = tts_voice
-                _logger.info("[settings] 音色切换为 %s", tts_voice)
-            else:
-                _logger.warning("[settings] 未知音色 %s，忽略", tts_voice)
-        if "tts_enabled" in self.settings:
-            self.tts._enabled = bool(self.settings["tts_enabled"])
-            _logger.info("[settings] 语音播报 %s", "开启" if self.tts._enabled else "关闭")
+        # TTS 设置即时生效：引擎切换则重建客户端，否则只应用音色/开关
+        new_engine = (self.settings.get("tts_engine") or _config.PLANNER_TTS_ENGINE).strip().lower()
+        if new_engine != self.tts.engine:
+            self.tts = self._create_tts()
+            _logger.info("[settings] TTS 引擎切换为 %s，已重建客户端", new_engine)
+        else:
+            tts_voice = self.settings.get("tts_voice")
+            if tts_voice and tts_voice != getattr(self.tts, "voice", None):
+                if tts_voice in {v["id"] for v in self.tts.list_voices()}:
+                    self.tts.voice = tts_voice
+                    _logger.info("[settings] 音色切换为 %s", tts_voice)
+                else:
+                    _logger.warning("[settings] 未知音色 %s，忽略", tts_voice)
+            if "tts_enabled" in self.settings:
+                self.tts._enabled = bool(self.settings["tts_enabled"])
+                _logger.info("[settings] 语音播报 %s", "开启" if self.tts._enabled else "关闭")
         _logger.info("[settings] 设置已保存并应用: %s", {k: self.settings[k] for k in updates if k in self.settings})
         return dict(self.settings)
 
