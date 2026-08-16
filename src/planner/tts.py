@@ -40,6 +40,18 @@ except Exception:  # SDK 缺失：云引擎不可用
 _MD_LINK_RE = re.compile(r"\[([^\]]*)\]\([^)]*\)")
 # 括号/方括号里的内容不朗读（如（笑）、[备注]、【系统提示】等）
 _PAREN_RE = re.compile(r"[（(【\[][^（()【】\[\]）]*[)）】\]]")
+# Emoji / 特殊符号不朗读（避免 TTS 发出奇怪声音）
+_EMOJI_RE = re.compile(
+    "["
+    "\U0001F000-\U0001FAFF"   # 扩展 pictographs 等
+    "\U00002600-\U000027BF"   # 杂项符号 / 装饰符号
+    "\U0001F1E6-\U0001F1FF"   # 区域指示符（国旗）
+    "\U00002B00-\U00002BFF"   # 杂项符号和箭头
+    "\U00002190-\U000021FF"   # 箭头
+    "\U0000FE00-\U0000FE0F"   # 变体选择符
+    "\U0001F3FB-\U0001F3FF"   # 肤色修饰符
+    "\U0000200D"              # ZWJ 零宽连接符
+    "]", re.UNICODE)
 _MAX_TEXT = 2000   # 单次合成文本上限（本地推理留余量）
 
 # Kokoro 本地引擎：共享缓存（与 ASR 模型同模式，dev/release 共用）
@@ -78,6 +90,7 @@ def clean_speech_text(text: str) -> str:
     t = str(text)
     t = _MD_LINK_RE.sub(r"\1", t)                # 链接保留文字
     t = _PAREN_RE.sub("", t)                     # 括号内容不朗读
+    t = _EMOJI_RE.sub("", t)                     # emoji 不朗读
     for ch in ("**", "```", "`", "#", "*", "_", "~", ">"):
         t = t.replace(ch, "")
     t = t.replace("\r", " ").replace("\n\n", "\n")
