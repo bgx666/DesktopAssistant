@@ -257,6 +257,33 @@
     return true;
   }
 
+  // 清除括号内容（支持嵌套），用于流式 TTS 切句前
+  function stripBrackets(text) {
+    const re = /[（(【\[][^（()【】\[\]）]*[)）】\]]/g;
+    let t = text;
+    let prev;
+    do {
+      prev = t;
+      t = t.replace(re, '');
+    } while (t !== prev);
+    return t;
+  }
+
+  // 判断括号是否闭合（避免在括号中间切句，导致半个括号被送去朗读）
+  function hasBalancedBrackets(text) {
+    const stack = [];
+    const opens = new Set(['(', '（', '[', '【']);
+    const pairs = { ')': '(', '）': '（', ']': '[', '】': '【' };
+    for (const ch of text) {
+      if (opens.has(ch)) {
+        stack.push(ch);
+      } else if (pairs[ch]) {
+        if (stack.pop() !== pairs[ch]) return false;
+      }
+    }
+    return stack.length === 0;
+  }
+
   // ── 流式 TTS（text_stream 驱动）──────────────────────────
   function handleTextStream(content) {
     // 普通模式也走流式 TTS：不依赖 voice_mode 开关，只要有 text_stream 就尽早出声
@@ -274,8 +301,8 @@
   function splitAndQueue(force) {
     // 取到最后一个标点为止的“完整文本”，剩余部分留在 streamBuf
     const m = streamBuf.match(/.*[。！？…；\n，,.]/);
-    if (m) {
-      const completeText = m[0].trim();
+    if (m && hasBalancedBrackets(m[0])) {
+      const completeText = stripBrackets(m[0]).trim();
       streamBuf = streamBuf.slice(m[0].length);
       if (completeText.length >= GROUP_MIN_CHARS) {
         // 超过阈值：合并成一个大块，不要拆成一堆小句
@@ -285,13 +312,16 @@
         const parts = completeText.split(SPLIT_RE).map((s) => s.trim()).filter(Boolean);
         for (const seg of parts) queueSpeak(seg);
       }
+    } else if (m && !force) {
+      // 括号还没闭合：先不切，等闭合后再朗读，避免半个括号被送去 TTS
+      return;
     }
     if (force) {
-      const rest = streamBuf.trim();
+      const rest = stripBrackets(streamBuf).replace(/[（(【\[】)）\]]/g, '').trim();
       if (rest) queueChunk(rest);
       streamBuf = '';
     } else if (streamBuf.length > SPEAK_MAX_CHARS) {
-      const rest = streamBuf.trim();
+      const rest = stripBrackets(streamBuf).replace(/[（(【\[】)）\]]/g, '').trim();
       if (rest) queueChunk(rest);
       streamBuf = '';
     }
