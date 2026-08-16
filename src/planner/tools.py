@@ -478,17 +478,24 @@ def build_tools(session) -> list[BaseTool]:
             query: 想搜索的内容（原样交给搜索引擎处理）
             limit: 返回结果数（1~8），默认 5
         """
+        import re as _re
+
         import httpx
 
         q = str(query).strip()
         if not q:
             return "（搜索关键词不能为空）"
         limit = max(1, min(8, int(limit or 5)))
+        # 多请求一些候选，过滤低质量后仍能保留足够结果
+        params = {"q": q, "format": "rss", "count": str(max(10, min(20, limit * 3)))}
+        # 纯英文/非中文查询强制英文搜索结果，避免被中文 Bing 带偏到导航站
+        if not _re.search(r"[\u4e00-\u9fff]", q):
+            params["ensearch"] = "1"
         try:
             r = httpx.get(
                 "https://www.bing.com/search",
                 # format=rss 返回结构化 XML，比解析 HTML 更稳定，能拿到多条结果
-                params={"q": q, "format": "rss", "count": str(limit)},
+                params=params,
                 headers=_WEB_HEADERS,
                 timeout=15,
                 follow_redirects=True,
@@ -555,6 +562,35 @@ def all_tool_schemas() -> list[dict]:
     return [convert_to_openai_tool(t) for t in build_tools(None)]
 
 
+# 低质量结果过滤：工具导航站 / 广告大全 / 纯目录站，对“找干货”帮助不大
+_LOW_QUALITY_DOMAINS = {
+    "ai-bot.cn", "aigc.cn", "toolify.ai", "top10.com", "futurepedia.io",
+    "thereisanaiforthat.com", "aixploria.com", "aitoolnet.com", "aigcbest.com",
+    "aitoolhub.com", "aitoolsdirectory.com", "aitoolz.com", "aixploria.com",
+    "aigc.cn", "ai-bot.cn", "jimeng.jianying.com",
+}
+_LOW_QUALITY_KEYWORDS = (
+    "AI工具", "工具导航", "工具集", "AI创作", "创作平台", "免费AI",
+    "AI工具集", "工具大全", "AI网站汇总", "AI Directory", "AI Tools",
+    "Top 10", "Best AI", "导航大全",
+)
+
+
+def _is_low_quality(title: str, url: str) -> bool:
+    """判断搜索结果是否属于低质量的工具导航/广告聚合站。"""
+    try:
+        from urllib.parse import urlparse
+        domain = urlparse(url).netloc.lower()
+        if domain.startswith("www."):
+            domain = domain[4:]
+        if domain in _LOW_QUALITY_DOMAINS:
+            return True
+    except Exception:
+        pass
+    low = (title or "").lower()
+    return any(kw.lower() in low for kw in _LOW_QUALITY_KEYWORDS)
+
+
 def _parse_bing_rss(xml_text: str, limit: int) -> list[dict]:
     """解析必应 RSS 搜索结果 → [{title, url, snippet}]（比 HTML 稳定）。"""
     import re as _re
@@ -574,6 +610,8 @@ def _parse_bing_rss(xml_text: str, limit: int) -> list[dict]:
         snippet = _text("description").strip()
         snippet = _re.sub(r"(?s)<[^>]+>", "", snippet).strip()
         if not title or not url.startswith("http"):
+            continue
+        if _is_low_quality(title, url):
             continue
         items.append({"title": title[:120], "url": url[:300], "snippet": snippet[:300]})
         if len(items) >= limit:
@@ -596,6 +634,8 @@ def _parse_bing_results(html: str, limit: int) -> list[dict]:
         url = m_title.group(1)
         title = _re.sub(r"(?s)<[^>]+>", "", m_title.group(2)).strip()
         if not title or not url.startswith("http"):
+            continue
+        if _is_low_quality(title, url):
             continue
         m_snip = _re.search(r'(?is)<p[^>]*>(.*?)</p>', block)
         snippet = _re.sub(r"(?s)<[^>]+>", "", m_snip.group(1)).strip() if m_snip else ""
