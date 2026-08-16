@@ -20,7 +20,7 @@
   const END_MS = 700;             // 静音持续 700ms 判定说话结束
   const MAX_UTTERANCE_MS = 30000; // 单句最长 30s 强制切（防挂起）
   const SPEAK_MAX_CHARS = 96;     // 流式 TTS 单块最长（防单次合成过长）
-  const GROUP_MIN_CHARS = 50;     // 完整文本超过该字数后合并成一个大块合成，减少小段碎片
+  const GROUP_MIN_CHARS = 30;     // 完整文本超过该字数后合并成一个大块合成，减少小段碎片
 
   // 回声防护：自己的 TTS 播放中，扬声器声音会被麦克风捕获——
   // 播放中提高说话开始阈值 + 延长判定（要打断必须明显大声），
