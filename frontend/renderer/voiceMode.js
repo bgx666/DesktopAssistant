@@ -52,6 +52,7 @@
   let streamBuf = '';
   let playQueue = [];
   let playing = false;
+  let currentPlayResolve = null;  // 当前播放 Promise 的 resolve，打断时强制结束
   let ttsAudio = null;        // attach 注入的 audio 元素
   let audioFetch = null;      // window.planner.audioFile（主进程代理）
   let prefetchMap = new Map(); // text -> Promise<fileUrl>，下一句提前合成/下载
@@ -103,6 +104,7 @@
   function setThinking(v) {
     const was = thinking;
     thinking = !!v;
+    if (!was && thinking) mutedTts = false;        // 新一轮生成开始，恢复语音
     if (was && !thinking) handleGenerationEnd();   // 生成结束 → 流式缓冲收尾
   }
 
@@ -211,6 +213,12 @@
     mutedTts = true;
     // 立即停嘴（正在播放的 TTS）
     if (ttsAudio) { try { ttsAudio.pause(); } catch { /* 忽略 */ } }
+    // 强制结束当前播放 Promise，避免 playing 卡死导致后续不再出声
+    if (currentPlayResolve) {
+      const resolvePlay = currentPlayResolve;
+      currentPlayResolve = null;
+      resolvePlay();
+    }
     if (onUi && typeof onUi.interruptSpeech === 'function') onUi.interruptSpeech();
     playQueue = [];
     prefetchMap = new Map();
@@ -294,11 +302,17 @@
         }
         if (fileUrl && !mutedTts) {
           await new Promise((resolve) => {
-            const onEnd = () => { ttsAudio.removeEventListener('ended', onEnd); resolve(); };
+            currentPlayResolve = resolve;
+            const onEnd = () => {
+              if (currentPlayResolve === resolve) currentPlayResolve = null;
+              ttsAudio.removeEventListener('ended', onEnd);
+              ttsAudio.onerror = null;
+              resolve();
+            };
             ttsAudio.addEventListener('ended', onEnd);
-            ttsAudio.onerror = () => { try { ttsAudio.removeAttribute('src'); } catch { /* 忽略 */ } resolve(); };
+            ttsAudio.onerror = () => { try { ttsAudio.removeAttribute('src'); } catch { /* 忽略 */ } onEnd(); };
             ttsAudio.src = fileUrl;
-            ttsAudio.play().catch(() => resolve());
+            ttsAudio.play().catch(() => onEnd());
           });
         }
       }
@@ -315,6 +329,11 @@
     sending = false;
     if (stopRec) { try { stopRec(true); } catch { /* 忽略 */ } stopRec = null; }
     if (ttsAudio) { try { ttsAudio.pause(); } catch { /* 忽略 */ } }
+    if (currentPlayResolve) {
+      const resolvePlay = currentPlayResolve;
+      currentPlayResolve = null;
+      resolvePlay();
+    }
     playQueue = [];
     prefetchMap = new Map();
     streamBuf = '';
@@ -394,6 +413,11 @@
     suppressAudio: () => {
       mutedTts = true;
       if (ttsAudio) { try { ttsAudio.pause(); } catch { /* 忽略 */ } }
+      if (currentPlayResolve) {
+        const resolvePlay = currentPlayResolve;
+        currentPlayResolve = null;
+        resolvePlay();
+      }
     },
     // 用户开始语音输入/打断时调用：停嘴 + 停止后端生成
     interrupt,
