@@ -15,6 +15,7 @@
 | 运行测试 | `python -m pytest tests/ -v`（pytest，mock LLM，tmp_path 隔离） |
 
 LLM 配置走仓库根 `.env`（或共享 `.env`）：`LLM_API_KEY` 必填，默认 DeepSeek。
+模型解析链（`llm.py::resolve_model_name`）：`settings.json` 的 `llm_model` > env `PLANNER_LLM_MODEL` > 默认 `deepseek-v4-flash-vision-exp`（视觉模型，拖图直接给原图）。共享 `.env` 的 `LLM_MODEL` 是 xiaob 游戏的配置，**不影响 planner**；回退纯文本模型：`settings.json` 设 `llm_model` 或 `PLANNER_LLM_MODEL=deepseek-v4-flash`。视觉注入只在模型名含 vision 等且非 mock 时启用；**图片块常驻 buffer 整个会话**（每张最多 384 token，每轮模型调用重发计费），`/history` 与压缩摘要只取文本块，不暴露 base64。
 
 ## 发版（开发/使用分离）
 

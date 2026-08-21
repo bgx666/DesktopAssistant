@@ -37,6 +37,11 @@ _load_env_files()
 PLANNER_PORT: int = int(os.getenv("PLANNER_PORT", "18771"))
 PLANNER_MOCK_LLM: bool = os.getenv("PLANNER_MOCK_LLM", "").strip().lower() in ("1", "true", "yes", "on")
 
+# 视觉模型默认值：planner 默认 deepseek-v4-flash-vision-exp（多模态，文本能力与 flash 持平）。
+# 解析链（llm.py::resolve_model_name）：settings.llm_model > PLANNER_LLM_MODEL > 此默认值。
+# 注意：共享 .env 的 LLM_MODEL 是 xiaob 游戏的配置，不再影响 planner。
+PLANNER_DEFAULT_MODEL: str = "deepseek-v4-flash-vision-exp"
+
 # 心跳护栏：LLM 自主决定心跳间隔，clamp 到 [PLANNER_HEARTBEAT_MIN, MAX] 分钟
 # 心跳是分钟级定时任务（一人一句，不再秒级短心跳）
 PLANNER_HEARTBEAT_MIN_MINUTES: float = float(os.getenv("PLANNER_HEARTBEAT_MIN_MINUTES", "10"))

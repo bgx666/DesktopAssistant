@@ -25,6 +25,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 from . import config as _config
+from .content import content_text
 from .session import BACKEND_TAG, CHARACTER_ID, DISPLAY_NAME, PLAYER_NAME, PlannerSession
 
 _logger = logging.getLogger("planner.server")
@@ -161,13 +162,13 @@ class _Handler(BaseHTTPRequestHandler):
             for m in self.session.recent_buffer:
                 meta = getattr(m, "metadata", None) or {}
                 if "node_id" in meta:
-                    content = str(getattr(m, "content", "") or "")
+                    content = content_text(getattr(m, "content", "") or "")
                     if content:
                         msgs.append({"role": "memory", "content": content,
                                      "node_id": meta["node_id"]})
                     continue
                 role = getattr(m, "type", "")
-                content = str(getattr(m, "content", "") or "")
+                content = content_text(getattr(m, "content", "") or "")
                 if not content:
                     continue
                 if role == "human":

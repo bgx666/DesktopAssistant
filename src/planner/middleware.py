@@ -675,8 +675,9 @@ class SummarizationMiddleware(AgentMiddleware):
 
     @staticmethod
     def _speaker_text(m) -> str:
+        from .content import content_text
         role = {"human": "用户", "ai": "小助", "tool": "工具结果"}.get(m.type, m.type)
-        return f"{role}: {m.content}"
+        return f"{role}: {content_text(getattr(m, 'content', ''))}"
 
 
 def _strip_json_fence(text: str) -> str:

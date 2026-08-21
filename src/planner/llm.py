@@ -21,19 +21,43 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_openai import ChatOpenAI
 
+from . import config as _config
+
 _logger = logging.getLogger("planner.llm")
 
 
 # ── 模型构建 ──────────────────────────────────────────────────
+
+def resolve_model_name(model_name: str | None = None) -> str:
+    """模型名解析链：显式参数 > PLANNER_LLM_MODEL > 默认 vision-exp。
+
+    planner 默认用视觉模型 deepseek-v4-flash-vision-exp（多模态，文本能力与
+    flash 持平）；共享 .env 的 LLM_MODEL 是 xiaob 游戏的配置，不再影响 planner
+    （回退纯文本：settings.json 的 llm_model 或 PLANNER_LLM_MODEL=deepseek-v4-flash）。
+    （env 在调用时读取——config 常量在 import 时绑定，测试 monkeypatch 不到。）
+    """
+    if model_name and str(model_name).strip():
+        return str(model_name).strip()
+    planner_model = os.getenv("PLANNER_LLM_MODEL", "").strip()
+    if planner_model:
+        return planner_model
+    return _config.PLANNER_DEFAULT_MODEL
+
+
+def is_vision_model(model_name: str) -> bool:
+    """模型是否具备图像输入能力（按模型名启发式判定，覆盖常见命名）。"""
+    name = (model_name or "").lower()
+    return any(k in name for k in ("vision", "-vl", "-omni", "multimodal", "gpt-4o", "gpt-4.1"))
+
 
 def build_chat_model(api_key: str | None = None,
                      base_url: str | None = None,
                      model_name: str | None = None) -> ChatOpenAI:
     """DeepSeek v4 适配的 ChatOpenAI。
 
-    配置优先级：显式参数（用户设置）> 环境变量 / .env。
+    配置优先级：显式参数（用户设置）> PLANNER_LLM_MODEL > LLM_MODEL > 默认 vision-exp。
     """
-    model_name = model_name or os.getenv("LLM_MODEL", "deepseek-v4-flash")
+    model_name = resolve_model_name(model_name)
     base_url = (base_url or os.getenv("LLM_BASE_URL", "")).rstrip("/")
     api_key = api_key or os.getenv("LLM_API_KEY")
     kwargs: dict[str, Any] = {}

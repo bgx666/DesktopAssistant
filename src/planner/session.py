@@ -26,7 +26,7 @@ from langchain_core.messages import BaseMessage, HumanMessage, ToolMessage
 
 from . import config as _config
 from .asr import AsrClient
-from .llm import MockChatModel, build_chat_model
+from .llm import MockChatModel, build_chat_model, is_vision_model, resolve_model_name
 from .memory.sqlite_memory_tree import SQLiteMemoryTree
 from .middleware import SUMMARIZE_TRIGGER_MESSAGES as _SUMMARIZE_TRIGGER
 from .store.tasks_db import TasksDb
@@ -242,6 +242,18 @@ class PlannerSession:
             from .agent import build_planner_agent
             self._agent_obj = build_planner_agent(self)
         return self._agent_obj
+
+    @property
+    def vision_capable(self) -> bool:
+        """当前模型是否具备图像输入能力（mock 或纯文本模型 → False）。
+
+        解析链与 build_chat_model 一致：settings.llm_model > PLANNER_LLM_MODEL
+        > LLM_MODEL > 默认 vision-exp。视觉注入只在视觉模型下启用。
+        """
+        if self.mock:
+            return False
+        model = resolve_model_name(str(self.settings.get("llm_model") or "").strip() or None)
+        return is_vision_model(model)
 
     def set_chat_model(self, model) -> None:
         """测试桩注入：替换 chat model 并重建 agent。"""
@@ -530,9 +542,10 @@ class PlannerSession:
             self.recent_buffer.append(msg)
             self._msg_counter += 1
 
-    def _receive(self, content: str, *, trigger: bool = True) -> BaseMessage:
+    def _receive(self, content: str | list, *, trigger: bool = True) -> BaseMessage:
         """接收一条外部消息。_generating 期间入队 _inbox，结束后再写入。返回消息对象。
 
+        content：纯文本，或内容块列表（视觉注入 [text, image_url]）。
         显式分配 id（langchain 默认 None，langgraph 在模型调用时才补）——
         撤销按钮依赖消息 id 在入队时就稳定存在。
         消息带 metadata.ts 时间戳（秒级，UTC+8）——压缩节点起止时间的数据来源。
@@ -909,20 +922,36 @@ class PlannerSession:
             gap_hint = f"（距上次说话 {self._fmt_gap((now - self._last_player_message_at).total_seconds())}）"
         self._last_player_message_at = now
         text = message or "请结合我给你的文件回答。"
-        attachments = self._render_attachments(files) if files else ""
-        msg = self._receive(
-            f"[{now.strftime('%H:%M')}]{gap_hint} {PLAYER_NAME}对你说：{text}{attachments}",
-            trigger=True)
+        prefix = f"[{now.strftime('%H:%M')}]{gap_hint} {PLAYER_NAME}对你说：{text}"
+        if files:
+            att = self._render_attachments(files)
+            if isinstance(att, dict):
+                # 视觉路径：文本块 + image_url 块（原图直接给模型）
+                content: str | list = [{"type": "text", "text": prefix + "\n\n" + att["text"]}]
+                content.extend(att["images"])
+            else:
+                content = prefix + att
+        else:
+            content = prefix
+        msg = self._receive(content, trigger=True)
         self._save_log("user", message or "（拖入文件）")
         self._wake_event.set()
         threading.Thread(target=self._player_worker, name="planner-player", daemon=True).start()
         return getattr(msg, "id", None) or ""
 
-    def _render_attachments(self, files: list) -> str:
-        """按 kind 分流注入挂载文件（标注来源；失败降级为仅路径）。"""
+    def _render_attachments(self, files: list) -> str | dict:
+        """按 kind 分流注入挂载文件（标注来源；失败降级为仅路径）。
+
+        返回：
+        - str：纯文本注入（OCR 路径，模型不具备视觉能力时行为不变）
+        - {"text": str, "images": [image_url 块, ...]}：视觉路径——文本说明
+          + 原图直接给模型（替代 OCR）
+        """
         from .fileparse import parse_file, save_attachment_text
 
+        vision = self.vision_capable
         parts = []
+        images: list[dict] = []
         for f in files:
             name = str(f.get("name") or "未命名")
             path = str(f.get("path") or "")
@@ -942,6 +971,12 @@ class PlannerSession:
                 else:
                     parts.append(f"- 文档 {name}{loc}：（解析失败或不支持此格式，仅提供文件名）")
             elif kind == "image":
+                if vision:
+                    block = self._image_block(path)
+                    if block:
+                        images.append(block)
+                        parts.append(f"- 图片 {name}{loc}（已发送原图给模型）")
+                        continue   # 视觉注入成功：不叠加 OCR（用户选择只发图片）
                 from .ocr import _global_client as _ocr_global
                 text = _ocr_global().recognize_path(path)
                 if text:
@@ -950,9 +985,21 @@ class PlannerSession:
                     parts.append(f"- 图片 {name}{loc}：（OCR 未能识别出文字）")
             else:
                 parts.append(f"- 文件 {name}{loc}")
-        if not parts:
+        if not parts and not images:
             return ""
-        return "\n\n【拖入的文件】\n" + "\n\n".join(parts)
+        text = "\n\n【拖入的文件】\n" + "\n\n".join(parts) if parts else ""
+        if images:
+            return {"text": text, "images": images}
+        return text
+
+    @staticmethod
+    def _image_block(path) -> dict | None:
+        """图片文件 → image_url 内容块（统一转 PNG data URL）；读取/转换失败返回 None。"""
+        from .imageutil import image_to_data_url
+        url = image_to_data_url(path)
+        if not url:
+            return None
+        return {"type": "image_url", "image_url": {"url": url}}
 
     def undo_message(self, msg_id: str) -> dict:
         """撤销：从 buffer 删除该玩家消息及其后的所有对话。
