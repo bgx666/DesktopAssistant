@@ -302,6 +302,40 @@ def test_screen_inject_middleware(data_root, monkeypatch):
         s.close()
 
 
+def test_compression_details_strip_image_blocks(data_root, monkeypatch):
+    """记忆树压缩：details 落盘前清洗 image_url 块——base64 不进 DB，探索返回干净文本。"""
+    import json as _json
+
+    from planner.middleware import SummarizationMiddleware
+
+    s = _force_vision(PlannerSession(data_root, mock=True), monkeypatch)
+    try:
+        s.settings["compress_trigger"] = 20
+        s.settings["compress_keep"] = 5
+        # 25 条消息，第 0 条带图片块（batch = 最早 20 条）
+        s._receive([
+            {"type": "text", "text": "[10:00] 用户对你说：看图"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAA"}},
+        ], trigger=True)
+        for i in range(24):
+            s._receive(f"普通消息 {i}", trigger=True)
+        comp = SummarizationMiddleware(s)
+        removes, adds = comp.compress_snapshot(list(s.recent_buffer))
+        assert removes and adds
+        tree = s.get_memory_tree()
+        for add in adds:
+            nid = (add.metadata or {}).get("node_id")
+            if nid:
+                info = tree.get_node_children_info(nid)
+                details = info.get("details") or []
+                raw = _json.dumps(details, ensure_ascii=False)
+                assert "image_url" not in raw, "details 不应含 image_url 块"
+                assert "data:image" not in raw, "details 不应含 base64"
+                assert "看图" in raw, "文本块应保留（压缩后仍可回看文字说明）"
+    finally:
+        s.close()
+
+
 def test_capture_screen_injects_image_into_conversation(data_root, monkeypatch):
     """端到端：模型调 capture_screen → 截图注入为 user 消息 → 第二轮模型看到图片块，
     且截图消息留在 buffer（可反复查看，非一次性描述）。"""

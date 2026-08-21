@@ -561,11 +561,27 @@ class SummarizationMiddleware(AgentMiddleware):
         first_ts = _msg_ts(batch[0])
         last_ts = _msg_ts(batch[-1])
         time_range = (first_ts, last_ts) if (first_ts and last_ts) else None
+        # 清洗 details：image_url 块对模型无用（tool 消息不能带图），base64 落盘
+        # 纯浪费存储，探索记忆时还会被当垃圾文本灌回上下文——序列化后替换为文本占位。
+        # 兼容两种 messages_to_dict 输出形状：旧版 {"type","content"}，新版 {"type","data":{...}}
+        details = messages_to_dict(batch)
+        for d in details:
+            content = d.get("content")
+            if content is None and isinstance(d.get("data"), dict):
+                content = d["data"].get("content")
+            if isinstance(content, list):
+                kept = [b for b in content
+                        if not (isinstance(b, dict) and b.get("type") == "image_url")]
+                cleaned = kept if kept else [{"type": "text", "text": "（图片）"}]
+                if "content" in d:
+                    d["content"] = cleaned
+                else:
+                    d["data"]["content"] = cleaned
         node_id = tree.add_leaf(
             out.summary,
             (start_pos, end_pos),
             None,
-            details=messages_to_dict(batch),
+            details=details,
             profile=self._profile_or_none(out),
             future_notes=out.future_notes or None,
             meta={"schema_version": 1, **out.meta},
