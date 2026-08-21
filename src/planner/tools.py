@@ -80,30 +80,6 @@ class DndInput(BaseModel):
 
 # ── 工具工厂 ──────────────────────────────────────────────────
 
-def _describe_screen(session, data_url: str) -> str | None:
-    """用视觉模型把屏幕截图翻译成文字描述（工具结果仍是文本）。
-
-    图片块仅限 user 消息，工具结果带图会 400——所以截屏不走"图片进上下文"，
-    而是由视觉模型看完后返回描述文本。失败/无模型返回 None（调用方回退 OCR）。
-    """
-    try:
-        from langchain_core.messages import HumanMessage
-
-        llm = session._get_llm()
-        resp = llm.invoke([HumanMessage(content=[
-            {"type": "text",
-             "text": "这是一张屏幕截图。请完整描述屏幕上能看到的内容：界面布局、"
-                     "窗口、颜色、图形、图标，以及出现的所有文字。"
-                     "按从上到下、从左到右描述，尽量具体。"},
-            {"type": "image_url", "image_url": {"url": data_url}},
-        ])])
-        text = str(getattr(resp, "content", "") or "").strip()
-        return text or None
-    except Exception:
-        _logger.exception("[screen] 视觉描述失败")
-        return None
-
-
 def build_tools(session) -> list[BaseTool]:
     """闭包捕获 session 的工具工厂。session 可为 None（仅生成 schema 用）。"""
     db: TasksDb | None = getattr(session, "db", None)
@@ -476,11 +452,11 @@ def build_tools(session) -> list[BaseTool]:
 
     @tool(parse_docstring=True)
     def capture_screen() -> str:
-        """截取当前主屏的屏幕截图，识别屏幕上的内容并返回文字描述。
+        """截取当前主屏的屏幕截图，让模型查看屏幕内容。
 
         用户让你"看一下屏幕 / 看看我正在做什么 / 屏幕上有什么"时使用。
-        视觉模型可用时：把截图直接交给视觉模型理解（布局/颜色/图形/文字），
-        返回完整描述；视觉不可用或失败时回退 OCR 只识别文字。
+        视觉模型可用时：截图以 user 消息注入对话（画面进入上下文，可反复查看，
+        与对话共用前缀缓存）；视觉不可用或失败时回退 OCR 只识别文字。
         """
         import mss
 
@@ -489,17 +465,17 @@ def build_tools(session) -> list[BaseTool]:
                 shot = sct.grab(sct.monitors[1])   # 主屏
         except Exception as exc:
             return f"（屏幕截图失败：{exc}）"
-        # 视觉路径：工具结果必须是文本（图片块仅限 user 消息），
-        # 由视觉模型把截图翻译成描述文本后作为结果返回
+        # 视觉路径：图片块仅限 user 消息，工具结果不能带图——
+        # 截图存入 _pending_screenshots，由 ScreenShotInjectMiddleware 在下一轮
+        # 模型调用前注入为 user 消息（进对话上下文，可反复看、共享前缀缓存）
         if session is not None and session.vision_capable:
             from .imageutil import numpy_to_data_url
             url = numpy_to_data_url(shot)
             if url:
-                desc = _describe_screen(session, url)
-                if desc:
-                    return f"【屏幕截图内容描述】\n{desc}"
-            _logger.warning("[screen] 视觉描述失败，回退 OCR")
-        # 回退：OCR 文字识别（无视觉模型 / 描述失败）
+                session._pending_screenshots.append(url)
+                return "（屏幕截图已截取，画面已注入本次对话，请查看截图后回答。）"
+            _logger.warning("[screen] 截图转 data URL 失败，回退 OCR")
+        # 回退：OCR 文字识别（无视觉模型 / 转换失败）
         from .ocr import ocr_png_from_screen
         text = ocr_png_from_screen(shot)
         if not text:

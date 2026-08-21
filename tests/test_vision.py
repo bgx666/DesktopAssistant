@@ -278,3 +278,113 @@ def test_vision_capable_respects_model(data_root, monkeypatch):
         assert s.vision_capable
     finally:
         s.close()
+
+
+# ── 截屏注入（capture_screen → user 消息，进上下文可反复查看）────────
+
+def test_screen_inject_middleware(data_root, monkeypatch):
+    """ScreenShotInjectMiddleware：pending 截图 → user 消息（text+image_url），注入后清空。"""
+    from planner.middleware import ScreenShotInjectMiddleware
+
+    s = PlannerSession(data_root, mock=True)
+    try:
+        s._pending_screenshots = ["data:image/png;base64,AAA"]
+        mw = ScreenShotInjectMiddleware(s)
+        out = mw.before_model({}, None)
+        assert out and "messages" in out
+        injected = out["messages"][0]
+        assert injected.type == "human"
+        kinds = [(b.get("type") if isinstance(b, dict) else "") for b in injected.content]
+        assert kinds == ["text", "image_url"]
+        assert s._pending_screenshots == []        # 注入后清空
+        assert mw.before_model({}, None) is None   # 无 pending → no-op
+    finally:
+        s.close()
+
+
+def test_capture_screen_injects_image_into_conversation(data_root, monkeypatch):
+    """端到端：模型调 capture_screen → 截图注入为 user 消息 → 第二轮模型看到图片块，
+    且截图消息留在 buffer（可反复查看，非一次性描述）。"""
+    import mss as mss_mod
+
+    from langchain_core.language_models.chat_models import BaseChatModel
+    from langchain_core.messages import AIMessage, AIMessageChunk
+    from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
+
+    seen_image_in_second_call = []
+
+    class _VisionToolModel(BaseChatModel):
+        def _llm_type(self):
+            return "vision-tool"
+
+        def bind_tools(self, tools, **kwargs):
+            self._tools = [t.name for t in (tools or [])]
+            return self
+
+        def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+            if not getattr(self, "_calls", 0):
+                self._calls = 0
+            if self._calls == 0:
+                self._calls += 1
+                return ChatResult(generations=[ChatGeneration(message=AIMessage(
+                    content="",
+                    tool_calls=[{"name": "capture_screen", "args": {},
+                                 "id": "tc_shot", "type": "tool_call"}]))])
+            self._calls += 1
+            # 第二轮：应看到注入的截图 user 消息（图片块）
+            for m in messages:
+                if isinstance(m, HumanMessage) and isinstance(m.content, list):
+                    kinds = [(b.get("type") if isinstance(b, dict) else "") for b in m.content]
+                    if "image_url" in kinds:
+                        seen_image_in_second_call.append(True)
+            return ChatResult(generations=[ChatGeneration(message=AIMessage(
+                content="我看到屏幕了：红色角色站在桌边。",
+                tool_calls=[{"name": "heartbeat", "args": {"minutes": 15},
+                             "id": "tc_hb", "type": "tool_call"}]))])
+
+        def _stream(self, messages, stop=None, run_manager=None, **kwargs):
+            gen = self._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+            m = gen.generations[0].message
+            yield ChatGenerationChunk(message=AIMessageChunk(
+                content=m.content, tool_calls=m.tool_calls))
+
+    class _FakeShot:
+        pass
+
+    class _FakeSct:
+        def __init__(self):
+            self.monitors = [None, "MAIN"]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def grab(self, monitor):
+            return _FakeShot()
+
+    monkeypatch.setattr(mss_mod, "MSS", _FakeSct)
+    monkeypatch.setattr("planner.imageutil.numpy_to_data_url",
+                        lambda shot: "data:image/png;base64,AAA")
+
+    s = _force_vision(PlannerSession(data_root, mock=True), monkeypatch)
+    try:
+        s.set_chat_model(_VisionToolModel())
+        s._receive("看一下我的屏幕", trigger=True)
+        s.pending_response = False
+        s._generate_response("player")
+        assert seen_image_in_second_call, "模型第二轮应收到注入的截图图片块"
+        # 截图 user 消息留在 buffer（常驻可反复查看）
+        img_hm = [
+            m for m in s.recent_buffer
+            if m.type == "human" and isinstance(m.content, list)
+            and any((b.get("type") if isinstance(b, dict) else "") == "image_url"
+                    for b in m.content)
+        ]
+        assert img_hm, "截图应作为 user 消息留在 buffer"
+        ai_texts = [m.content for m in s.recent_buffer
+                    if m.type == "ai" and getattr(m, "content", "")]
+        assert any("屏幕" in str(t) for t in ai_texts)
+    finally:
+        s.close()

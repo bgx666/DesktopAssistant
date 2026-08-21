@@ -142,6 +142,9 @@ class PlannerSession:
         # 停止请求（用户点"停止"打断当前生成）：after_model/before_model
         # 中间件检查后跳转 end；每次生成开始时重置
         self._stop_requested: bool = False
+        # 待注入的屏幕截图（capture_screen 工具写入 data URL，ScreenShotInjectMiddleware
+        # 在下次模型调用前作为 user 消息注入并清空；生成开始前清残留防陈旧注入）
+        self._pending_screenshots: list[str] = []
         # 本次生成调用过的工具名（用于识别“自主学习”心跳，决定是否朗读）
         self._generation_tool_names: set[str] = set()
         # 是否已向前端发送“自主学习静音”信号
@@ -1078,6 +1081,7 @@ class PlannerSession:
         with self.buffer_lock:
             self._generating = True
             self._stop_requested = False   # 每次生成重置停止标志
+            self._pending_screenshots = []   # 防上一轮中断残留的陈旧截图注入
             self._generation_tool_names = set()
             self._self_learning_mute_sent = False
             self._heartbeat_set_this_generation = False

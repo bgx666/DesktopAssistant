@@ -62,7 +62,7 @@ class DndGuardMiddleware(AgentMiddleware):
 # ── 计划快照注入 ─────────────────────────────────────────────
 
 class PlanSnapshotMiddleware(AgentMiddleware):
-    """before_agent：计划快照指纹变化时注入 [当前计划] 文本（每次生成最多注入一次）。"""
+    """before_agent：计划快照指纹变化时注入 [当前待办] 文本（每次生成最多注入一次）。"""
 
     def __init__(self, session) -> None:
         super().__init__()
@@ -74,6 +74,36 @@ class PlanSnapshotMiddleware(AgentMiddleware):
         if text is None:
             return None
         return {"messages": [HumanMessage(content=text)]}
+
+
+# ── 屏幕截图注入 ─────────────────────────────────────────────
+
+class ScreenShotInjectMiddleware(AgentMiddleware):
+    """capture_screen 截屏后：把画面以 user 消息注入对话（图片块仅限 user 消息）。
+
+    工具结果（tool 消息）不能携带图片块（DeepSeek 400），但截屏的目的是让模型
+    "看到"画面——所以截图由工具存入 session._pending_screenshots，在本轮下一次
+    模型调用前（before_model）作为 user 消息注入 state。图片由此进入对话上下文：
+    - 可被后续轮次/后续对话反复查看（同一张图随 buffer 常驻）；
+    - 与对话共用前缀缓存（后续相同前缀的请求命中 KV cache，不再重复计费图片 token）。
+    """
+
+    def __init__(self, session) -> None:
+        super().__init__()
+        self.session = session
+
+    def before_model(self, state: PlannerState, runtime: Runtime) -> dict | None:
+        pending = getattr(self.session, "_pending_screenshots", None)
+        if not pending:
+            return None
+        msgs = []
+        for url in pending:
+            msgs.append(HumanMessage(content=[
+                {"type": "text", "text": "（这是屏幕截图，请查看画面内容后回答。）"},
+                {"type": "image_url", "image_url": {"url": url}},
+            ]))
+        self.session._pending_screenshots = []
+        return {"messages": msgs}
 
 
 # ── 玩家消息优先 ─────────────────────────────────────────────

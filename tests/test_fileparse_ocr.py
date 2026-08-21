@@ -172,7 +172,7 @@ def test_capture_screen_tool(monkeypatch):
 
 
 def test_capture_screen_vision_path(monkeypatch):
-    """capture_screen：视觉模型可用时走视觉描述（布局/颜色/图形），非 OCR 文字。"""
+    """capture_screen：视觉可用时截图入 pending 队列（由中间件注入为 user 消息），非 OCR。"""
     import mss as mss_mod
 
     from planner.tools import build_tools
@@ -193,42 +193,25 @@ def test_capture_screen_vision_path(monkeypatch):
         def grab(self, monitor):
             return _FakeShot()
 
-    class _FakeLlm:
-        def invoke(self, messages):
-            from langchain_core.messages import AIMessage
-            # 校验图片块确实发给了模型
-            content = messages[-1].content
-            kinds = [(b.get("type") if isinstance(b, dict) else "") for b in content]
-            assert kinds == ["text", "image_url"]
-            return AIMessage(content="屏幕上有一个红色角色站在桌边，旁边是任务列表")
-
     class _FakeSession:
         vision_capable = True
 
-        def _get_llm(self):
-            return _FakeLlm()
+        def __init__(self):
+            self._pending_screenshots = []
 
     monkeypatch.setattr(mss_mod, "MSS", _FakeSct)
     monkeypatch.setattr("planner.imageutil.numpy_to_data_url",
                         lambda shot: "data:image/png;base64,AAA")
-    tools = {t.name: t for t in build_tools(_FakeSession())}
+    fake = _FakeSession()
+    tools = {t.name: t for t in build_tools(fake)}
     res = tools["capture_screen"].invoke({})
-    assert "屏幕截图内容描述" in res
-    assert "红色角色" in res
+    assert "已注入本次对话" in res
+    assert fake._pending_screenshots == ["data:image/png;base64,AAA"]
 
-    # 视觉描述失败（模型异常）→ 回退 OCR
-    class _BoomLlm:
-        def invoke(self, messages):
-            raise RuntimeError("llm down")
-
-    class _FakeSession2:
-        vision_capable = True
-
-        def _get_llm(self):
-            return _BoomLlm()
-
+    # 截图转 data URL 失败 → 回退 OCR，不污染 pending 队列
+    monkeypatch.setattr("planner.imageutil.numpy_to_data_url", lambda shot: None)
     monkeypatch.setattr("planner.ocr.ocr_png_from_screen",
                         lambda shot: "OCR 兜底文字")
-    tools2 = {t.name: t for t in build_tools(_FakeSession2())}
-    res2 = tools2["capture_screen"].invoke({})
+    res2 = tools["capture_screen"].invoke({})
     assert "OCR 兜底文字" in res2
+    assert fake._pending_screenshots == ["data:image/png;base64,AAA"]
