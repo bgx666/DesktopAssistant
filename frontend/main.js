@@ -842,6 +842,8 @@ let uiSettings = { press_ms: 200 };
     if (fs.existsSync(UI_SETTINGS_FILE())) {
       const raw = JSON.parse(fs.readFileSync(UI_SETTINGS_FILE(), 'utf-8'));
       if (raw && typeof raw.press_ms === 'number') uiSettings.press_ms = raw.press_ms;
+      // voice_mode 会随开关保存，但这里必须加载——否则每次重启语音模式都被重置为关
+      if (raw && typeof raw.voice_mode === 'boolean') uiSettings.voice_mode = raw.voice_mode;
       return;
     }
     // 首次：从后端 settings.json 迁移 press_ms（后端旧数据）
