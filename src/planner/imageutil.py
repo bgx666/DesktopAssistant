@@ -18,6 +18,31 @@ _MAX_PX = 2000                # 单边最大像素（视觉模型会再自动缩
 _MAX_B64 = 24 * 1024 * 1024   # base64 长度上限（留余量给 48MiB 请求体限制）
 
 
+def _encode_data_url(img) -> str | None:
+    """BGR ndarray → PNG base64 data URL（超限逐级缩放）；失败返回 None。"""
+    import cv2
+
+    scale = 1.0
+    for _ in range(4):   # 过大则逐级缩小重试（最多缩 4 次）
+        h, w = img.shape[:2]
+        s = scale
+        if max(h, w) * s > _MAX_PX:
+            s = _MAX_PX / max(h, w)
+        if s != 1.0:
+            resized = cv2.resize(img, (int(w * s), int(h * s)),
+                                 interpolation=cv2.INTER_AREA)
+        else:
+            resized = img
+        ok, buf = cv2.imencode(".png", resized)
+        if not ok:
+            return None
+        b64 = base64.b64encode(buf.tobytes()).decode("ascii")
+        if len(b64) <= _MAX_B64:
+            return "data:image/png;base64," + b64
+        scale *= 0.5
+    return None
+
+
 def image_to_data_url(path) -> str | None:
     """图片文件 → data:image/png;base64,xxx；读取/解码失败返回 None。"""
     try:
@@ -37,23 +62,19 @@ def image_to_data_url(path) -> str | None:
     if img is None:
         _logger.warning("[vision] 图片解码失败: %s", path)
         return None
-    scale = 1.0
-    for _ in range(4):   # 过大则逐级缩小重试（最多缩 4 次）
-        h, w = img.shape[:2]
-        s = scale
-        if max(h, w) * s > _MAX_PX:
-            s = _MAX_PX / max(h, w)
-        if s != 1.0:
-            resized = cv2.resize(img, (int(w * s), int(h * s)),
-                                 interpolation=cv2.INTER_AREA)
-        else:
-            resized = img
-        ok, buf = cv2.imencode(".png", resized)
-        if not ok:
-            return None
-        b64 = base64.b64encode(buf.tobytes()).decode("ascii")
-        if len(b64) <= _MAX_B64:
-            return "data:image/png;base64," + b64
-        scale *= 0.5
-    _logger.warning("[vision] 图片压缩后仍超限: %s", path)
-    return None
+    url = _encode_data_url(img)
+    if url is None:
+        _logger.warning("[vision] 图片压缩后仍超限: %s", path)
+    return url
+
+
+def numpy_to_data_url(bgra) -> str | None:
+    """BGRA 屏幕帧（mss grab 输出）→ PNG data URL；转换失败返回 None。"""
+    import cv2
+
+    try:
+        img = cv2.cvtColor(np.asarray(bgra), cv2.COLOR_BGRA2BGR)
+    except Exception:
+        _logger.warning("[vision] 屏幕帧转换失败")
+        return None
+    return _encode_data_url(img)

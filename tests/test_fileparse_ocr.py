@@ -169,3 +169,66 @@ def test_capture_screen_tool(monkeypatch):
     monkeypatch.setattr(mss_mod, "MSS", _BoomSct)
     res3 = tools["capture_screen"].invoke({})
     assert "屏幕截图失败" in res3
+
+
+def test_capture_screen_vision_path(monkeypatch):
+    """capture_screen：视觉模型可用时走视觉描述（布局/颜色/图形），非 OCR 文字。"""
+    import mss as mss_mod
+
+    from planner.tools import build_tools
+
+    class _FakeShot:
+        pass
+
+    class _FakeSct:
+        def __init__(self):
+            self.monitors = [None, "MAIN"]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def grab(self, monitor):
+            return _FakeShot()
+
+    class _FakeLlm:
+        def invoke(self, messages):
+            from langchain_core.messages import AIMessage
+            # 校验图片块确实发给了模型
+            content = messages[-1].content
+            kinds = [(b.get("type") if isinstance(b, dict) else "") for b in content]
+            assert kinds == ["text", "image_url"]
+            return AIMessage(content="屏幕上有一个红色角色站在桌边，旁边是任务列表")
+
+    class _FakeSession:
+        vision_capable = True
+
+        def _get_llm(self):
+            return _FakeLlm()
+
+    monkeypatch.setattr(mss_mod, "MSS", _FakeSct)
+    monkeypatch.setattr("planner.imageutil.numpy_to_data_url",
+                        lambda shot: "data:image/png;base64,AAA")
+    tools = {t.name: t for t in build_tools(_FakeSession())}
+    res = tools["capture_screen"].invoke({})
+    assert "屏幕截图内容描述" in res
+    assert "红色角色" in res
+
+    # 视觉描述失败（模型异常）→ 回退 OCR
+    class _BoomLlm:
+        def invoke(self, messages):
+            raise RuntimeError("llm down")
+
+    class _FakeSession2:
+        vision_capable = True
+
+        def _get_llm(self):
+            return _BoomLlm()
+
+    monkeypatch.setattr("planner.ocr.ocr_png_from_screen",
+                        lambda shot: "OCR 兜底文字")
+    tools2 = {t.name: t for t in build_tools(_FakeSession2())}
+    res2 = tools2["capture_screen"].invoke({})
+    assert "OCR 兜底文字" in res2

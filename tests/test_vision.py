@@ -92,6 +92,20 @@ def test_image_block_bad_file_returns_none(data_root):
         s.close()
 
 
+def test_numpy_to_data_url():
+    """BGRA 屏幕帧（mss 输出）→ PNG data URL，可解码回 PNG 魔数。"""
+    from planner.imageutil import numpy_to_data_url
+    bgra = np.zeros((100, 160, 4), dtype=np.uint8)
+    bgra[:, :80] = (0, 0, 255, 255)   # 左半红
+    bgra[:, 80:] = (255, 0, 0, 255)   # 右半蓝
+    url = numpy_to_data_url(bgra)
+    assert url and url.startswith("data:image/png;base64,")
+    raw = base64.b64decode(url.split(",", 1)[1])
+    assert raw[:8] == b"\x89PNG\r\n\x1a\n"
+    # 屏幕帧非标准 BGRA → 转换失败返回 None
+    assert numpy_to_data_url("not-an-array") is None
+
+
 def test_render_attachments_vision_injection(data_root, monkeypatch):
     """视觉路径：_render_attachments 返回 {"text", "images"}，文本块标注已发原图。"""
     s = _force_vision(PlannerSession(data_root, mock=True), monkeypatch)
