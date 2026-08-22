@@ -148,7 +148,8 @@ function createBubble() {
   bubbleWin.on('minimize', () => {
     if (bubbleWin && !bubbleWin.isDestroyed()) bubbleWin.restore();
   });
-  bubbleWin.on('closed', () => { bubbleWin = null; });
+    bubbleWin.on('closed', () => { bubbleWin = null; });
+  appLog('[win] bubble created');
 }
 
 // ── 悬浮球窗口形状：圆形可点区 ─────────────────────────────
@@ -208,6 +209,7 @@ function createPanel() {
     },
   });
   panelWin.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+  appLog('[win] panel created');
   // 面板与悬浮球同级最高层级
   panelWin.setAlwaysOnTop(true, 'pop-up-menu');
   // 页面加载完成（listener 就绪）后，补发暂存的变形请求
@@ -615,11 +617,13 @@ async function checkBackend() {
     const res = await fetch(BACKEND_URL + '/state', { signal: AbortSignal.timeout(2000) });
     if (!res.ok) throw new Error('bad status');
     const data = await res.json();
+    setBackendOnline(true);
     broadcastState(data.state);
     broadcastPanelState();
     startDequeuePoll();
   } catch {
     // 后端尚未就绪 → 广播离线状态，短暂退避后重试健康检查
+    setBackendOnline(false);
     broadcastState({ offline: true });
     if (!quitting) dequeueTimer = setTimeout(checkBackend, 1000);
   }
@@ -635,6 +639,7 @@ async function pollDequeue() {
     const res = await fetch(BACKEND_URL + '/dequeue?wait=25', { signal: AbortSignal.timeout(30000) });
     if (!res.ok) return;
     online = true;
+    setBackendOnline(true);
     const data = await res.json();
     const events = data.events || [];
     broadcastState(data.state);
@@ -669,6 +674,7 @@ async function pollDequeue() {
     // morphing_in 且页面未加载完 → 事件留在 pendingEvents，morph-in-done 时补发
   } catch {
     // 后端不可达 → 广播离线状态，各窗口状态点变红
+    setBackendOnline(false);
     broadcastState({ offline: true });
   } finally {
     // 在线 → 立即发起下一次长轮询；离线 → 回到健康检查，等后端恢复后快速变绿
@@ -688,6 +694,14 @@ function broadcastState(state) {
       panelWin.webContents.send('state', state);
     }
   } catch { /* 窗口销毁中忽略 */ }
+}
+
+// 后端在线状态变化落日志（排查"半死实例"时对账：什么时候断的、断了多久）
+let backendOnline = null;   // null = 启动初未知
+function setBackendOnline(on) {
+  if (backendOnline === on) return;
+  backendOnline = on;
+  appLog('[backend] ' + (on ? 'online' : 'OFFLINE'));
 }
 
 // 面板形态广播：语音连续对话模式的 active 窗口判定（bubble ↔ 悬浮球形态）
@@ -730,13 +744,42 @@ function toggleDndFromMain() {
 // ── IPC：渲染进程 ↔ 主进程 ──────────────────────────────────
 // 主进程诊断日志：console 同时落盘（userData/app.log，无终端窗口也能排查）
 const APP_LOG_FILE = path.join(app.getPath('userData'), 'app.log');
+// 超过 1MB 归档为 app.old.log：避免无限增长，且排查时最多只面对两份文件
+function rotateAppLogIfNeeded() {
+  try {
+    if (fs.existsSync(APP_LOG_FILE) && fs.statSync(APP_LOG_FILE).size > 1024 * 1024) {
+      fs.renameSync(APP_LOG_FILE, path.join(path.dirname(APP_LOG_FILE), 'app.old.log'));
+    }
+  } catch { /* 忽略 */ }
+}
 function appLog(msg) {
-  try { fs.appendFileSync(APP_LOG_FILE, `${new Date().toISOString()} ${msg}\n`); } catch { /* 忽略 */ }
+  try {
+    rotateAppLogIfNeeded();
+    fs.appendFileSync(APP_LOG_FILE, `${new Date().toISOString()} ${msg}\n`);
+  } catch { /* 忽略 */ }
   console.log(msg);
 }
 
 // 渲染进程日志（诊断播放链路）
 ipcMain.on('renderer-log', (e, msg) => appLog('[renderer] ' + msg));
+
+// ── 播放结果上报：连续失败只告警不自愈 ──────────────────────
+// 渲染层每次 TTS 播放结束上报成功/失败；这里落盘并统计连续失败次数。
+// 曾经考虑过连续失败自动 reload 窗口，按用户决策改为只诊断（人工重启兜底）。
+let playFailStreak = 0;
+ipcMain.on('playback-result', (e, r) => {
+  const ok = !!(r && r.ok);
+  if (ok) {
+    if (playFailStreak >= 5) appLog('[playback] 连续失败 ' + playFailStreak + ' 次后恢复');
+    playFailStreak = 0;
+    return;
+  }
+  playFailStreak += 1;
+  appLog('[playback] FAIL(' + playFailStreak + ') ' + String((r && r.detail) || '').slice(0, 200));
+  if (playFailStreak === 5) {
+    appLog('[playback] ⚠ 已连续失败 5 次——播放链路疑似异常，建议彻底关闭并重启小助');
+  }
+});
 
 // ── 渲染进程 HTTP 代理 ────────────────────────────────
 // Electron 37 起 file:// 页面直连 127.0.0.1 被 CORS/PNA 全拦（GET/POST 均 Failed to fetch），
@@ -887,11 +930,13 @@ function broadcastVoiceMode() {
 }
 function toggleVoiceMode() {
   uiSettings.voice_mode = !uiSettings.voice_mode;
+  appLog('[voice-mode] ' + (uiSettings.voice_mode ? 'ON' : 'off'));
   saveUiSettingsFile();
   broadcastVoiceMode();
 }
 ipcMain.on('voice-mode-set', (e, on) => {
   uiSettings.voice_mode = !!on;
+  appLog('[voice-mode] ' + (uiSettings.voice_mode ? 'ON' : 'off'));
   saveUiSettingsFile();
   broadcastVoiceMode();
 });
@@ -1098,6 +1143,9 @@ if (!gotSingleLock) {
     togglePanel();
   });
   app.whenReady().then(async () => {
+    // 启动横幅：日志里区分不同实例的边界（排查"半死实例"时对账用）
+    appLog(`[boot] pid=${process.pid} v=${app.getVersion() || '?'} electron=${process.versions.electron} `
+      + `userData=${app.getPath('userData')} backend=${BACKEND_URL}`);
     // 麦克风权限：语音输入（getUserMedia）放行
     session.defaultSession.setPermissionRequestHandler((wc, permission, callback) => {
       callback(permission === 'media');

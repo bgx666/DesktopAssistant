@@ -446,3 +446,25 @@ def test_toggle_mock(backend):
     assert r["mode"] == "llm"
     r2 = _post(base, "/toggle_mock")
     assert r2["mode"] == "mock"
+
+
+# ── 启动自检：残留后端识别（纯函数）──────────────────────────
+
+def test_is_planner_cmdline():
+    from planner.server import is_planner_cmdline
+
+    assert is_planner_cmdline(r"D:\venv\pythonw.exe -m planner")
+    assert is_planner_cmdline("python -m planner --port 18772")
+    assert not is_planner_cmdline(r"C:\other\app.exe --serve")
+    assert not is_planner_cmdline(None)
+    assert not is_planner_cmdline("")
+
+
+def test_should_kill_stale_decision():
+    """杀残留的三条件：有 PID 记录 / 不是自己 / 命令行验明是 planner。"""
+    from planner.server import should_kill_stale
+
+    assert should_kill_stale(123, 456, "python -m planner")
+    assert not should_kill_stale(123, 456, "notepad.exe")        # 无关进程不误杀
+    assert not should_kill_stale(None, 456, "python -m planner")  # 无记录不动
+    assert not should_kill_stale(123, 123, "python -m planner")   # 自己不动

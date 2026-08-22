@@ -18,10 +18,14 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import subprocess
 import sys
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from . import config as _config
@@ -322,10 +326,101 @@ def _setup_logging(data_root) -> None:
         root.addHandler(stream_handler)
 
 
+# ── 启动自检：端口被占时清理残留的 planner 后端 ─────────────
+
+def _pid_file(data_root) -> Path:
+    """当前数据目录下的后端 PID 记录（下次启动清理残留用）。"""
+    return Path(data_root) / "server.pid"
+
+
+def is_planner_cmdline(cmdline: str | None) -> bool:
+    """命令行是否属于 planner 后端（纯函数，便于测试）。
+
+    识别依据：命令行含 "planner"（python -m planner / venv 路径含
+    planner 等）。误杀面极小——本机同时跑一个命令行恰好带 planner
+    的无关程序的概率可以忽略。
+    """
+    return bool(cmdline) and "planner" in cmdline.lower()
+
+
+def should_kill_stale(pid_in_file: int | None, current_pid: int,
+                      cmdline: str | None) -> bool:
+    """是否应清理 pid 文件记录的残留后端（纯函数，便于测试）。
+
+    条件缺一不可：有记录 / 不是当前进程自己 / 命令行验明是 planner。
+    """
+    if not pid_in_file or pid_in_file == current_pid:
+        return False
+    return is_planner_cmdline(cmdline)
+
+
+def _process_cmdline(pid: int) -> str | None:
+    """读 Windows 进程命令行（杀前验明正身，防误杀复用 PID）；失败返回 None。"""
+    try:
+        out = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             f"(Get-CimInstance Win32_Process -Filter 'ProcessId={pid}').CommandLine"],
+            capture_output=True, text=True, timeout=5,
+        )
+        return (out.stdout or "").strip() or None
+    except Exception:
+        return None
+
+
+def ensure_port_free(port: int, data_root) -> bool:
+    """端口被占时清理残留的 planner 后端进程；非 planner 占用不误杀。
+
+    返回 True = 端口可用（原本空闲或已清理成功）；
+    False = 被其他程序占用或无法安全确认，需人工处理。
+    """
+    import socket as _socket
+
+    def busy() -> bool:
+        s = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+        try:
+            s.bind(("127.0.0.1", port))
+            return False
+        except OSError:
+            return True
+        finally:
+            s.close()
+
+    for _ in range(3):
+        if not busy():
+            return True
+        pid_in_file: int | None = None
+        try:
+            pid_in_file = int(_pid_file(data_root).read_text().strip())
+        except (OSError, ValueError):
+            pid_in_file = None
+        cmdline = _process_cmdline(pid_in_file) if pid_in_file else None
+        if not should_kill_stale(pid_in_file, os.getpid(), cmdline):
+            _logger.warning("[server] 端口 %s 被占用且无法确认是残留后端"
+                            "（PID 记录缺失/不匹配），请手动释放", port)
+            return False
+        try:
+            os.kill(pid_in_file, 9)
+            _logger.warning("[server] 已清理残留后端进程 %s（释放端口 %s）",
+                            pid_in_file, port)
+        except OSError as exc:
+            _logger.warning("[server] 清理残留进程 %s 失败: %s", pid_in_file, exc)
+        time.sleep(1.0)
+    return not busy()
+
+
 def main() -> None:
     port = _config.PLANNER_PORT
     session = PlannerSession()
     _setup_logging(session.data_root)
+    if not ensure_port_free(port, session.data_root):
+        _logger.error("[server] 端口 %s 被占用且无法安全清理，退出", port)
+        if sys.stdout is not None:
+            print(f"[planner] 端口 {port} 被其他程序占用且无法安全清理，请手动释放后重试")
+        raise SystemExit(1)
+    try:   # 记录本进程 PID：下次启动据此识别并清理残留
+        _pid_file(session.data_root).write_text(str(os.getpid()), encoding="utf-8")
+    except OSError:
+        pass
     session.start_heartbeat()
     httpd = create_server(session, port=port)
     # 服务已监听后再预加载 ASR 模型：模型初始化是 CPU/GIL 密集操作，

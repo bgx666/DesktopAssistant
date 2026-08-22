@@ -381,6 +381,9 @@
         if (playQueue.length && !prefetchMap.has(playQueue[0])) {
           prefetchMap.set(playQueue[0], fetchTtsFile(playQueue[0]));
         }
+        if (!fileUrl) {
+          window.planner.reportPlaybackResult(false, 'stream: 合成/下载失败');
+        }
         if (fileUrl && !mutedTts) {
           await new Promise((resolve) => {
             currentPlayResolve = resolve;
@@ -395,9 +398,12 @@
             ttsAudio.src = fileUrl;
             ttsAudio.play().catch(() => onEnd());
           });
+          window.planner.reportPlaybackResult(true, 'stream');
         }
       }
-    } catch { /* 静默 */ } finally {
+    } catch (err) {
+      window.planner.reportPlaybackResult(false, 'stream: ' + (err && err.message || err));
+    } finally {
       playing = false;
       if (playQueue.length) pumpPlay();
     }

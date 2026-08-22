@@ -662,14 +662,20 @@
     try {
       const t0 = Date.now();
       const fileUrl = await window.planner.audioFile(url);
-      if (!fileUrl) { window.planner.reportLog('tts: audioFile null for ' + url); return false; }
+      if (!fileUrl) {
+        window.planner.reportLog('tts: audioFile null for ' + url);
+        window.planner.reportPlaybackResult(false, 'panel: audioFile null');
+        return false;
+      }
       ttsAudio.src = fileUrl;
       ttsAudio.onended = () => ttsAudio.removeAttribute('src');
       await ttsAudio.play();
       window.planner.reportLog('tts: play OK ' + fileUrl + ' (' + (Date.now() - t0) + 'ms)');
+      window.planner.reportPlaybackResult(true, 'panel');
       return true;
     } catch (e) {
       window.planner.reportLog('tts: play FAIL ' + e.name + ' ' + e.message + ' src=' + ttsAudio.src);
+      window.planner.reportPlaybackResult(false, 'panel: ' + e.name + ' ' + e.message);
       console.error('[tts] 播放失败:', e);
       return false;
     }

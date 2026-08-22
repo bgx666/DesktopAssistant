@@ -11,6 +11,8 @@ contextBridge.exposeInMainWorld('planner', {
   audioFile: (path) => ipcRenderer.invoke('api-audio', path),
   // 渲染进程日志上报（播放链路诊断，输出到 start.bat 窗口）
   reportLog: (msg) => ipcRenderer.send('renderer-log', msg),
+  // TTS 播放结果上报：主进程统计连续失败（只告警不自动恢复）
+  reportPlaybackResult: (ok, detail) => ipcRenderer.send('playback-result', { ok: !!ok, detail: String(detail || '') }),
   // 拖拽文件：取本地绝对路径（Electron 37：File.path 已移除，用 webUtils）
   getPathForFile: (file) => {
     try { return webUtils.getPathForFile(file); } catch { return ''; }
