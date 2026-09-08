@@ -45,11 +45,26 @@ MAX_WORKER_ROUNDS = 3            # 生成期间到达的新消息最多再补 N 
 DEFAULT_WAKE_MINUTES = 30        # 首次启动/未调度时的默认唤醒间隔
 STARTUP_GRACE_SECONDS = 120      # 启动宽限期：打开后 2 分钟内不自动说话（心跳/逾期都不触发）
 
-# 心跳节奏：分钟级定时任务（一人一句，无秒级短心跳）
-# - 用户说话后不重置心跳（保持原定时，AI 不主动插话）
-# - 沉默时每次心跳逐步加长，避免烦人
+# ── 心跳节奏（master 2026-09-01 语义变更）───────────────────────
+# 心跳不再是"停止信号"，而是**下一次循环的入口**：一次 invoke 只调一次模型，
+# 工具执行完即结束本轮（AfterToolEndMiddleware）。于是"什么时候进入下一轮"
+# 完全由心跳间隔表达：
+#   · 短心跳（< HEARTBEAT_CONTINUE_MAX_MINUTES）＝「接着干」：几乎立刻进入
+#     下一轮（连续执行一串工具时设 0.1 秒）。它是同一件事的下一小步，
+#     **不算一次打扰**：不递增沉默计数、不注入"用户没回复"提示。
+#   · 长心跳＝定时唤醒：保持原有节奏（用户不回复时逐步加长）。
+HEARTBEAT_CONTINUE_MAX_MINUTES = 1.0   # 短于此值视为"续跑下一轮"
+
+# 沉默递进：**只有长心跳（定时唤醒）才用**。起点与心跳下界解耦——
+# 下界已放到 0.1 秒，若沿用下界作起点，沉默递进会塌成 0 秒（一路轰炸用户）。
+SILENT_BASE_MINUTES = 10         # 沉默递进起点（分钟）
 SILENT_ESCALATE_STEP = 10        # 沉默时每次心跳加长的分钟数
 SILENT_ESCALATE_MAX = 120        # 沉默加长上限
+
+# 调度线程轮询间隔：短心跳必须精确——固定 5 秒轮询会让 0.1 秒的心跳
+# 实际等 5 秒才触发，连续干活时每一轮都卡 5 秒。
+SCHEDULER_IDLE_TICK_SECONDS = 5.0      # 无待触发心跳时
+SCHEDULER_BUSY_TICK_SECONDS = 0.2      # 心跳已到期但被生成阻塞（防空转）
 
 
 def _now() -> datetime:
@@ -447,6 +462,23 @@ class PlannerSession:
                 return start <= h < end
             return h >= start or h < end  # 跨天窗口（如 22-8）
 
+    def _seconds_until_dnd_end(self) -> float:
+        """距免打扰结束还有多少秒（续跑心跳在 DND 期间的顺延目标）。
+
+        一次性 dnd_until 直接算剩余；窗口模式（默认 22-8）从下一整点起扫未来
+        25 小时，找第一个 in_dnd=False 的时刻。下限 60 秒（避免刚过窗口边界
+        又因取整立刻触发）。调用方已在 _fire_heartbeat 的 chat_lock 内。
+        """
+        now = _now()
+        if self.dnd_until is not None:
+            return max(60.0, (self.dnd_until - now).total_seconds())
+        base = now.replace(minute=0, second=0, microsecond=0)
+        for h in range(1, 25):
+            t = base + timedelta(hours=h)
+            if not self.in_dnd(t):
+                return max(60.0, (t - now).total_seconds())
+        return 3600.0   # 兜底（理论上不会到）
+
     # ── 心跳状态 ──────────────────────────────────────────────
 
     def set_heartbeat_state(self, minutes: float, note: str = "") -> None:
@@ -464,9 +496,12 @@ class PlannerSession:
 
     @staticmethod
     def _fmt_duration(minutes: float) -> str:
-        """分钟数 → 可读时长（秒级显示）。"""
-        if minutes < 1:
-            return f"{max(1, int(round(minutes * 60)))} 秒"
+        """分钟数 → 可读时长（秒级显示；亚秒保留一位小数——短心跳就是 0.1 秒级）。"""
+        secs = minutes * 60
+        if secs < 1:
+            return f"{secs:.1f} 秒"
+        if secs < 60:
+            return f"{int(round(secs))} 秒"
         if minutes == int(minutes):
             return f"{int(minutes)} 分钟"
         return f"{minutes:.1f} 分钟"
@@ -478,8 +513,12 @@ class PlannerSession:
         self._wake_event.set()
 
     def _next_silent_minutes(self) -> float:
-        """按沉默次数计算下次心跳分钟数：10 起步 → 沉默逐步加长 → 上限 120。"""
-        base = float(_config.PLANNER_HEARTBEAT_MIN_MINUTES)   # 10 分钟
+        """按沉默次数计算下次心跳分钟数：SILENT_BASE 起步 → 逐步加长 → 上限 120。
+
+        ⚠️ 起点用 SILENT_BASE_MINUTES，不是 config 的心跳下界——下界是 0.1 秒
+        （连续干活用），拿它当沉默起点会让"用户不回复"时的间隔直接塌成 0。
+        """
+        base = float(SILENT_BASE_MINUTES)   # 10 分钟
         if self._heartbeat_silent_count <= 0:
             return base
         return min(SILENT_ESCALATE_MAX,
@@ -824,8 +863,24 @@ class PlannerSession:
                 if next_at > 0 and time.time() >= next_at:
                     self._fire_heartbeat()
             self._maybe_compress_async()   # 达到阈值 → 后台压缩（不阻塞）
-            self._wake_event.wait(timeout=5)
+            self._wake_event.wait(timeout=self._schedule_tick_seconds())
             self._wake_event.clear()
+
+    def _schedule_tick_seconds(self) -> float:
+        """下次轮询等待秒数：按待触发心跳的剩余时间自适应。
+
+        心跳已承担"下一次循环入口"的职责（最短 0.1 秒），固定 5 秒轮询会让
+        0.1 秒的心跳实际等 5 秒才触发——连续干活时每一轮都白卡 5 秒。
+        """
+        with self.buffer_lock:
+            next_at = self._next_heartbeat_at
+        if next_at <= 0:
+            return SCHEDULER_IDLE_TICK_SECONDS          # 无待触发心跳：低频轮询
+        remain = next_at - time.time()
+        if remain <= 0:
+            # 已到期但被生成阻塞（_fire_heartbeat 提前 return）：别空转
+            return SCHEDULER_BUSY_TICK_SECONDS
+        return min(SCHEDULER_IDLE_TICK_SECONDS, remain)
 
     def _in_startup_grace(self) -> bool:
         """启动宽限期：启动后 STARTUP_GRACE_SECONDS 秒内不触发自主行为。"""
@@ -842,11 +897,34 @@ class PlannerSession:
                 minutes = self._heartbeat_minutes or FALLBACK_HEARTBEAT_MINUTES
                 note = self._heartbeat_note
                 self._heartbeat_note = ""
+            # 短心跳 = 模型还在连续干活（本次循环只是同一件事的下一小步），
+            # 不是一次新的"定时唤醒"——不算用户沉默、不加沉默计数。
+            continuing = minutes < HEARTBEAT_CONTINUE_MAX_MINUTES
             if self.in_dnd():
-                # 免打扰：不打扰，顺延一个正常间隔
-                self._heartbeat_silent_count += 1
+                # 免打扰：不打扰。
+                # 长心跳：照旧顺延一个原间隔（一次一个正常间隔，无空转问题）。
+                # 短心跳（续跑）：绝不能原样顺延——0.1s 的续跑间隔会在 DND 里变成
+                # 每 0.1~0.2s 一次的空轮询（不生成、不打扰、只是白转）。DND 期间
+                # DndGuard 本来就会拦下自主触发，续跑做不了任何事，直接顺延到
+                # DND 结束再醒（那时续跑才有意义，模型仍带着上一轮的 buffer）。
+                if not continuing:
+                    self._heartbeat_silent_count += 1
+                defer = minutes if not continuing else self._seconds_until_dnd_end() / 60.0
+                self.schedule_heartbeat(defer, note)
+                _logger.info("[heartbeat] 免打扰时段，%s（%s后）",
+                             "续跑顺延到 DND 结束" if continuing else "顺延",
+                             self._fmt_duration(defer))
+                return
+            if continuing:
+                _logger.info("[heartbeat] 续跑下一轮（%s后：%s）",
+                             self._fmt_duration(minutes), note)
+                # 先落保底调度（生成中 LLM 会重新设置覆盖）：防止触发后进程退出/
+                # 中断导致 next=0 落盘 → 重启后心跳被重置
                 self.schedule_heartbeat(minutes, note)
-                _logger.info("[heartbeat] 免打扰时段，顺延")
+                self._save_buffer_state()
+                # 不注入"用户沉默/自主学习"那套话术：这是接着上一步做，不是新打扰
+                self._receive("（系统：继续上一步，接着做。）", trigger=True)
+                self._spawn_worker("heartbeat")
                 return
             # 自主唤醒 = 用户沉默一次 → 心跳逐步加长
             self._heartbeat_silent_count += 1
@@ -859,7 +937,8 @@ class PlannerSession:
             self._save_buffer_state()   # 立即落盘：退出/中断后重开恢复新计时
             text = (
                 f"（系统：定时任务到点。用户最近没有回复你（已沉默 {self._heartbeat_silent_count} 次）。"
-                f"你可以选择：1) 如果用户可能有需要、或你有值得主动说的事，就和用户说话；"
+                f"你可以选择：1) 如果用户可能有需要、或你有值得主动说的事，就和用户说话，"
+                f"一两句、简短自然即可，别长篇大论；"
                 f"2) 如果用户没回复，也可以选择自主学习：用 web_search / fetch_web / "
                 f"explore_memory_tree / read_file 去了解你好奇的东西，把学到的内容用文字写下来，"
                 f"它会进入你的长期记忆。自主学习时文字正常显示，但不要朗读。"
@@ -1122,7 +1201,12 @@ class PlannerSession:
         return bool(self._generation_tool_names & learning_tools)
 
     def _run_agent(self) -> None:
-        """agent.stream：model ↔ tools 循环直到停止（无工具调用 / heartbeat / 玩家让位）。
+        """agent.stream：一次 invoke = 一次模型调用（AfterToolEnd 在工具执行完后跳 end）。
+
+        停止条件（任一）：模型没返回工具调用（纯说话）/ 调了 heartbeat /
+        玩家消息让位 / 用户点停止 / 触到 run_limit 保险。
+        **「继续干活」不再靠这个循环**——模型把心跳设成 0.1 秒，下一次循环由
+        调度线程的 heartbeat 到点驱动（_fire_heartbeat 的续跑分支）。
 
         流式输出：stream_mode=["messages", "values"]——
         - messages：AIMessageChunk 逐 token → push text_stream（面板逐字渲染）；
@@ -1145,8 +1229,12 @@ class PlannerSession:
         seen_msg_ids = {getattr(m, "id", None) or id(m) for m in input_msgs}
         interrupted = False
         try:
+            # 无 checkpointer：每次 invoke 都是全新 state，字段必须显式初始化
+            # （_last_had_tools 是 AfterToolEnd 的"上次模型是否带了工具"标记，
+            # 绝不能跨轮残留，否则第二回合开头就被误判为"工具执行完了"直接跳 end）
             stream = self._agent.stream(
-                {"messages": input_msgs, "model_call_count": 0, "set_heartbeat_called": False},
+                {"messages": input_msgs, "model_call_count": 0, "set_heartbeat_called": False,
+                 "_last_had_tools": False, "_last_tool_names": []},
                 stream_mode=["messages", "values"],
             )
             for item in stream:
