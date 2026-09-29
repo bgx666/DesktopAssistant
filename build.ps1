@@ -122,6 +122,24 @@ set "PLANNER_USER_DATA=$RelUserData"
 $SharedEnvLine
 start "" "$ElectronExe" "$FrontendDir"
 "@
+
+# ── 防回归：拒绝静默丢弃手工写在 launcher 里的 release 运行状态 ──────
+# 历史坑：语音配置（PLANNER_TTS_ENGINE / PLANNER_MIMO_*）曾被手工写进 start.bat，
+# 而本模板只产出 5 个隔离变量 —— 重新生成会把它悄悄抹掉，下面的自检又只校验
+# "该有的在不在"，发现不了"多出来的丢了"。
+# 改成显式拒绝：先把这类配置挪进共享 .env（XIAOB_SHARED_ENV 指向的文件，后端会加载）
+# 或加进本模板，再发版。
+if (Test-Path $StartBatPath) {
+    $oldKeys = [regex]::Matches((Get-Content $StartBatPath -Raw), 'set "(PLANNER_[A-Z0-9_]+)=') |
+        ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique
+    $newKeys = [regex]::Matches($startBatContent, 'set "(PLANNER_[A-Z0-9_]+)=') |
+        ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique
+    $lost = @($oldKeys | Where-Object { $newKeys -notcontains $_ })
+    if ($lost.Count -gt 0) {
+        throw "start.bat 防回归失败：重新生成会丢掉这些 PLANNER_* 变量：$($lost -join ', ')。请把它们挪进共享 .env（XIAOB_SHARED_ENV 指定的文件）或加进本脚本模板。"
+    }
+}
+
 Set-Content -Path $StartBatPath -Value $startBatContent -Encoding ascii
 
 # start.vbs：wscript 无窗口启动（快捷方式用这个，不弹 cmd 黑窗）
@@ -170,3 +188,4 @@ Write-Host ""
 Write-Host "[build] 发版完成：$Version"
 Write-Host "  使用：双击 $StartBatPath"
 Write-Host "  数据：$DataDir"
+

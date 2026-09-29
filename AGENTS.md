@@ -14,6 +14,8 @@
 | 前端 | `cd frontend && npm start`（自动拉起后端） |
 | 运行测试 | `python -m pytest tests/ -v`（pytest，mock LLM，tmp_path 隔离） |
 
+测试解释器用 **conda base**（`D:\Miniconda3\python.exe`，Python 3.13，pytest/langchain/planner 齐备）。仓库里的 `.venv` 是 uv 建的 Python 3.10，**没有 pytest 也没有 pip**，`uv run` 还会因 `onnxruntime-directml` 没有 cp310 wheel 而解不开依赖；release 的 `venv` 只装运行依赖（由 conda base 派生，`pyvenv.cfg: home=D:\Miniconda3`），同样没有 pytest —— 这两个都别用来跑测试。
+
 LLM 配置走仓库根 `.env`（或共享 `.env`）：`LLM_API_KEY` 必填，默认 DeepSeek。
 模型解析链（`llm.py::resolve_model_name`）：`settings.json` 的 `llm_model` > env `PLANNER_LLM_MODEL` > 默认 `deepseek-v4-flash-vision-exp`（视觉模型，拖图直接给原图）。共享 `.env` 的 `LLM_MODEL` 是 xiaob 游戏的配置，**不影响 planner**；回退纯文本模型：`settings.json` 设 `llm_model` 或 `PLANNER_LLM_MODEL=deepseek-v4-flash`。视觉注入只在模型名含 vision 等且非 mock 时启用；**图片块常驻 buffer 整个会话**（每张最多 384 token，每轮模型调用重发计费），`/history` 与压缩摘要只取文本块，不暴露 base64。
 
@@ -21,10 +23,21 @@ LLM 配置走仓库根 `.env`（或共享 `.env`）：`LLM_API_KEY` 必填，默
 
 - **开发目录**（本仓库）：AI 改代码、跑测试；用户日常**不使用**开发目录
 - **使用目录** `planner-release`（仓库旁，独立数据 `data/`、独立 venv，git 不追踪）：用户日常用
-- 发版 = 开发完成后：`git commit`（工作区必须干净）→ 运行 `build.ps1`（或双击 `build.bat`）：
-  自动 `vX.Y.Z` patch+1（可 `-Version` 手动）→ `robocopy /MIR` 复制 `src/`+`frontend/`（排除 node_modules）
-  → venv 首次创建 + `pip install -e app`（可编辑，之后复制代码即生效）→ 首次 `npm install`
-  → 首次迁移开发 `data/` 到 release → `git tag` + 生成 `start.bat`
+- **发版有两条路径，先确认当前在用哪条**：
+  - **`build.ps1`（文档路径）**：`git commit`（工作区必须干净，脏则直接 `exit 1`）→ 运行 `build.ps1`
+    （或双击 `build.bat`）：自动 `vX.Y.Z` patch+1（可 `-Version` 手动）→ `robocopy /MIR` 复制
+    `src/`+`frontend/`（排除 node_modules）+ `pyproject.toml` → venv 首次创建 + `pip install -e app`
+    （可编辑，之后复制代码即生效）→ 首次 `npm install` → 首次迁移开发 `data/` 到 release
+    → 写 `VERSION` + **重新生成 `start.bat`/`start.vbs`** → 自检 → `git tag`
+  - **手工路径（2026-08-16 起实际在用）**：提交 `cfcba81` 记录「`-SkipPip` 在当前 PowerShell 环境下不稳定，
+    release 改用手动方式完成」。即手工复制代码 + 手工改 `VERSION`，**不重生成 launcher、不打 tag**。
+    现状特征（可核对）：`start.bat`/`start.vbs` 停在 8/16；git tag 停在 `v0.1.175`；`VERSION` 手工递增到
+    `v0.1.179`（**176–179 无 tag**，所以版本号不能当发版凭证看）。
+- ⚠️ **release 的私有配置不许写在 launcher 里**：`build.ps1` 会按模板重新生成 `start.bat`/`start.vbs`，
+  模板只含 5 个隔离变量 + `XIAOB_SHARED_ENV`，写在里面的东西会被静默抹掉（自检只查"该有的在不在"）。
+  语音等私有配置放**共享 `.env`**（`XIAOB_SHARED_ENV` 指向的文件，`config.py` 会加载）——另一好处是
+  `build.ps1` 用 ascii 编码写 `.bat`，中文音色名放 launcher 会变成 `??`。
+  `build.ps1` 现已加防回归：重新生成前若发现会丢掉手工加的 `PLANNER_*` 变量则拒绝发版。
 - 用户日常：双击 `planner-release\start.bat`（`PLANNER_PYTHON`=venv、`PLANNER_DATA_ROOT`=release data、`PLANNER_PORT`=18772、
   `PLANNER_URL`、`PLANNER_USER_DATA` 均注入，main.js/config 已支持环境变量）
 - 开发版（18771）与 release 版（18772）**可同时运行**：端口/URL/userData 全部隔离，互不抢占
@@ -68,4 +81,5 @@ userData、临时文件、端口）都必须经 `PLANNER_*` 环境变量注入 r
 ## 文档地图
 
 - `README.md`：架构/运行/环境变量/字段演进约定
+- `docs/tour.md`：现状导览（代码地图/三条主线/中间件速查/术语表/阅读路线）——人想读懂项目先看这份
 - `docs/api-contract.md`：前后端契约
