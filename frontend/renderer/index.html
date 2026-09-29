@@ -37,8 +37,7 @@
       <!-- Tab 导航 -->
       <nav id="tabs">
         <button class="tab active" data-tab="chat">聊天</button>
-        <button class="tab" data-tab="plan">接下来<span id="plan-badge" class="badge hidden"></span></button>
-        <button class="tab" data-tab="tasks">任务</button>
+        <button class="tab" data-tab="calendar">日历<span id="agenda-badge" class="badge hidden"></span></button>
       </nav>
 
       <!-- 聊天 -->
@@ -56,18 +55,38 @@
         </form>
       </section>
 
-      <!-- 接下来（动态待办队列） -->
-      <section id="plan" class="view">
-        <div id="plan-header">
-          <span id="plan-date">待办队列</span>
-          <span id="plan-progress"></span>
+      <!-- 日历（日程 / 当天任务，可编辑） -->
+      <section id="calendar" class="view">
+        <div id="cal-header">
+          <button id="cal-prev" type="button" title="上个月">‹</button>
+          <span id="cal-title"></span>
+          <button id="cal-next" type="button" title="下个月">›</button>
+          <button id="cal-today" type="button">今天</button>
         </div>
-        <div id="plan-list"></div>
-      </section>
-
-      <!-- 任务 -->
-      <section id="tasks" class="view">
-        <div id="task-list"></div>
+        <div id="cal-weekdays">
+          <span>日</span><span>一</span><span>二</span><span>三</span>
+          <span>四</span><span>五</span><span>六</span>
+        </div>
+        <div id="cal-grid"></div>
+        <div id="cal-day">
+          <div id="cal-day-title"></div>
+          <div id="cal-day-list"></div>
+          <form id="cal-add-form">
+            <input id="cal-time" type="time" title="时刻（留空＝全天）" />
+            <select id="cal-kind" title="类型">
+              <option value="event">日程</option>
+              <option value="task">任务</option>
+            </select>
+            <input id="cal-content" type="text" placeholder="添加日程或任务…（Enter 添加）" />
+            <select id="cal-repeat" title="重复">
+              <option value="">不重复</option>
+              <option value="daily">每天</option>
+              <option value="weekly">每周</option>
+              <option value="weekdays">工作日</option>
+            </select>
+            <button type="submit">添加</button>
+          </form>
+        </div>
       </section>
     </div>
   </div>

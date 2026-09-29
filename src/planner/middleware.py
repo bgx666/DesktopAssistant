@@ -7,18 +7,22 @@
 
 中间件链（agent.py 中按序）：
 - DndGuardMiddleware      before_agent   免打扰时段且非玩家触发 → 跳 end
-- PlanSnapshotMiddleware  before_agent   计划快照有变化 → 注入 [当前计划] 消息
+- AgendaSnapshotMiddleware  before_agent   议程有变化 → 注入 [当前议程]（今天+未来 7 天日历）
 - PlayerPriorityMiddleware before_model   玩家消息在 _inbox → 跳 end（让位）
 - NudgeMiddleware         after_model 计数 + before_model 第 5 轮注入「走神」提示
 - HeartbeatTrackMiddleware wrap_tool_call 记录 + before_model 跳转（heartbeat 即停）
-- StreamTextMiddleware    after_model   每轮 LLM 返回立刻 push_text（流式）
 - LoggingMiddleware       wrap_*        每轮 LLM/工具调用写 jsonl 日志
+
+ReAct 循环：**用 create_agent 内建的原生循环**（model → tools → model → …），
+模型不再返回工具调用就自然结束本轮。中间件只负责"提前跳出"的几种情况
+（玩家让位 / heartbeat / 用户停止 / 免打扰），**不主动截断工具→模型的回路**。
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import Any, Callable
 
 from langchain.agents.middleware import AgentMiddleware, AgentState, hook_config
@@ -59,10 +63,13 @@ class DndGuardMiddleware(AgentMiddleware):
         return None
 
 
-# ── 计划快照注入 ─────────────────────────────────────────────
+# ── 议程快照注入（数据源＝日历）──────────────────────────────
 
-class PlanSnapshotMiddleware(AgentMiddleware):
-    """before_agent：计划快照指纹变化时注入 [当前待办] 文本（每次生成最多注入一次）。"""
+class AgendaSnapshotMiddleware(AgentMiddleware):
+    """before_agent：议程指纹变化时注入 [当前议程]（今天+未来 7 天的日历）。
+
+    每次生成最多注入一次；内容无变化时不注入（指纹去重，避免每轮重复占 token）。
+    """
 
     def __init__(self, session) -> None:
         super().__init__()
@@ -70,7 +77,7 @@ class PlanSnapshotMiddleware(AgentMiddleware):
 
     @hook_config(can_jump_to=["end"])
     def before_agent(self, state: PlannerState, runtime: Runtime) -> dict | None:
-        text = self.session._plan_snapshot_text()
+        text = self.session._agenda_snapshot_text()
         if text is None:
             return None
         return {"messages": [HumanMessage(content=text)]}
@@ -131,7 +138,12 @@ class PlayerPriorityMiddleware(AgentMiddleware):
 # ── 走神提示 ─────────────────────────────────────────────────
 
 class NudgeMiddleware(AgentMiddleware):
-    """after_model 递增 model_call_count；before_model 在第 5 轮后注入收尾提示。"""
+    """after_model 递增 model_call_count；before_model 在第 5 轮后注入收尾提示。
+
+    原生多轮 ReAct 下这个计数才开始真正有意义：一轮对话里模型可以连续
+    「调工具 → 看结果 → 再调工具」很多次，这里的第 5 轮提示是唯一温和的
+    软上限（硬上限是 agent.py 的 ModelCallLimitMiddleware run_limit）。
+    """
 
     def before_model(self, state: PlannerState, runtime: Runtime) -> dict | None:
         if state.get("model_call_count", 0) == 5:
@@ -232,7 +244,12 @@ class LoggingMiddleware(AgentMiddleware):
         return content[: max_len - 10] + " ... " + content[-10:]
 
     def wrap_model_call(self, request, handler: Callable):
+        # 记录本次模型调用耗时：排查"这次怎么回得这么慢"时，一眼区分
+        # 「模型/网络本身慢」与「我们自己被锁/压缩挡住了」——两者日志形状完全不同。
+        # 流式模型下 handler 在响应建立时返回，所以 ms ≈ 首包时间（体感延迟就是它）。
+        t0 = time.perf_counter()
         response = handler(request)
+        elapsed_ms = int((time.perf_counter() - t0) * 1000)
         try:
             ai = response.result
             if isinstance(ai, list):
@@ -240,6 +257,7 @@ class LoggingMiddleware(AgentMiddleware):
             tcs = [t.get("name") for t in (ai.tool_calls or [])] if ai is not None else []
             self.session._save_log("llm_call", json.dumps({
                 "msgs": len(request.messages),
+                "ms": elapsed_ms,
                 "content": self._shorten((ai.content or "") if ai is not None else ""),
                 "tool_calls": tcs,
             }, ensure_ascii=False))
@@ -248,14 +266,19 @@ class LoggingMiddleware(AgentMiddleware):
         return response
 
     def wrap_tool_call(self, request, handler: Callable):
+        name = request.tool_call["name"]
+        args = json.dumps(request.tool_call.get("args", {}), ensure_ascii=False)
+        t0 = time.perf_counter()
         try:
-            self.session._save_log(
-                "tool_call",
-                f"{request.tool_call['name']}({json.dumps(request.tool_call.get('args', {}), ensure_ascii=False)})",
-            )
-        except Exception:
-            _logger.exception("[middleware] tool 日志失败")
-        return handler(request)
+            result = handler(request)
+        finally:
+            elapsed_ms = int((time.perf_counter() - t0) * 1000)
+            try:
+                # 工具耗时同样入日志（截图/搜索/读大文件这类慢工具一眼可见）
+                self.session._save_log("tool_call", f"{name}({args}) [{elapsed_ms}ms]")
+            except Exception:
+                _logger.exception("[middleware] tool 日志失败")
+        return result
 
 
 # ── 压缩 + 记忆树 ────────────────────────────────────────────

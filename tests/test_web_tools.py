@@ -164,3 +164,99 @@ def test_fetch_web_failure(monkeypatch):
     monkeypatch.setattr(httpx_mod, "get", boom)
     tools = {t.name: t for t in build_tools(None)}
     assert "抓取失败" in tools["fetch_web"].invoke({"url": "https://e.com"})
+
+
+# --------------------------------------------------------------- 360 主引擎
+SO_HTML = """
+<div class="result">
+  <h3 class="res-title"><a href="https://www.so.com/link?m=AAA" data-mdurl="https://arxiv.org/html/2412.19437v1"
+     data-res='{"tp":21}' target="_blank">DeepSeek-V3 <em>Technical</em> Report</a></h3>
+  <p class="res-desc"><span class="g-c-gray">2025年1月 - </span>官方技术报告，<em>DeepSeek</em> 的完整细节。</p>
+  <p class="g-linkinfo"><cite><a href="https://www.so.com/link?m=BBB">arxiv.org</a></cite></p>
+</div>
+<div class="result">
+  <h3 class="res-title"><a href="https://www.so.com/link?m=CCC" data-mdurl="https://blog.csdn.net/x/y"
+     target="_blank">论文精读 DeepSeek-V3</a></h3>
+  <span class="res-list-summary">这是 <em>摘要</em> 内容。</span>
+</div>
+<h3 class="res-title"><a href="https://hao.360.com/?src=hj_so">360导航</a></h3>
+"""
+
+
+def test_parse_so_results():
+    items = tools_mod._parse_so_results(SO_HTML, 5)
+    assert len(items) == 2, "360 自家导航链接应被过滤掉"
+    assert items[0]["title"] == "DeepSeek-V3 Technical Report", "<em> 高亮标签应被剥掉"
+    assert items[0]["url"] == "https://arxiv.org/html/2412.19437v1", "应取 data-mdurl 真实地址"
+    assert "官方技术报告" in items[0]["snippet"]
+    assert "摘要" in items[1]["snippet"]
+
+
+def test_parse_so_results_limits_and_garbage():
+    assert len(tools_mod._parse_so_results(SO_HTML, 1)) == 1
+    assert tools_mod._parse_so_results("<html>no results</html>", 5) == []
+
+
+def test_web_search_prefers_so360(monkeypatch):
+    """360 有结果时直接用，不再打必应。"""
+    calls = []
+
+    class _Resp:
+        def __init__(self, text):
+            self.text = text
+
+        def raise_for_status(self):
+            pass
+
+    def fake_get(url, **kw):
+        calls.append(url)
+        return _Resp(SO_HTML if "so.com" in url else BING_HTML)
+
+    monkeypatch.setattr(httpx_mod, "get", fake_get)
+    tools = {t.name: t for t in build_tools(None)}
+    res = tools["web_search"].invoke({"query": "DeepSeek V3 技术报告"})
+    assert "DeepSeek-V3 Technical Report" in res
+    assert "来源 360" in res
+    assert len(calls) == 1 and "so.com" in calls[0], "360 命中就不该再请求必应"
+
+
+def test_web_search_falls_back_to_bing(monkeypatch):
+    """360 解析不到结果时回退必应。"""
+    calls = []
+
+    class _Resp:
+        def __init__(self, text):
+            self.text = text
+
+        def raise_for_status(self):
+            pass
+
+    def fake_get(url, **kw):
+        calls.append(url)
+        return _Resp("<html>360 blocked</html>" if "so.com" in url else BING_HTML)
+
+    monkeypatch.setattr(httpx_mod, "get", fake_get)
+    tools = {t.name: t for t in build_tools(None)}
+    res = tools["web_search"].invoke({"query": "四川大学 校历"})
+    assert "示例新闻标题 A" in res
+    assert "来源 bing" in res
+    assert any("so.com" in u for u in calls) and any("bing.com" in u for u in calls)
+
+
+def test_web_search_distinguishes_empty_from_error(monkeypatch):
+    """引擎通了但没结果 → 提示换关键词；引擎全报错 → 提示搜索失败。"""
+    class _Resp:
+        text = "<html>nothing</html>"
+
+        def raise_for_status(self):
+            pass
+
+    monkeypatch.setattr(httpx_mod, "get", lambda url, **kw: _Resp())
+    tools = {t.name: t for t in build_tools(None)}
+    assert "没有搜到" in tools["web_search"].invoke({"query": "asdfghjkl"})
+
+    def boom(url, **kw):
+        raise RuntimeError("network down")
+
+    monkeypatch.setattr(httpx_mod, "get", boom)
+    assert "搜索失败" in tools["web_search"].invoke({"query": "asdfghjkl"})

@@ -4,7 +4,7 @@
 
   const $ = (sel) => document.querySelector(sel);
   const sendBtn = $('#send');   // 发送/停止/语音 三合一按钮（模块级，多处引用）
-  const state = { heartbeat: null, dnd: null, plan: null, lastPlanDate: '' };
+  const state = { heartbeat: null, dnd: null, agenda: null, lastAgendaDate: '' };
 
   // ── HTTP（走主进程代理：file:// 页面直连被 CORS/PNA 拦）────────
   async function api(path, opts = {}) {
@@ -423,9 +423,8 @@
     } else if (ev.type === 'thinking') {
       $('#thinking').classList.toggle('hidden', !ev.value);
       $('.dot').classList.toggle('thinking', !!ev.value);
-    } else if (ev.type === 'dnd' || ev.type === 'plan_update') {
-      refreshPlan();
-      refreshTasks();
+    } else if (ev.type === 'dnd' || ev.type === 'agenda_update') {
+      if ($('#calendar').classList.contains('active')) refreshCalendar();
     } else if (ev.type === 'memory_update') {
       pendingMemoryReload = true;   // 记忆树有变化，生成结束后重载历史
     }
@@ -477,15 +476,15 @@
       $('#heartbeat').textContent = '';
     }
     // 今日计划徽标（逾期数）
-    const overdue = (s.plan && s.plan.overdue_count) || 0;
-    const badge = $('#plan-badge');
+    const overdue = (s.agenda && s.agenda.overdue_count) || 0;
+    const badge = $('#agenda-badge');
     badge.classList.toggle('hidden', !overdue);
     badge.textContent = overdue;
-    // 计划日期变化 → 刷新待办队列
-    const plan = s.plan;
-    if (plan && plan.today && plan.today !== state.lastPlanDate) {
-      state.lastPlanDate = plan.today;
-      refreshPlan();
+    // 跨天 → 日历翻到今天（日期变了，月份/选中日都可能要更新）
+    const agenda = s.agenda;
+    if (agenda && agenda.today && agenda.today !== state.lastAgendaDate) {
+      state.lastAgendaDate = agenda.today;
+      if ($('#calendar').classList.contains('active')) refreshCalendar();
     }
     // 生成结束且压缩过 → 重载历史（对话框与 buffer 同步，新节点出现）
     if (!s.thinking && pendingMemoryReload) {
@@ -507,8 +506,7 @@
       document.querySelectorAll('.view').forEach((v) => v.classList.remove('active'));
       btn.classList.add('active');
       $('#' + btn.dataset.tab).classList.add('active');
-      if (btn.dataset.tab === 'plan') refreshPlan();
-      if (btn.dataset.tab === 'tasks') refreshTasks();
+      if (btn.dataset.tab === 'calendar') refreshCalendar();
     });
   });
 
@@ -519,91 +517,182 @@
     return `${y}-${m}-${day}`;
   }
 
-  // ── 接下来（动态待办队列）──────────────────────────────
-  async function refreshPlan() {
-    const list = $('#plan-list');
-    list.innerHTML = '<div class="empty-tip">加载中…</div>';
-    try {
-      const data = await api('/next');
-      const queue = data.queue || [];
-      $('#plan-date').textContent = '待办队列（按紧急度排序）';
-      $('#plan-progress').textContent = `${queue.length} 项未完成`;
-      if (!queue.length) {
-        list.innerHTML = '<div class="empty-tip">没有待办，告诉小助你想做什么</div>';
-        return;
-      }
-      list.innerHTML = '';
-      queue.forEach((p, idx) => {
-        const card = document.createElement('div');
-        card.className = 'plan-card';
-        const start = p.date ? `<span class="p-date">开始 ${escapeHtml(p.date)}</span>` : '<span class="p-date">日期待安排</span>';
-        const due = p.task_due ? `<span class="p-due">截止 ${escapeHtml(p.task_due)}</span>` : '';
-        card.innerHTML = `
-          <span class="p-rank">${idx + 1}</span>
-          <div class="p-content">
-            <div class="p-task">${escapeHtml(p.task_title)}${p.phase_title ? ' · ' + escapeHtml(p.phase_title) : ''}</div>
-            <div>${escapeHtml(p.content)}</div>
-            ${start}${due}
-          </div>
-          <input type="checkbox" data-id="${p.id}" title="做完了勾选" />`;
-        card.querySelector('input').addEventListener('change', async (e) => {
-          try {
-            await post('/plan/done', { plan_id: p.id });
-            refreshPlan();
-          } catch { /* 忽略 */ }
+  // ── 日历（月视图 + 当天明细）──────────────────────────────
+  // 数据来自 /calendar（calendar_items：date + 可选 time）。
+  // 带时刻的项由后端到点提醒；这里只负责呈现、增删与改期。
+  const calState = { year: 0, month: 0, selected: '' };
+
+  function pad2(n) {
+    return String(n).padStart(2, '0');
+  }
+
+  async function refreshCalendar() {
+    const now = new Date();
+    if (!calState.year) {
+      calState.year = now.getFullYear();
+      calState.month = now.getMonth();
+      calState.selected = localDateStr(now);
+    }
+    renderMonth();
+    await renderDay();
+  }
+
+  function renderMonth() {
+    $('#cal-title').textContent = `${calState.year} 年 ${calState.month + 1} 月`;
+    const from = `${calState.year}-${pad2(calState.month + 1)}-01`;
+    const last = new Date(calState.year, calState.month + 1, 0);
+    const to = localDateStr(last);
+    const grid = $('#cal-grid');
+    grid.innerHTML = '<div class="empty-tip">加载中…</div>';
+    api(`/calendar?from=${from}&to=${to}`)
+      .then((data) => {
+        const items = (data && data.items) || [];
+        const byDate = {};
+        items.forEach((it) => {
+          if (it.status === 'cancelled') return;   // 取消项不占格子
+          (byDate[it.date] = byDate[it.date] || []).push(it);
         });
-        list.appendChild(card);
+        const daysInMonth = last.getDate();
+        const lead = new Date(calState.year, calState.month, 1).getDay();
+        const today = localDateStr(new Date());
+        grid.innerHTML = '';
+        for (let i = 0; i < lead; i++) {
+          const blank = document.createElement('div');
+          blank.className = 'cal-cell cal-blank';
+          grid.appendChild(blank);
+        }
+        for (let d = 1; d <= daysInMonth; d++) {
+          const ds = `${calState.year}-${pad2(calState.month + 1)}-${pad2(d)}`;
+          const list = byDate[ds] || [];
+          const undone = list.filter((x) => x.status === 'todo').length;
+          grid.appendChild(dayCell(ds, d, undone, ds === today));
+        }
+      })
+      .catch(() => {
+        grid.innerHTML = '<div class="empty-tip">后端未连接</div>';
       });
-    } catch {
-      list.innerHTML = '<div class="empty-tip">后端未连接</div>';
-    }
   }
 
-  // ── 任务列表 ─────────────────────────────────────────
-  async function refreshTasks() {
-    const list = $('#task-list');
+  function dayCell(dateStr, dayNum, undone, isToday) {
+    const cell = document.createElement('div');
+    cell.className = 'cal-cell';
+    if (isToday) cell.classList.add('is-today');
+    if (dateStr === calState.selected) cell.classList.add('is-selected');
+    if (undone > 0) cell.classList.add('has-items');
+    cell.innerHTML = `
+      <span class="cal-dnum">${dayNum}</span>
+      ${undone > 0 ? `<span class="cal-dot">${undone}</span>` : ''}`;
+    cell.addEventListener('click', () => {
+      calState.selected = dateStr;
+      renderMonth();
+      renderDay();
+    });
+    return cell;
+  }
+
+  async function renderDay() {
+    const ds = calState.selected;
+    const d = new Date(`${ds}T00:00:00`);
+    const week = '日一二三四五六'[d.getDay()];
+    $('#cal-day-title').textContent = `${d.getMonth() + 1} 月 ${d.getDate()} 日 · 周${week}`;
+    const list = $('#cal-day-list');
     list.innerHTML = '<div class="empty-tip">加载中…</div>';
     try {
-      const data = await api('/tasks');
-      const tasks = data.tasks || [];
-      if (!tasks.length) {
-        list.innerHTML = '<div class="empty-tip">还没有任务，告诉小助你的目标吧</div>';
+      const data = await api(`/calendar?from=${ds}&to=${ds}`);
+      const items = (data && data.items) || [];
+      if (!items.length) {
+        list.innerHTML = '<div class="empty-tip">这天还没有安排</div>';
         return;
       }
       list.innerHTML = '';
-      tasks.forEach((t) => {
-        const card = document.createElement('div');
-        card.className = 'task-card';
-        const statusCls = t.status === 'done' ? 'done' : (isOverdue(t) ? 'overdue' : '');
-        const statusText = t.status === 'done' ? '完成' : (isOverdue(t) ? '已逾期' : statusTextCn(t.status));
-        let planHtml = '';
-        if (t.plan_items && t.plan_items.length) {
-          planHtml = '<ul class="t-plan">' + t.plan_items
-            .map((p) => `<li class="${p.status === 'done' ? 'done' : ''}">${p.date} ${escapeHtml(p.content)}</li>`)
-            .join('') + '</ul>';
+      items.forEach((it) => {
+        const row = document.createElement('div');
+        row.className = `cal-item${it.status === 'done' ? ' done' : ''}`;
+        const kind = it.kind === 'task' ? '任务' : '日程';
+        const repLabel = it.series_id
+          ? ({ daily: '每天', weekly: '每周', weekdays: '工作日' }[it.repeat] || '重复')
+          : '';
+        row.innerHTML = `
+          <input type="checkbox" ${it.status === 'done' ? 'checked' : ''} title="做完了勾选" />
+          <span class="cal-time">${escapeHtml(it.time || '全天')}</span>
+          <span class="cal-kind">${kind}</span>
+          <span class="cal-text">${escapeHtml(it.content)}</span>
+          ${repLabel ? `<button type="button" class="cal-rep" title="重复项（${repLabel}）">↻${repLabel}</button>` : ''}
+          <button type="button" class="cal-del" title="取消这一次">✕</button>`;
+        row.querySelector('input').addEventListener('change', () => {
+          post('/calendar/update', {
+            id: it.id,
+            status: it.status === 'done' ? 'todo' : 'done',
+          }).then(() => { renderMonth(); renderDay(); }).catch(() => {});
+        });
+        row.querySelector('.cal-del').addEventListener('click', () => {
+          post('/calendar/cancel', { id: it.id })
+            .then(() => { renderMonth(); renderDay(); }).catch(() => {});
+        });
+        // 重复项：点 ↻ 展开一个内联确认条（不用 window.confirm，避免弹窗被拦）
+        const repBtn = row.querySelector('.cal-rep');
+        if (repBtn) {
+          repBtn.addEventListener('click', () => {
+            if (row.nextElementSibling && row.nextElementSibling.classList.contains('cal-confirm')) {
+              row.nextElementSibling.remove();
+              return;
+            }
+            const bar = document.createElement('div');
+            bar.className = 'cal-confirm';
+            bar.innerHTML = `<span>取消该系列自 ${ds} 起、今后所有未完成的期？</span>
+              <button type="button" class="ok">确定</button>
+              <button type="button" class="no">算了</button>`;
+            bar.querySelector('.ok').addEventListener('click', () => {
+              post('/calendar/series/cancel', { id: it.id })
+                .then(() => { renderMonth(); renderDay(); }).catch(() => {});
+            });
+            bar.querySelector('.no').addEventListener('click', () => bar.remove());
+            row.after(bar);
+          });
         }
-        card.innerHTML = `
-          <div class="t-head">
-            <span class="t-title">${escapeHtml(t.title)}</span>
-            <span class="t-status ${statusCls}">${statusText}</span>
-          </div>
-          <div class="t-meta">截止 ${t.due_date || '未定'} · 进度 ${t.plan_done}/${t.plan_total} · 优先级 ${t.priority}</div>
-          ${planHtml}`;
-        list.appendChild(card);
+        list.appendChild(row);
       });
     } catch {
       list.innerHTML = '<div class="empty-tip">后端未连接</div>';
     }
   }
 
-  function isOverdue(t) {
-    if (!t.due_date || t.status === 'done') return false;
-    return t.due_date < localDateStr(new Date());
-  }
+  // 翻月 / 回今天
+  $('#cal-prev').addEventListener('click', () => {
+    calState.month -= 1;
+    if (calState.month < 0) { calState.month = 11; calState.year -= 1; }
+    renderMonth();
+  });
+  $('#cal-next').addEventListener('click', () => {
+    calState.month += 1;
+    if (calState.month > 11) { calState.month = 0; calState.year += 1; }
+    renderMonth();
+  });
+  $('#cal-today').addEventListener('click', () => {
+    const now = new Date();
+    calState.year = now.getFullYear();
+    calState.month = now.getMonth();
+    calState.selected = localDateStr(now);
+    refreshCalendar();
+  });
 
-  function statusTextCn(s) {
-    return { todo: '待开始', in_progress: '进行中', abandoned: '已放弃' }[s] || s;
-  }
+  // 添加：时刻留空 = 全天；repeat 留空 = 一次性
+  $('#cal-add-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const content = $('#cal-content').value.trim();
+    if (!content) return;
+    const time = $('#cal-time').value;      // <input type="time"> → "HH:MM" 或 ""
+    const kind = $('#cal-kind').value;
+    const repeat = $('#cal-repeat').value;
+    $('#cal-content').value = '';
+    try {
+      await post('/calendar/add', {
+        date: calState.selected, content, time, kind, repeat,
+      });
+      renderMonth();
+      await renderDay();
+    } catch { /* 保留输入不丢：内容已清，仅提示 */ }
+  });
 
   function escapeHtml(s) {
     return String(s == null ? '' : s)
@@ -778,9 +867,8 @@
     try {
       const data = await api('/state');
       applyState(data.state);
-      state.lastPlanDate = (data.state.plan || {}).today || '';
-      refreshPlan();
-      refreshTasks();
+      state.lastAgendaDate = (data.state.agenda || {}).today || '';
+      refreshCalendar();
     } catch {
       setOffline(true);
     }

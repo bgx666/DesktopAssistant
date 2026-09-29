@@ -2,13 +2,12 @@
 
 端点：
 - GET  /init      下发 char / state / mode
-- GET  /state     轻量状态（heartbeat 倒计时、DND、计划摘要）
+- GET  /state     轻量状态（heartbeat 倒计时、DND、今日议程摘要）
 - GET  /dequeue   一次性 drain 事件流（顶层带状态）
+- GET  /history   对话历史（聊天区渲染用）
+- GET  /calendar  日历按范围查（?from=YYYY-MM-DD&to=YYYY-MM-DD&cancelled=0/1）
 - POST /chat      玩家消息（立即返回，异步生成）
-- POST /task      结构化录入任务（不经 LLM）
-- GET  /tasks     任务列表
-- GET  /plan      日计划（?date=YYYY-MM-DD）
-- POST /plan/done 勾选完成日计划（通知 agent 跟进）
+- POST /calendar/add|update|cancel|series/cancel  日历的增改/取消（含整个重复系列）
 - POST /dnd       免打扰开关（{enabled, until_hour?}）
 - POST /nudge     手动戳一下：立即触发一次自主生成
 - POST /toggle_mock 运行时切换 Mock/真实 LLM
@@ -71,6 +70,43 @@ class _Handler(BaseHTTPRequestHandler):
             return {}
         return data if isinstance(data, dict) else {}
 
+    @staticmethod
+    def _valid_date(raw: str) -> str | None:
+        """YYYY-MM-DD 校验（非法返回 None）。"""
+        import re
+        from datetime import date as _date
+        s = str(raw or "").strip()
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", s):
+            return None
+        try:
+            _date.fromisoformat(s)
+        except ValueError:
+            return None
+        return s
+
+    @staticmethod
+    def _valid_time(raw: str) -> str | None:
+        """HH:MM 归一化（接受 9:05；非法返回 None）。"""
+        import re
+        m = re.fullmatch(r"(\d{1,2}):(\d{2})", str(raw or "").strip())
+        if not m:
+            return None
+        h, mi = int(m.group(1)), int(m.group(2))
+        if h > 23 or mi > 59:
+            return None
+        return f"{h:02d}:{mi:02d}"
+
+    def _calendar_note(self, what: str) -> None:
+        """用户在日历页的操作 → 静默告知小助（**不触发回复**）。
+
+        日历是用户自己安排的，勾一条就换来一句话会很烦；但小助应当知道，
+        所以用 trigger=False 只写进 buffer，等下次被调用时自然看到。
+        """
+        now = datetime.now(timezone(timedelta(hours=8))).strftime("%H:%M")
+        self.session._receive(
+            f"[{now}]（系统：{PLAYER_NAME}{what}。这是他自己在日历页改的，不用特地回应。）",
+            trigger=False)
+
     def log_message(self, fmt, *args):  # 静默默认 stderr 访问日志，走 logging
         _logger.debug("[http] %s - %s", self.address_string(), fmt % args)
 
@@ -106,17 +142,18 @@ class _Handler(BaseHTTPRequestHandler):
                     timeout = None
             events = self.session.drain_events(timeout=timeout)
             self._send_json({"ok": True, "events": events, "state": self.session.state_dict()})
-        elif path == "/tasks":
+        elif path == "/calendar":
+            # 日历：按日期范围取日程/待办（闭区间；缺省=今天）
             query = parse_qs(parsed.query)
-            status = query.get("status", [None])[0]
-            self._send_json({"ok": True, "tasks": self.session.db.list_tasks(status)})
-        elif path == "/plan":
-            query = parse_qs(parsed.query)
-            date_ = query.get("date", [None])[0]
-            self._send_json({"ok": True, "plan": self.session.db.get_plan(date_=date_)})
-        elif path == "/next":
-            # 动态待办队列（按紧急度排序）
-            self._send_json({"ok": True, "queue": self.session.db.list_pending()})
+            today = datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d")
+            frm = (query.get("from") or [today])[0] or today
+            to = (query.get("to") or [frm])[0] or frm
+            if to < frm:
+                frm, to = to, frm
+            include_cancelled = (query.get("cancelled") or ["0"])[0] in ("1", "true")
+            self._send_json({"ok": True, "from": frm, "to": to,
+                             "items": self.session.db.list_calendar_range(
+                                 frm, to, include_cancelled=include_cancelled)})
         elif path == "/tts/voices":
             # 可用音色列表（设置界面下拉；?engine=mimo/local/cloud 可预览指定引擎）
             query = parse_qs(parsed.query)
@@ -173,7 +210,12 @@ class _Handler(BaseHTTPRequestHandler):
                     continue
                 role = getattr(m, "type", "")
                 content = content_text(getattr(m, "content", "") or "")
-                if not content:
+                tool_calls = getattr(m, "tool_calls", None) or []
+                tool_ref = getattr(m, "tool_call_id", "") or ""
+                # ⚠️ 不能"空内容就整条跳过"：模型**直接调工具、不先说话**时正文是空的，
+                # 但它的工具卡片必须照样显示——否则展开面板时（前端 onPanelShown 会
+                # 清空消息区再按本接口重建）卡片凭空消失，表现为"有时候不显示工具调用"。
+                if not content and not tool_calls and not tool_ref:
                     continue
                 if role == "human":
                     # 内部注入（[当前待办]/[早晨]/[提醒]/（心跳…））
@@ -189,14 +231,18 @@ class _Handler(BaseHTTPRequestHandler):
                 elif role == "ai":
                     if content:
                         msgs.append({"role": "assistant", "content": content})
-                    # 历史工具调用卡片（与实时事件一致）
-                    for tc in (getattr(m, "tool_calls", None) or []):
+                    # 历史工具调用卡片（与实时事件 _emit_tool_events 保持一致）
+                    for tc in tool_calls:
                         name = tc.get("name", "?")
+                        if name == "continue_speaking":
+                            continue   # 分段工具不展示卡片（视觉上就是连续说话）
                         msgs.append({"role": "tool_call", "id": tc.get("id", ""),
                                      "name": name, "args": tc.get("args", {})})
                 elif role == "tool":
+                    if getattr(m, "name", "") == "continue_speaking":
+                        continue
                     msgs.append({"role": "tool_result",
-                                 "id": getattr(m, "tool_call_id", ""),
+                                 "id": tool_ref,
                                  "content": str(getattr(m, "content", "") or "")})
             self._send_json({"ok": True, "messages": msgs})
         else:
@@ -227,39 +273,101 @@ class _Handler(BaseHTTPRequestHandler):
             self.session.request_stop()
             self.session.interrupt_continue_pause()
             self._send_json({"ok": True})
-        elif path == "/task":
+        elif path == "/calendar/add":
             body = self._read_json_body()
-            title = str(body.get("title", "")).strip()
-            if not title:
+            date_ = str(body.get("date", "") or "").strip()
+            content = str(body.get("content", "") or "").strip()
+            time_ = str(body.get("time", "") or "").strip() or None
+            detail = str(body.get("detail", "") or "")
+            kind = str(body.get("kind", "event") or "event")
+            if not self._valid_date(date_) or not content:
                 self._send_json({"ok": False, "error": "bad_request"}, status=400)
                 return
-            tid = self.session.db.create_task(
-                title,
-                str(body.get("description", "") or ""),
-                str(body.get("due_date", "") or "") or None,
-                str(body.get("priority", "normal") or "normal"),
-            )
-            self._send_json({"ok": True, "id": tid})
-        elif path == "/plan/done":
-            body = self._read_json_body()
-            plan_id = int(body.get("plan_id", 0) or 0)
-            if plan_id <= 0:
-                self._send_json({"ok": False, "error": "bad_request"}, status=400)
+            if time_ is not None:
+                t = self._valid_time(time_)
+                if t is None:
+                    self._send_json({"ok": False, "error": "bad_time"}, status=400)
+                    return
+                time_ = t
+            if kind not in ("event", "task"):
+                kind = "event"
+            repeat_ = str(body.get("repeat", "") or "").strip().lower()
+            if repeat_:
+                if repeat_ not in ("daily", "weekly", "weekdays"):
+                    self._send_json({"ok": False, "error": "bad_repeat"}, status=400)
+                    return
+                sid, cnt = self.session.db.add_calendar_series(
+                    date_, content, repeat_, time_, kind, detail)
+                if not sid:
+                    self._send_json({"ok": False, "error": "bad_request"}, status=400)
+                    return
+                self._calendar_note(
+                    f"往日历加了重复日程（{repeat_}）{date_} {time_ or '全天'}「{content}」")
+                self._send_json({"ok": True, "series_id": sid, "count": cnt})
                 return
-            items = self.session.db.get_plan()
-            target = next((p for p in items if p["id"] == plan_id), None)
-            if target is None:
+            iid = self.session.db.add_calendar_item(date_, content, time_, kind, detail)
+            self._calendar_note(f"往日历加了 {date_} {time_ or '全天'}「{content}」")
+            self._send_json({"ok": True, "id": iid})
+        elif path == "/calendar/update":
+            body = self._read_json_body()
+            iid = int(body.get("id", 0) or 0)
+            if iid <= 0 or self.session.db.get_calendar_item(iid) is None:
                 self._send_json({"ok": False, "error": "not_found"}, status=404)
                 return
-            if not self.session.db.set_plan_status(plan_id, "done"):
+            fields: dict = {}
+            if "date" in body:
+                d = self._valid_date(str(body.get("date", "") or ""))
+                if d is None:
+                    self._send_json({"ok": False, "error": "bad_date"}, status=400)
+                    return
+                fields["date"] = d
+            if "time" in body:
+                raw = str(body.get("time", "") or "").strip()
+                if not raw:
+                    fields["time"] = None
+                else:
+                    t = self._valid_time(raw)
+                    if t is None:
+                        self._send_json({"ok": False, "error": "bad_time"}, status=400)
+                        return
+                    fields["time"] = t
+            for key in ("content", "detail", "kind", "status"):
+                if key in body:
+                    fields[key] = body.get(key)
+            if fields.get("kind") not in (None, "event", "task"):
+                unset = {"kind"}
+                fields = {k: v for k, v in fields.items() if k not in unset}
+            if fields.get("status") not in (None, "todo", "done", "cancelled"):
+                fields.pop("status", None)
+            if not fields:
                 self._send_json({"ok": False, "error": "bad_request"}, status=400)
                 return
-            now = datetime.now(timezone(timedelta(hours=8))).strftime("%H:%M")
-            self.session._receive(
-                f"[{now}] {DISPLAY_NAME}注意到{PLAYER_NAME}勾选了计划 #{plan_id}「{target['content']}」为完成。",
-                trigger=True)
-            threading.Thread(target=self.session._player_worker, daemon=True).start()
+            self.session.db.update_calendar_item(iid, **fields)
+            self._calendar_note(f"改了日历 #{iid}（{'、'.join(fields)}）")
+            self._send_json({"ok": True, "item": self.session.db.get_calendar_item(iid)})
+        elif path == "/calendar/cancel":
+            body = self._read_json_body()
+            iid = int(body.get("id", 0) or 0)
+            item = self.session.db.get_calendar_item(iid)
+            if item is None:
+                self._send_json({"ok": False, "error": "not_found"}, status=404)
+                return
+            self.session.db.cancel_calendar_item(iid)
+            self._calendar_note(f"取消了日历 #{iid}「{item['content']}」")
             self._send_json({"ok": True})
+        elif path == "/calendar/series/cancel":
+            # 取消重复系列"从这一天起、今后所有未完成的"（已完成的不动）
+            body = self._read_json_body()
+            iid = int(body.get("id", 0) or 0)
+            item = self.session.db.get_calendar_item(iid)
+            if item is None or not item.get("series_id"):
+                self._send_json({"ok": False, "error": "not_found"}, status=404)
+                return
+            n = self.session.db.cancel_calendar_series(item["series_id"],
+                                                       from_date=item["date"])
+            self._calendar_note(
+                f"取消了重复日程「{item['content']}」自 {item['date']} 起共 {n} 期")
+            self._send_json({"ok": True, "count": n})
         elif path == "/dnd":
             body = self._read_json_body()
             self.session.set_dnd(bool(body.get("enabled", True)),
@@ -324,6 +432,20 @@ def _setup_logging(data_root) -> None:
         stream_handler = logging.StreamHandler()
         stream_handler.setFormatter(fmt)
         root.addHandler(stream_handler)
+
+    # 把 LLM SDK 的告警也收进同一个日志文件。
+    # 起因：LLM 客户端是 max_retries=3 / timeout=60（llm.py），但重试告警由
+    # openai._base_client / httpx 发出，而 handler 只挂在 "planner" 这个 logger 上
+    # ——根 logger 没配，于是「失败后重试但最终成功」完全不留痕。
+    # 症状就是「某个回答莫名等了几十秒，而日志里一行都没有」，无法归因。
+    # 只挂 WARNING 以上：INFO/DEBUG 会把每次请求都刷成噪音（也可能带出请求细节）。
+    for name in ("openai", "httpx", "httpcore", "langchain_openai", "langgraph"):
+        sdk = logging.getLogger(name)
+        sdk.setLevel(logging.WARNING)
+        sdk.addHandler(file_handler)
+        if sys.stderr is not None:
+            sdk.addHandler(stream_handler)
+        sdk.propagate = False   # 不再向根 logger 冒泡，避免重复输出
 
 
 # ── 启动自检：端口被占时清理残留的 planner 后端 ─────────────

@@ -101,7 +101,7 @@ def test_init_and_state(backend):
     assert data["mode"] == "mock"
     assert data["char"]["display_name"] == "小助"
     st = _get(base, "/state")["state"]
-    assert "heartbeat" in st and "dnd" in st and "plan" in st
+    assert "heartbeat" in st and "dnd" in st and "agenda" in st
 
 
 def test_chat_produces_text_event(backend):
@@ -160,6 +160,50 @@ def test_history_contains_tool_cards(backend):
     assert any(rr.get("content") for rr in results), "工具结果应有内容"
 
 
+def test_history_keeps_tool_card_without_text(backend):
+    """**正文为空、只调工具**的 AI 消息，其工具卡片也必须出现在历史里。
+
+    回归：/history 原来对每条消息先做 `if not content: continue`，而模型
+    "直接调工具、不先说话"时 content 是空的 → 卡片被吞掉。前端 onPanelShown
+    会清空消息区再按 /history 重建，所以表现是"展开面板后工具卡片有时候不见了"。
+    """
+    session, base = backend
+    from langchain_core.messages import AIMessage, ToolMessage
+    session.recent_buffer.append(AIMessage(
+        content="",   # 关键：不先说话，直接调工具
+        tool_calls=[{"name": "web_search", "args": {"query": "天气"},
+                     "id": "call_empty_text", "type": "tool_call"}]))
+    session.recent_buffer.append(ToolMessage(
+        content="搜索结果：晴", name="web_search", tool_call_id="call_empty_text"))
+
+    hist = _get(base, "/history")
+    calls = [m for m in hist["messages"] if m["role"] == "tool_call"]
+    results = [m for m in hist["messages"] if m["role"] == "tool_result"]
+    assert any(c["id"] == "call_empty_text" for c in calls), \
+        "空正文的工具调用卡片不能丢（否则展开面板就看不见了）"
+    assert any(r["id"] == "call_empty_text" for r in results), "工具结果也应保留"
+    # 空正文不应产生一条空的 assistant 气泡
+    assert not any(m["role"] == "assistant" and not m.get("content") for m in hist["messages"])
+
+
+def test_history_skips_continue_speaking_cards(backend):
+    """continue_speaking 与实时事件保持一致：不产生工具卡片（视觉上就是连续说话）。"""
+    session, base = backend
+    from langchain_core.messages import AIMessage, ToolMessage
+    session.recent_buffer.append(AIMessage(
+        content="",
+        tool_calls=[{"name": "continue_speaking", "args": {},
+                     "id": "call_cs", "type": "tool_call"}]))
+    session.recent_buffer.append(ToolMessage(
+        content="继续", name="continue_speaking", tool_call_id="call_cs"))
+
+    hist = _get(base, "/history")
+    assert not any(m.get("id") == "call_cs" for m in hist["messages"]), \
+        "分段工具不应出现卡片"
+    assert not any(m["role"] == "tool_result" and m.get("id") == "call_cs"
+                   for m in hist["messages"])
+
+
 def test_history_shows_memory_nodes(backend):
     """压缩节点（node_id）应在历史中显示为 memory 消息。"""
     session, base = backend
@@ -174,25 +218,28 @@ def test_history_shows_memory_nodes(backend):
     assert "摘要" in memory[0]["content"]
 
 
-def test_task_endpoints(backend):
+def test_removed_task_endpoints_are_gone(backend):
+    """任务模块整体移除后，那批端点必须返回 404（不留半死接口）。"""
+    from urllib.error import HTTPError
     _, base = backend
-    r = _post(base, "/task", {"title": "写论文", "due_date": "2026-09-01", "priority": "high"})
-    assert r["ok"] and r["id"] >= 1
-    tasks = _get(base, "/tasks")["tasks"]
-    assert any(t["title"] == "写论文" for t in tasks)
-    plan = _get(base, "/plan")["plan"]
-    assert isinstance(plan, list)
+    for path in ("/tasks", "/plan", "/next"):
+        with pytest.raises(HTTPError) as e:
+            _get(base, path)
+        assert e.value.code == 404, f"{path} 应已移除"
+    for path in ("/task", "/plan/done"):
+        with pytest.raises(HTTPError) as e:
+            _post(base, path, {"title": "x", "plan_id": 1})
+        assert e.value.code == 404, f"{path} 应已移除"
 
 
-def test_plan_done_roundtrip(backend):
+def test_state_reports_agenda(backend):
+    """状态里给前端的是日历口径的 agenda（今天几项、逾期几项）。"""
     session, base = backend
-    tid = session.db.create_task("任务")
-    pid = session.db.add_plan_item(tid, None, "2026-08-05", 0, "做某事")
-    r = _post(base, "/plan/done", {"plan_id": pid})
-    assert r["ok"] is True
-    assert session.db.get_task(tid)["plan_items"][0]["status"] == "done"
-    ev = _wait_events(base, lambda e: e["type"] == "text")
-    assert ev is not None  # agent 收到勾选通知后有回应
+    session.db.add_calendar_item("2026-09-11", "交房租", "10:00")
+    st = _get(base, "/state")["state"]
+    assert "plan" not in st, "旧的 plan 口径应已移除"
+    ag = st["agenda"]
+    assert set(ag) == {"today", "today_total", "today_todo", "overdue_count"}
 
 
 def test_tts_say_endpoint(backend):

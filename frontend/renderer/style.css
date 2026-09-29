@@ -594,64 +594,124 @@ body.drop-overlay::after {
   font-size: 11px; user-select: text;
 }
 
-/* ── 接下来（动态待办队列） ── */
-#plan-header { display: flex; justify-content: space-between; padding: 2px 2px 10px; color: var(--text-soft); }
-#plan-list { display: flex; flex-direction: column; gap: 8px; }
-.plan-card {
+/* ── 日历（日程 / 当天任务） ── */
+#cal-header {
+  display: flex; align-items: center; gap: 8px;
+  padding: 2px 2px 10px;
+}
+#cal-title { flex: 1; font-weight: 600; color: var(--text); }
+#cal-header button {
+  border: 1px solid rgba(91, 124, 250, 0.28);
   background: var(--glass);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
+  color: var(--primary);
+  border-radius: 8px;
+  min-width: 26px; height: 24px;
+  font-size: 13px; line-height: 1;
+  cursor: pointer;
+}
+#cal-header button:hover { background: rgba(91, 124, 250, 0.12); }
+#cal-weekdays,
+#cal-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 3px;
+}
+#cal-weekdays {
+  margin-bottom: 4px;
+  font-size: 11px; color: var(--text-soft); text-align: center;
+}
+.cal-cell {
+  position: relative;
+  aspect-ratio: 1 / 1;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 8px;
+  font-size: 12px;
+  color: var(--text);
+  cursor: pointer;
+  user-select: none;
+}
+.cal-cell:hover { background: rgba(91, 124, 250, 0.1); }
+.cal-blank { cursor: default; }
+.cal-blank:hover { background: transparent; }
+.cal-cell.is-today { outline: 1px solid var(--primary); outline-offset: -1px; font-weight: 700; }
+.cal-cell.is-selected { background: rgba(91, 124, 250, 0.22); font-weight: 700; }
+.cal-cell.has-items .cal-dnum { color: var(--primary); }
+.cal-dot {
+  position: absolute; right: 3px; bottom: 2px;
+  min-width: 12px; height: 12px;
+  padding: 0 3px;
+  border-radius: 6px;
+  background: var(--primary); color: #fff;
+  font-size: 9px; line-height: 12px; text-align: center;
+}
+#cal-day { margin-top: 12px; }
+#cal-day-title { font-size: 12px; color: var(--text-soft); margin-bottom: 6px; }
+#cal-day-list { display: flex; flex-direction: column; gap: 6px; }
+.cal-item {
+  background: var(--glass);
   border: 1px solid rgba(255, 255, 255, 0.75);
-  border-radius: 12px;
-  padding: 11px 13px;
-  display: flex; gap: 10px; align-items: flex-start;
+  border-radius: 10px;
+  padding: 8px 10px;
+  display: flex; align-items: center; gap: 8px;
+  font-size: 12px;
   box-shadow: var(--shadow-sm);
-  transition: transform 0.15s, box-shadow 0.15s;
 }
-.plan-card:hover { transform: translateY(-1px); box-shadow: var(--shadow-md); }
-.plan-card .p-rank {
+.cal-item.done .cal-text { color: var(--text-soft); text-decoration: line-through; }
+.cal-item .cal-time { flex: none; width: 38px; color: var(--primary); font-variant-numeric: tabular-nums; }
+.cal-item .cal-kind {
   flex: none;
-  width: 21px; height: 21px;
-  border-radius: 50%;
-  background: linear-gradient(135deg, #7b97fb, #5b7cfa);
-  color: #fff;
-  font-size: 11px; font-weight: 700;
-  line-height: 21px; text-align: center;
-  margin-top: 1px;
-  box-shadow: 0 2px 6px rgba(91, 124, 250, 0.35);
+  font-size: 10px; padding: 1px 5px;
+  border-radius: 5px;
+  background: rgba(91, 124, 250, 0.14); color: var(--primary);
 }
-.plan-card .p-due { display: block; font-size: 11px; color: var(--danger); margin-top: 2px; }
-.plan-card .p-date { display: block; font-size: 11px; color: var(--text-soft); margin-top: 2px; }
-.plan-card input[type="checkbox"] { margin-top: 3px; accent-color: var(--ok); cursor: pointer; }
-.plan-card .p-content { flex: 1; }
-.plan-card .p-task { font-size: 11px; color: var(--primary); margin-bottom: 2px; }
-.plan-card.done .p-content { color: var(--text-soft); text-decoration: line-through; }
+.cal-item .cal-text { flex: 1; }
+.cal-item input[type="checkbox"] { accent-color: var(--ok); cursor: pointer; }
+.cal-item .cal-del {
+  flex: none;
+  border: none; background: transparent;
+  color: var(--text-soft); cursor: pointer;
+  font-size: 12px; padding: 0 2px;
+}
+.cal-item .cal-del:hover { color: var(--danger); }
+.cal-item .cal-rep {
+  flex: none;
+  border: none;
+  background: rgba(91, 124, 250, 0.14);
+  color: var(--primary);
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 5px;
+  cursor: pointer;
+}
+.cal-item .cal-rep:hover { background: rgba(91, 124, 250, 0.26); }
+.cal-confirm {
+  display: flex; align-items: center; gap: 6px;
+  margin: -2px 0 2px 10px;
+  padding: 6px 8px;
+  font-size: 11px; color: var(--text-soft);
+  background: rgba(91, 124, 250, 0.07);
+  border-radius: 8px;
+}
+.cal-confirm span { flex: 1; }
+.cal-confirm button {
+  border: 1px solid rgba(91, 124, 250, 0.3);
+  background: transparent; color: var(--primary);
+  border-radius: 6px; font-size: 11px; padding: 1px 7px; cursor: pointer;
+}
+.cal-confirm button.ok { color: var(--danger); border-color: rgba(220, 80, 80, 0.4); }
+.cal-confirm button:hover { background: rgba(91, 124, 250, 0.14); }
+#cal-add-form {
+  display: flex; gap: 5px; align-items: center; flex-wrap: wrap;
+  margin-top: 10px;
+}
+#cal-add-form input[type="time"] { width: 74px; }
+#cal-add-form select { width: 58px; }
+#cal-add-form select#cal-repeat { width: 66px; }
+#cal-add-form input[type="text"] { flex: 1; min-width: 90px; }
+#cal-add-form button { flex: none; }
 .empty-tip { color: var(--text-soft); text-align: center; padding: 24px 0; }
 
 /* ── 任务 ── */
-#task-list { display: flex; flex-direction: column; gap: 8px; }
-.task-card {
-  background: var(--glass);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
-  border: 1px solid rgba(255, 255, 255, 0.75);
-  border-radius: 12px;
-  padding: 11px 13px;
-  box-shadow: var(--shadow-sm);
-  transition: transform 0.15s, box-shadow 0.15s;
-}
-.task-card:hover { transform: translateY(-1px); box-shadow: var(--shadow-md); }
-.task-card .t-head { display: flex; align-items: center; gap: 8px; }
-.task-card .t-title { font-weight: 600; flex: 1; }
-.task-card .t-status {
-  font-size: 11px; padding: 2px 9px; border-radius: 10px;
-  background: rgba(91, 124, 250, 0.10); color: var(--primary);
-}
-.task-card .t-status.done { background: rgba(47, 191, 143, 0.12); color: var(--ok); }
-.task-card .t-status.overdue { background: rgba(255, 107, 129, 0.12); color: var(--danger); }
-.task-card .t-meta { font-size: 11px; color: var(--text-soft); margin-top: 5px; }
-.task-card .t-plan { margin-top: 8px; font-size: 12px; }
-.task-card .t-plan li { list-style: none; padding: 3px 0 3px 14px; position: relative; }
-.task-card .t-plan li::before { content: "○"; position: absolute; left: 0; color: var(--text-soft); }
-.task-card .t-plan li.done::before { content: "✓"; color: var(--ok); }
-.task-card .t-plan li.done { color: var(--text-soft); }
+/* 界面上的「任务」页已移除：任务直接加在日历里（kind=task）。
+   后端的 tasks/plan_items 仍保留，供小助自己规划长期目标用（不占界面）。
+   原 .task-card / #task-list 样式随之删除。 */

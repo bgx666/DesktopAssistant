@@ -2,8 +2,11 @@
 
 - build_planner_agent(session)：create_agent(model, tools, system_prompt, middleware,
   state_schema) → 编译后的 agent 图；
-- 循环（model → tool_calls → tools → model …直到无工具调用）由 create_agent 内建，
-  heartbeat 工具即停止信号；
+- **ReAct 循环 = create_agent 内建的原生循环**：model → tools → model → …
+  模型不再返回工具调用（或调了 heartbeat）就结束本轮。一轮对话里模型可以
+  连续「调工具 → 观察 → 再调工具」多次，直到它自己认为够了。
+  中间件只处理"提前跳出"（玩家让位 / heartbeat / 用户停止 / 免打扰），
+  **不主动截断工具→模型的回路**。
 - **不使用 checkpointer**：invoke 输入即初始 state（无跨调用消息合并）——DeepSeek
   严格校验「assistant(tool_calls) 必须紧跟对应 tool 消息」，checkpointer 的
   add_messages 合并会保留中断时半写的孤儿 assistant 导致 400（yaya 实测）。
@@ -24,7 +27,7 @@ from .middleware import (
     HeartbeatTrackMiddleware,
     LoggingMiddleware,
     NudgeMiddleware,
-    PlanSnapshotMiddleware,
+    AgendaSnapshotMiddleware,
     PlannerState,
     PlayerPriorityMiddleware,
     ScreenShotInjectMiddleware,
@@ -46,15 +49,19 @@ def build_planner_agent(session):
     model = session._get_llm()  # mock=MockChatModel / 真实=ChatOpenAI
     middleware = [
         DndGuardMiddleware(session),
-        PlanSnapshotMiddleware(session),
+        AgendaSnapshotMiddleware(session),
         PlayerPriorityMiddleware(session),
         ScreenShotInjectMiddleware(session),
         TypingHintMiddleware(session),
         StopRequestMiddleware(session),
-        NudgeMiddleware(),
-        HeartbeatTrackMiddleware(),
+        NudgeMiddleware(),            # 第 5 轮注入收尾提示（软上限）
+        HeartbeatTrackMiddleware(),   # 调过 heartbeat → 跳 end（停止信号）
         LoggingMiddleware(session),
         SummarizationMiddleware(session),
+        # 硬保险：模型连续调工具停不下来时兜底。正常情况下由模型自己
+        # "不再返回工具调用"结束本轮，或调 heartbeat 主动收尾。
+        # ⚠️ 别改成 1：LangGraph「工具→必再调模型」被 limit 掐断会往上下文
+        # 塞 "Model call limits exceeded" 错误消息（yaya 实测）污染 buffer。
         ModelCallLimitMiddleware(run_limit=10, exit_behavior="end"),
     ]
     agent = create_agent(

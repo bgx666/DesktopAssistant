@@ -4,13 +4,15 @@
   <img src="docs/images/bubble.png" width="96" alt="小助">
 </p>
 
-面向个人学习的桌面 AI 助手。与以"代完成任务"为目标的主流 coding agent（Codex、Claude Code、OpenCode 等）不同，本项目的定位是**长期陪伴式学习辅助**：系统不代替用户完成工作，而是负责目标的拆解、进度的记录与提醒，并通过持久化的记忆结构维持对用户长期状态的认知。
+面向个人学习的桌面 AI 助手。与以"代完成任务"为目标的主流 coding agent（Codex、Claude Code、OpenCode 等）不同，本项目的定位是**长期陪伴式学习辅助**：系统不代替用户完成工作，而是负责把安排落到日历上、记录进度并在该提醒的时候提醒，并通过持久化的记忆结构维持对用户长期状态的认知。
+
+> 想读懂代码结构？先看 [`docs/tour.md`](docs/tour.md)（代码地图 / 三条主线 / 中间件速查 / 术语表 / 阅读路线）。
 
 核心设计要点：
 
 - **长期记忆**：对话历史经压缩后沉淀为 SQLite 分层摘要记忆树（memory tree）。记忆容量近似无限，且随对话持续更新——系统能够回忆起数周前的对话内容，并据此维持一致的交互人设。
 - **记忆驱动的提示词演化**：系统提示词保持极简，人设信息不预先写死，而是在对话过程中通过摘要机制（用户画像、偏好、目标等结构化字段）逐步累积与完善。
-- **本地优先的感知能力**：语音合成（TTS）、语音识别（ASR）、图像文字识别（OCR）全部基于开源模型本地推理，离线可用；支持文档挂载、屏幕内容识别与网页检索，用于理解用户当前所处的任务情境。
+- **本地优先的感知能力**：语音合成（TTS）、语音识别（ASR）、图像文字识别（OCR）全部基于开源模型本地推理，离线可用；支持文档挂载、屏幕内容识别与网页检索，用于理解用户当前所处的情境。
 - **桌面形态**：Electron 悬浮球常驻桌面，支持单击/长按/拖拽等交互，后端（Python + LangChain，LangGraph 化 ReAct 循环）由前端自动拉起。
 
 ## 系统架构
@@ -24,7 +26,7 @@
   tools.py         工具注册（19 个 function calling，见下文）
   tts.py / asr.py / ocr.py   本地语音合成 / 识别 / 图像文字识别
   memory/          SQLite 分层摘要记忆树
-  store/           任务/计划/待办库（SQLite）
+  store/           日历库（SQLite，CalendarDb）
 前端（Electron）
   main.js          主进程：悬浮球窗口 + 面板窗口、托盘、HTTP 代理
   renderer/        悬浮球（bubble）与面板（index）页面、设置窗口
@@ -42,10 +44,10 @@
 
 ### 压缩中的未来信息校正
 
-常规摘要式压缩将待压缩片段**孤立**地提交给模型，摘要无法反映该片段之后发生的事实变更（如用户推翻的决策、已完成的任务）。本项目压缩时，待压缩片段**原样包裹于指令中，追加到完整原始上下文的末尾**——模型可见被压缩区域之后（相对该区域而言属于"未来"）的全部消息，摘要据此获得**事后校正能力**：
+常规摘要式压缩将待压缩片段**孤立**地提交给模型，摘要无法反映该片段之后发生的事实变更（如用户推翻的决策、已完成的安排）。本项目压缩时，待压缩片段**原样包裹于指令中，追加到完整原始上下文的末尾**——模型可见被压缩区域之后（相对该区域而言属于"未来"）的全部消息，摘要据此获得**事后校正能力**：
 
 - 后续对话否定的决策不会残留于摘要；
-- 任务的最终状态（完成/变更）被纳入摘要而非停留在中途；
+- 安排的终态（完成/变更）被纳入摘要而非停留在中途；
 - 跨片段因果得以保持。
 
 每一层摘要因此可视为"知情回顾"（informed retrospective），而非"截稿快照"（point-in-time snapshot）。
@@ -62,17 +64,15 @@
 
 ## 工具接口（function calling）
 
-系统注册 19 个工具，由 LLM 在 ReAct 循环中自主调用：
+系统注册 13 个工具，由 LLM 在 ReAct 循环中自主调用：
 
 | 工具 | 功能 |
 |---|---|
-| `create_task` | 录入新任务（对话触发） |
-| `break_down_task` | 任务拆解为阶段与待办条目 |
-| `list_tasks` / `get_task` | 任务列表 / 详情查询 |
-| `get_next_actions` | 按紧急度排序的动态待办队列 |
-| `mark_plan_done` | 勾选待办完成，任务状态自动推进 |
-| `reschedule` / `update_task_status` / `prioritize` | 日期调整 / 状态更新 / 优先级调整 |
-| `heartbeat` | 自主调度：设定下次唤醒（clamp 10~720 分钟） |
+| `list_schedule` | 按日期范围查日历（日程/待办，含时刻、状态、id） |
+| `add_schedule` | 加日程/待办；带 `time` 则**到点自动提醒**，带 `repeat` 则按每天/每周/工作日重复 |
+| `update_schedule` | 改期 / 改时刻 / 改内容 / 标完成（`whole_series` 可作用于整个重复系列） |
+| `cancel_schedule` | 取消（默认只取消这一次；`whole_series` 取消今后各期） |
+| `heartbeat` | 设定**下一次醒来**的间隔：`seconds`（最短 1 分钟）／`minutes`（最大 720 分钟） |
 | `continue_speaking` | 长回复分段：调用后暂停片刻再继续（可被用户立即打断） |
 | `set_do_not_disturb` | 免打扰时段（默认 22:00-08:00） |
 | `explore_memory_tree` | 按需展开记忆树任意节点（历史回溯） |
@@ -84,10 +84,12 @@
 
 | 能力 | 说明 |
 |---|---|
-| 任务录入 | 对话（`create_task`）或 HTTP `POST /task` 结构化录入 |
-| 任务拆解 | `break_down_task`：LLM 产出阶段与逐日计划并落库 |
-| 每日计划 | 由任务拆解自动生成；前端可勾选完成 |
-| 主动回访 | 调度线程：LLM 自主 `heartbeat(minutes)` 决定唤醒间隔 |
+| 日历 | 日程/待办唯一入口：对话里加（`add_schedule`）或在日历页直接编辑；带时刻的项到点由调度线程提醒 |
+| 重复安排 | `repeat`＝每天/每周/工作日；按规则生成实体行（1 年），并**每小时滚动续期**，不会到期默默消失 |
+| 循环模型 | `create_agent` **原生多轮 ReAct**：一轮对话里模型可连续「调工具 → 看结果 → 再调工具」，不再返回工具调用即结束本轮 |
+| 心跳 | 纯定时器（**按需**设置，非每轮必经）：有未来要主动做的事才设；空闲时决定下一次何时醒来 |
+| 议程快照 | 每轮注入 `[当前议程]`（今天+未来 7 天，重复项折叠成一行），指纹去重不重复占 token |
+| 主动回访 | 调度线程：到点提醒（用户排的日程）、逾期项每日提醒、心跳自主唤醒三路独立触发 |
 | 分段说话 | `continue_speaking`：分点输出时分段暂停（可打断） |
 | 启动静默 | 启动 2 分钟宽限期；到期心跳顺延不补触发 |
 | 免打扰 | 默认 22:00-08:00 静默（用户消息不受限） |
@@ -165,7 +167,7 @@ npm install
 npm start
 ```
 
-**Mock 模式**（脚本化假 LLM，不消耗 API 额度，可演示任务全流程）：
+**Mock 模式**（脚本化假 LLM，不消耗 API 额度，可演示日历与心跳全流程）：
 
 ```bash
 set PLANNER_MOCK_LLM=1
@@ -193,7 +195,7 @@ hf download onnx-community/Kokoro-82M-v1.1-zh-ONNX --include "model.onnx" "voice
 | `PLANNER_DATA_ROOT` | `data/` | 运行时数据目录 |
 | `PLANNER_PYTHON` | `python` | 前端拉起后端所用解释器 |
 | `XIAOB_SHARED_ENV` | 无 | 共享 .env 路径（多项目复用 LLM 配置） |
-| `PLANNER_HEARTBEAT_MIN_MINUTES` / `MAX` | `10` / `720` | 心跳间隔护栏（分钟） |
+| `PLANNER_HEARTBEAT_MIN_SECONDS` / `MAX_MINUTES` | `0.1` / `720` | 心跳间隔护栏（连续干活 0.1 秒 ~ 空闲 12 小时） |
 | `PLANNER_DND_START_HOUR` / `END_HOUR` | `22` / `8` | 免打扰窗口 |
 | `PLANNER_TTS_ENGINE` | `local` | `cloud` 时改用 DashScope 云合成 |
 
@@ -201,12 +203,12 @@ hf download onnx-community/Kokoro-82M-v1.1-zh-ONNX --include "model.onnx" "voice
 
 ```
 data/
-  planner.db        任务/阶段/待办（WAL）
+  planner.db        日历（calendar_items，WAL）
   memory_tree.db    记忆树节点 + 对话 buffer（WAL）
   logs/planner.log  运行日志（RotatingFileHandler）
 ```
 
-**数据重置**：停止进程后删除 `data/` 目录即可（任务、记忆、日志全部清空）。
+**数据重置**：停止进程后删除 `data/` 目录即可（日历、记忆、日志全部清空）。
 
 ## 测试
 
@@ -214,4 +216,4 @@ data/
 python -m pytest tests -v
 ```
 
-覆盖：记忆树存储、任务库 CRUD、agent 生成管线（mock 驱动任务闭环）、心跳护栏与启动静默、免打扰、buffer 重启恢复、HTTP 端点集成、语音合成/识别、事件消费。全部测试以 mock LLM + tmp_path 隔离，不调用真实 API、不写入真实数据。
+覆盖：记忆树存储、日历库 CRUD、agent 生成管线（mock 驱动日历闭环）、心跳护栏与启动静默、免打扰、buffer 重启恢复、HTTP 端点集成、语音合成/识别、事件消费。全部测试以 mock LLM + tmp_path 隔离，不调用真实 API、不写入真实数据。

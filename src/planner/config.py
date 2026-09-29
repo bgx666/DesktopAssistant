@@ -42,9 +42,16 @@ PLANNER_MOCK_LLM: bool = os.getenv("PLANNER_MOCK_LLM", "").strip().lower() in ("
 # 注意：共享 .env 的 LLM_MODEL 是 xiaob 游戏的配置，不再影响 planner。
 PLANNER_DEFAULT_MODEL: str = "deepseek-v4-flash-vision-exp"
 
-# 心跳护栏：LLM 自主决定心跳间隔，clamp 到 [PLANNER_HEARTBEAT_MIN, MAX] 分钟
-# 心跳是分钟级定时任务（一人一句，不再秒级短心跳）
-PLANNER_HEARTBEAT_MIN_MINUTES: float = float(os.getenv("PLANNER_HEARTBEAT_MIN_MINUTES", "10"))
+# 心跳护栏：LLM 自主决定心跳间隔，clamp 到 [MIN, MAX] 分钟。
+#
+# 心跳 = 「本轮结束，下一次什么时候醒」的定时器。轮内循环由 create_agent 的原生
+# ReAct 循环承担，**不再需要"秒级短心跳去续下一轮"**（那是 AfterToolEnd 时代的
+# 补丁，已删）。下界因此抬到 1 分钟——足以表达"过一会儿回来看一眼"，
+# 又不会退化成空轮询。
+#   下界 1 分钟   —— 过一小会儿回来看看（如稍后再查一次、临近约定时间提醒）
+#   上界 720 分钟 —— 空闲/用户在忙时，睡 12 小时再醒
+PLANNER_HEARTBEAT_MIN_SECONDS: float = float(os.getenv("PLANNER_HEARTBEAT_MIN_SECONDS", "60"))
+PLANNER_HEARTBEAT_MIN_MINUTES: float = PLANNER_HEARTBEAT_MIN_SECONDS / 60.0
 PLANNER_HEARTBEAT_MAX_MINUTES: int = int(os.getenv("PLANNER_HEARTBEAT_MAX_MINUTES", "720"))
 
 # 免打扰默认窗口（24h 制闭区间 [start, end)，跨天处理）

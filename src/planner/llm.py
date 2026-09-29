@@ -150,57 +150,54 @@ class MockChatModel(BaseChatModel):
         from datetime import datetime, timedelta, timezone
         return datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d")
 
+    @staticmethod
+    def _upcoming(db) -> list[dict]:
+        """脚本用：今天起 7 天内的日历项（读失败就当空，别让 mock 把测试带崩）。"""
+        from datetime import datetime, timedelta, timezone
+        try:
+            today = datetime.now(timezone(timedelta(hours=8))).date()
+            return db.list_calendar_range(today.isoformat(),
+                                          (today + timedelta(days=7)).isoformat())
+        except Exception:
+            return []
+
     def _player_reply(self) -> ChatResult:
         calls = [self._tc("heartbeat", {"minutes": 15})]
         session = self._session
         db = getattr(session, "db", None) if session else None
         text = self._rng.choice(_PLAYER_REPLIES)
-        if db is not None and not db.list_tasks():
-            text = "（用户还没给我任务，我先主动列一个学习任务。）"
-            calls.insert(0, self._tc("create_task", {
-                "title": "复习线性代数第三章",
-                "description": "矩阵与行列式，重点：逆矩阵与秩",
-                "due_date": self._today(),
-                "priority": "high",
+        if db is not None and not self._upcoming(db):
+            text = "（用户还没安排什么，我先主动把学习排进日历。）"
+            calls.insert(0, self._tc("add_schedule", {
+                "date": self._today(),
+                "content": "复习线性代数第三章",
+                "time": "20:00",
+                "detail": "矩阵与行列式，重点：逆矩阵与秩",
             }))
         return self._make_result(text, calls)
 
     def _heartbeat_reply(self) -> ChatResult:
         calls = []
-        text = "（我看了看手头的计划，一切照常推进。）"
+        text = "（我看了看日历，一切照常推进。）"
         session = self._session
         db = getattr(session, "db", None) if session else None
         if db is not None:
             try:
-                tasks = db.list_tasks()
-                if not tasks:
-                    text = "（我列了一个新的学习任务，先记下来。）"
-                    calls.append(self._tc("create_task", {
-                        "title": "复习线性代数第三章",
-                        "description": "矩阵与行列式，重点：逆矩阵与秩",
-                        "due_date": self._today(),
-                        "priority": "high",
+                items = self._upcoming(db)
+                todo = [i for i in items if i["status"] == "todo"]
+                if not items:
+                    text = "（日历上还是空的，我排一条进去。）"
+                    calls.append(self._tc("add_schedule", {
+                        "date": self._today(),
+                        "content": "复习线性代数第三章",
+                        "time": "20:00",
                     }))
+                elif todo:
+                    text = "（日历上还有没做的，先勾掉最早的一项。）"
+                    calls.append(self._tc("update_schedule",
+                                          {"item_id": todo[0]["id"], "status": "done"}))
                 else:
-                    pending = db.list_pending()
-                    todo = [t for t in tasks if t["status"] in ("todo", "in_progress")]
-                    if pending:
-                        text = "（待办队列里还有没做的，我先勾掉最早的一项。）"
-                        calls.append(self._tc("mark_plan_done", {"plan_id": pending[0]["id"]}))
-                    elif any(t["status"] == "todo" for t in todo):
-                        text = "（有条任务还没有拆解，我来安排一下。）"
-                        t = next(t for t in todo if t["status"] == "todo")
-                        calls.append(self._tc("break_down_task", {
-                            "task_id": t["id"],
-                            "phases": [
-                                {"title": "概念梳理", "days": 1,
-                                 "items": [{"date_offset": 0, "content": f"通读{t['title']}教材章节"}]},
-                                {"title": "习题巩固", "days": 1,
-                                 "items": [{"date_offset": 1, "content": "完成章节习题前半"}]},
-                            ],
-                        }))
-                    else:
-                        text = "（所有任务都完成了，休息一下。）"
+                    text = "（日历上的安排都做完了，休息一下。）"
             except Exception:
                 _logger.exception("[mock] 脚本状态读取失败")
         calls.append(self._tc("heartbeat", {"minutes": 15}))

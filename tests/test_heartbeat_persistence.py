@@ -46,7 +46,7 @@ def test_heartbeat_expired_while_offline_triggers_on_start(data_root, monkeypatc
         assert s2._next_heartbeat_at > time.time(), "触发后应存在保底调度"
         content = "\n".join(
             m.content for m in s2.recent_buffer if getattr(m, "type", "") == "human")
-        assert "定时任务到点" in content, "启动应注入心跳消息"
+        assert "定时唤醒到点" in content, "启动应注入心跳消息"
     finally:
         s2.close()
 

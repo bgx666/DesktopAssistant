@@ -1,7 +1,9 @@
 """Agent 生成管线 + 工具行为测试（mock LLM，不调真实 API）。"""
 
 import time
+from datetime import timedelta
 
+import pytest
 from langchain_core.messages import HumanMessage
 
 from planner.memory.sqlite_memory_tree import SQLiteMemoryTree
@@ -14,6 +16,16 @@ def _drive_generation(session, content: str, trigger: str = "player") -> None:
     session._receive(content, trigger=True)
     session.pending_response = False
     session._generate_response(trigger)
+
+
+def _wait_until(pred, timeout: float = 5.0) -> None:
+    """轮询等待条件成立（杜绝"赌固定 sleep 时长"造成的偶发失败）。"""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if pred():
+            return
+        time.sleep(0.02)
+    raise AssertionError("等待条件超时")
 
 
 def test_stop_interrupts_streaming_generation(data_root):
@@ -62,13 +74,13 @@ def test_stop_interrupts_streaming_generation(data_root):
         s.close()
 
 
-def test_player_message_creates_task(data_root):
+def test_player_message_adds_calendar_item(data_root):
     s = PlannerSession(data_root, mock=True)
     try:
         _drive_generation(s, "帮我安排一下学习计划")
-        tasks = s.db.list_tasks()
-        assert len(tasks) >= 1
-        assert tasks[0]["title"] == "复习线性代数第三章"
+        items = s.db.list_calendar_range("2026-01-01", "2030-12-31")
+        assert items, "mock 应把安排写进日历"
+        assert items[0]["content"] == "复习线性代数第三章"
         # buffer 里应该有 assistant 消息（流式文本）+ 工具结果
         assert any(getattr(m, "type", None) == "ai" for m in s.recent_buffer)
         assert any(getattr(m, "type", None) == "tool" for m in s.recent_buffer)
@@ -87,6 +99,7 @@ def test_player_message_creates_task(data_root):
         tool_calls = [e for e in events if e["type"] == "tool_call"]
         tool_results = [e for e in events if e["type"] == "tool_result"]
         assert tool_calls, "应有 tool_call 事件"
+        assert any(e["name"] == "add_schedule" for e in tool_calls), "应有日历工具卡片"
         assert any(e["name"] == "heartbeat" for e in tool_calls), "heartbeat 也应展示卡片"
         assert len(tool_results) >= len(tool_calls)
         for tc in tool_calls:
@@ -99,68 +112,84 @@ def test_history_tool_calls_not_replayed(data_root):
     """历史 buffer 里的工具调用不应在后续每轮重新推送 tool_call 卡片。"""
     s = PlannerSession(data_root, mock=True)
     try:
-        # 第一轮：创建任务（产生 create_task 工具卡片）
+        # 第一轮：往日历里排一条（产生 add_schedule 工具卡片）
         _drive_generation(s, "帮我安排一下学习计划")
         first = s.drain_events()
         assert any(e["type"] == "tool_call" for e in first)
-        # 第二轮：历史 buffer 含 create_task 工具调用，不应重放
+        # 第二轮：历史 buffer 含 add_schedule 调用，不应重放
         _drive_generation(s, "（心跳）继续看看", "heartbeat")
         second = s.drain_events()
         second_calls = [e for e in second if e["type"] == "tool_call"]
-        # 心跳轮 mock 会勾选/拆解任务（可能有新工具），但绝不能出现
-        # 第一轮 create_task 的历史工具调用（按参数识别）
+        # 心跳轮 mock 会勾完成（可能有新工具），但绝不能出现
+        # 第一轮 add_schedule 的历史工具调用（按参数识别）
         assert not any(
-            e["name"] == "create_task" and e["args"].get("title") == "复习线性代数第三章"
+            e["name"] == "add_schedule"
+            and e["args"].get("content") == "复习线性代数第三章"
             for e in second_calls
-        ), "历史 create_task 被重放为卡片"
+        ), "历史 add_schedule 被重放为卡片"
         # 第三轮同验
         _drive_generation(s, "（心跳）继续", "heartbeat")
         third = s.drain_events()
         assert not any(
             e["type"] == "tool_call"
-            and e["name"] == "create_task"
-            and e["args"].get("title") == "复习线性代数第三章"
+            and e["name"] == "add_schedule"
+            and e["args"].get("content") == "复习线性代数第三章"
             for e in third
-        ), "历史 create_task 被重放为卡片"
+        ), "历史 add_schedule 被重放为卡片"
     finally:
         s.close()
 
 
-def test_heartbeat_cycle_breaks_down_and_marks_done(data_root):
+def test_heartbeat_cycle_adds_then_completes(data_root):
+    """心跳循环：先排进日历，之后的心跳把最早一项勾完成。"""
     s = PlannerSession(data_root, mock=True)
     try:
-        _drive_generation(s, "给我安排任务", "player")
-        assert s.db.list_tasks()
-        # 模拟心跳：拆解任务
+        _drive_generation(s, "给我安排点事", "player")
+        items = s.db.list_calendar_range("2026-01-01", "2030-12-31")
+        assert items, "第一轮应排进日历"
+        assert all(i["status"] == "todo" for i in items)
+
+        # 模拟心跳：勾掉最早的一项
         _drive_generation(s, "（心跳到了，请主动跟用户说点东西。）", "heartbeat")
-        tasks = s.db.list_tasks()
-        t = s.db.get_task(tasks[0]["id"])
-        assert t["phases"], "应已拆解出阶段"
-        assert t["plan_items"], "应已生成待办条目"
-        # 再模拟心跳：勾选完成（动态队列，无固定日期）
-        _drive_generation(s, "（心跳到了，请主动跟用户说点东西。）", "heartbeat")
-        pending = s.db.list_pending()
-        assert any(p["status"] == "done" for p in s.db.get_plan()) or not pending
+        done = [i for i in s.db.list_calendar_range("2026-01-01", "2030-12-31")
+                if i["status"] == "done"]
+        assert done, "心跳轮应勾完成一项"
     finally:
         s.close()
 
 
 def test_heartbeat_clamp_in_tool(data_root):
+    """心跳护栏：下界 1 分钟（秒级续跑已废除）、上界 720 分钟。"""
     from planner import config as _config
     s = PlannerSession(data_root, mock=True)
     try:
         tools = {t.name: t for t in build_tools(s)}
-        # 分钟级下限：0.2（12 秒）被拉高到最小 10 分钟
-        r = tools["heartbeat"].invoke({"minutes": 0.2})
-        assert abs(s._heartbeat_minutes - _config.PLANNER_HEARTBEAT_MIN_MINUTES) < 1e-6
-        assert "10 分钟" in r
-        # 下限护栏：0 被拉高到最小
+        # 下界：30 秒 < 1 分钟 → 被抬到 1 分钟
+        tools["heartbeat"].invoke({"seconds": 30})
+        assert abs(s._heartbeat_minutes - _config.PLANNER_HEARTBEAT_MIN_SECONDS / 60) < 1e-6
+        assert s._heartbeat_minutes == 1.0
+        # 下界之内保留：90 秒 = 1.5 分钟
+        tools["heartbeat"].invoke({"seconds": 90})
+        assert abs(s._heartbeat_minutes - 1.5) < 1e-6
+        # 0 / 负数同样被抬到下界
         tools["heartbeat"].invoke({"minutes": 0})
-        assert abs(s._heartbeat_minutes - _config.PLANNER_HEARTBEAT_MIN_MINUTES) < 1e-6
+        assert s._heartbeat_minutes == 1.0
+        # 上界护栏：12 小时
         tools["heartbeat"].invoke({"minutes": 100000})
         assert s._heartbeat_minutes == 720
         d = s.heartbeat_dict()
         assert d["in_seconds"] > 0
+    finally:
+        s.close()
+
+
+def test_heartbeat_requires_one_of_seconds_minutes(data_root):
+    """两个间隔参数都不填 → 报错（给模型明确反馈，而不是默默取 0）。"""
+    s = PlannerSession(data_root, mock=True)
+    try:
+        tools = {t.name: t for t in build_tools(s)}
+        with pytest.raises(Exception):
+            tools["heartbeat"].invoke({"note": "什么都不填"})
     finally:
         s.close()
 
@@ -197,41 +226,27 @@ def test_dnd_window_check(data_root, monkeypatch):
         s.close()
 
 
-def test_break_down_task_tool(data_root):
+def test_calendar_tools_roundtrip(data_root):
+    """日历工具走一遍：加日程 → 改期/改时刻 → 标完成 → 取消。"""
     s = PlannerSession(data_root, mock=True)
     try:
-        tid = s.db.create_task("学 Python", "基础", "2026-08-30", "high")
-        tools = {t.name: t for t in build_tools(s)}
-        r = tools["break_down_task"].invoke({
-            "task_id": tid,
-            "phases": [
-                {"title": "语法", "days": 2, "items": [
-                    {"date_offset": 0, "content": "读第一章", "est_minutes": 60},
-                    {"date_offset": 1, "content": "做练习", "est_minutes": 30},
-                ]},
-                {"title": "实战", "days": 1, "items": [
-                    {"date_offset": 0, "content": "写小项目"},
-                ]},
-            ],
-        })
-        assert "拆解完成" in r
-        task = s.db.get_task(tid)
-        assert len(task["phases"]) == 2
-        assert len(task["plan_items"]) == 3
-        assert task["status"] == "in_progress"
-        assert task["phases"][0]["status"] == "active"
-    finally:
-        s.close()
+        T = {t.name: t for t in build_tools(s)}
+        assert "add_schedule" in T and "create_task" not in T, \
+            "任务工具应已随模块整体移除"
 
+        out = T["add_schedule"].invoke({"date": "2026-09-20", "content": "开组会",
+                                        "time": "09:30"})
+        assert "已加入日历" in out
+        iid = s.db.list_calendar_range("2026-09-20", "2026-09-20")[0]["id"]
 
-def test_mark_plan_done_auto_completes_task(data_root):
-    s = PlannerSession(data_root, mock=True)
-    try:
-        tid = s.db.create_task("小任务")
-        pid = s.db.add_plan_item(tid, None, "2026-08-05", 0, "做一件事")
-        tools = {t.name: t for t in build_tools(s)}
-        tools["mark_plan_done"].invoke({"plan_id": pid})
-        assert s.db.get_task(tid)["status"] == "done"
+        assert "已更新" in T["update_schedule"].invoke({"item_id": iid, "time": "10:00"})
+        assert s.db.get_calendar_item(iid)["time"] == "10:00"
+
+        assert "已更新" in T["update_schedule"].invoke({"item_id": iid, "status": "done"})
+        assert s.db.get_calendar_item(iid)["status"] == "done"
+
+        assert "已取消" in T["cancel_schedule"].invoke({"item_id": iid})
+        assert s.db.get_calendar_item(iid)["status"] == "cancelled"
     finally:
         s.close()
 
@@ -252,18 +267,33 @@ def test_buffer_persists_across_restart(data_root):
         s2.close()
 
 
-def test_plan_snapshot_injection(data_root):
+def test_agenda_snapshot_injection(data_root):
+    """议程快照（数据源＝日历）：有内容才注入；指纹未变不重复注入。"""
     s = PlannerSession(data_root, mock=True)
     try:
-        s.db.create_task("任务 A")
-        text = s._plan_snapshot_text()
-        assert text is not None and "任务 A" in text
+        s.db.add_calendar_item("2026-09-13", "开会", "14:00")
+        text = s._agenda_snapshot_text()
+        assert text is not None and "[当前议程]" in text and "开会" in text
         # 指纹未变 → 不再注入
-        assert s._plan_snapshot_text() is None
-        # 计划变化 → 重新注入
-        s.db.create_task("任务 B")
-        text2 = s._plan_snapshot_text()
-        assert text2 is not None and "任务 B" in text2
+        assert s._agenda_snapshot_text() is None
+        # 议程变化 → 重新注入
+        s.db.add_calendar_item("2026-09-14", "看牙医", "09:00")
+        text2 = s._agenda_snapshot_text()
+        assert text2 is not None and "看牙医" in text2
+    finally:
+        s.close()
+
+
+def test_agenda_snapshot_folds_repeating_series(data_root):
+    """重复项在快照里折叠成一行——否则"每天吃药"会把未来 7 天全占满。"""
+    s = PlannerSession(data_root, mock=True)
+    try:
+        s.db.add_calendar_series("2026-09-13", "吃药", "daily", "08:00",
+                                 horizon_days=6)
+        text = s._agenda_snapshot_text()
+        assert text is not None
+        assert text.count("吃药") == 1, f"重复项应折叠为一行：{text}"
+        assert "每天" in text and "还有" in text, f"应标出规则与剩余期数：{text}"
     finally:
         s.close()
 
@@ -281,7 +311,7 @@ def test_memory_tree_wired_to_session(data_root):
         s.close()
 
 def test_player_message_does_not_reset_heartbeat(data_root):
-    """用户说话 → 不重置心跳（一人一句）：旧定时保留、沉默计数清零。"""
+    """用户说话 → 不重置心跳（一人一句）：旧定时保留。"""
     s = PlannerSession(data_root, mock=True)
     try:
         s.schedule_heartbeat(120)          # 模拟已有的长心跳
@@ -289,7 +319,6 @@ def test_player_message_does_not_reset_heartbeat(data_root):
         s.enqueue_player_message("我回来了")
         # 心跳保持原定时（不被重置为短间隔）
         assert s.heartbeat_dict()["in_minutes"] > 60
-        assert s._heartbeat_silent_count == 0
     finally:
         s.close()
 
@@ -389,36 +418,154 @@ def test_parent_node_renders_time_range(data_root):
         s.close()
 
 
-def test_silent_escalation(data_root):
-    """连续自主唤醒用户没反应 → 心跳逐步加长（10 → 20 → … → 120 上限）。"""
-    from planner import config as _config
-    from planner.session import SILENT_ESCALATE_MAX, SILENT_ESCALATE_STEP
-    base = float(_config.PLANNER_HEARTBEAT_MIN_MINUTES)
+def test_heartbeat_prompt_carries_time_facts(data_root, monkeypatch):
+    """自主唤醒只给"时间事实"，不做沉默递进——用户状态由模型自己判断。
+
+    取消沉默计数（master 2026-09-10）后：提示里应给出「现在几点」和
+    「距用户上次说话多久」，且不再出现"已沉默 N 次"这类系统判词。
+    """
     s = PlannerSession(data_root, mock=True)
+    injected: list[str] = []
     try:
-        assert s._next_silent_minutes() == base
-        s._heartbeat_silent_count = 1
-        assert s._next_silent_minutes() == base + SILENT_ESCALATE_STEP
-        s._heartbeat_silent_count = 5
-        assert s._next_silent_minutes() == base + 5 * SILENT_ESCALATE_STEP
-        s._heartbeat_silent_count = 99
-        assert s._next_silent_minutes() == SILENT_ESCALATE_MAX
+        s.dnd_enabled = False
+        monkeypatch.setattr(s, "_spawn_worker", lambda trigger: injected.append(trigger))
+        from planner.session import _now
+        s._last_player_message_at = _now() - timedelta(minutes=95)   # 上次说话在 95 分钟前
+        s.schedule_heartbeat(30)
+        s._next_heartbeat_at = time.time() - 1
+        s._fire_heartbeat()
+        assert injected == ["heartbeat"]
+        text = s.recent_buffer[-1].content
+        assert "现在" in text and "周" in text, f"应带当前时间锚点：{text}"
+        assert "1 小时" in text, f"应带距上次说话的间隔：{text}"
+        assert "沉默" not in text, "不应再出现沉默计数式判词"
+        assert "自己判断" in text or "自己决定" in text, "状态判断权应交回模型"
     finally:
         s.close()
 
 
-def test_fire_heartbeat_counts_silence(data_root):
-    """心跳触发（自主唤醒）→ 沉默计数 +1；玩家消息 → 清零。"""
+def test_silence_desc_variants(data_root):
+    """_silence_desc 只描述时间事实（无计数、无递进）。"""
     s = PlannerSession(data_root, mock=True)
     try:
-        s._heartbeat_silent_count = 0
-        s.schedule_heartbeat(10)
-        s._next_heartbeat_at = 0.0   # 模拟到点
-        # 直接走触发逻辑（mock 会真生成，走 worker 时序复杂，只验证计数函数）
-        s._heartbeat_silent_count += 1  # 对应 _fire_heartbeat 的计数
-        assert s._heartbeat_silent_count == 1
-        s.enqueue_player_message("在的")
-        assert s._heartbeat_silent_count == 0
+        assert "还没" in s._silence_desc()            # 从未说过话
+        from planner.session import _now
+        s._last_player_message_at = _now() - timedelta(seconds=10)
+        assert "刚刚" in s._silence_desc()
+        s._last_player_message_at = _now() - timedelta(hours=3)
+        assert "3 小时" in s._silence_desc()
+    finally:
+        s.close()
+
+
+def test_heartbeat_min_floor_clamped(data_root, monkeypatch):
+    """心跳下界 1 分钟：秒级短心跳（续跑时代的残留）被 clamp 掉。
+
+    轮内继续由原生 ReAct 循环承担，不再需要"秒级心跳续下一轮"。
+    """
+    s = PlannerSession(data_root, mock=True)
+    injected: list[str] = []
+    try:
+        s.dnd_enabled = False
+        monkeypatch.setattr(s, "_spawn_worker", lambda trigger: injected.append(trigger))
+        s.schedule_heartbeat(0.1 / 60)     # 0.1 秒 → 应被抬到 1 分钟
+        assert s._heartbeat_minutes == 1.0, f"下界应是 1 分钟，实际 {s._heartbeat_minutes}"
+        s._next_heartbeat_at = time.time() - 1
+        s._fire_heartbeat()
+        assert injected == ["heartbeat"]
+        # 秒级心跳不再走"续跑"分支，而是正常唤醒（带时间锚点）
+        assert "现在" in s.recent_buffer[-1].content
+    finally:
+        s.close()
+
+
+def test_long_heartbeat_injects_time_anchor(data_root, monkeypatch):
+    """定时唤醒：注入时间锚点（现在 + 距上次说话），不递增任何计数。"""
+    s = PlannerSession(data_root, mock=True)
+    injected: list[str] = []
+    try:
+        s.dnd_enabled = False
+        monkeypatch.setattr(s, "_spawn_worker", lambda trigger: injected.append(trigger))
+        s.schedule_heartbeat(30)
+        s._next_heartbeat_at = time.time() - 1
+        s._fire_heartbeat()
+        assert injected == ["heartbeat"]
+        text = s.recent_buffer[-1].content
+        assert "现在" in text, f"长心跳应给时间锚点：{text}"
+        assert not hasattr(s, "_heartbeat_silent_count"), "沉默计数已移除"
+    finally:
+        s.close()
+
+
+def test_heartbeat_deferred_in_dnd(data_root, monkeypatch):
+    """免打扰期间不生成，顺延一个原间隔再醒（下界 1 分钟，不会空轮询）。"""
+    from datetime import timedelta
+
+    from planner.session import _now
+    s = PlannerSession(data_root, mock=True)
+    injected: list[str] = []
+    try:
+        s.dnd_enabled = True
+        s.dnd_until = _now() + timedelta(minutes=10)   # 一次性免打扰：还剩 10 分钟
+        monkeypatch.setattr(s, "_spawn_worker", lambda trigger: injected.append(trigger))
+        s.schedule_heartbeat(30)
+        s._next_heartbeat_at = time.time() - 1          # 模拟到点
+        s._fire_heartbeat()
+        assert injected == [], "DND 期间不得生成"
+        remain = s._next_heartbeat_at - time.time()
+        assert 28 * 60 < remain <= 31 * 60, f"应顺延一个原间隔（30 分钟），实际 {remain:.0f} 秒"
+    finally:
+        s.close()
+
+
+def test_react_loop_multi_round(data_root):
+    """原生 ReAct 循环：工具执行完框架会再喂一次模型，模型看到结果才收口。
+
+    回归：模型第一轮返回 tool_calls，第二轮看到工具结果后给最终答复。
+    应发生 2 次模型调用（工具前 + 工具后），而不是"工具执行完就掐断回合"。
+    """
+    from langchain_core.language_models.chat_models import BaseChatModel
+    from langchain_core.messages import AIMessage
+    from langchain_core.outputs import ChatGeneration, ChatResult
+
+    calls: list[int] = []
+
+    class _ToolThenAnswerModel(BaseChatModel):
+        """第一次调用返回工具调用，第二次（看到工具结果后）返回纯文本答复。"""
+
+        def _llm_type(self) -> str:
+            return "tool-then-answer"
+
+        def bind_tools(self, tools, **kwargs):
+            return self
+
+        def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+            calls.append(len(messages))
+            if len(calls) == 1:
+                return ChatResult(generations=[ChatGeneration(message=AIMessage(
+                    content="我看一下接下来的安排。",
+                    tool_calls=[{"name": "get_next_actions", "args": {}, "id": "call_1"}],
+                ))])
+            # 第二次：必须能看到工具结果（tool 消息已回喂），才给出最终答复
+            assert any(getattr(m, "type", None) == "tool" for m in messages), \
+                "第二轮模型调用必须带上工具结果"
+            return ChatResult(generations=[ChatGeneration(message=AIMessage(
+                content="接下来先推进论文主线。",
+            ))])
+
+    s = PlannerSession(data_root, mock=True)
+    try:
+        s.dnd_enabled = False
+        s.set_chat_model(_ToolThenAnswerModel())
+        s._receive("接下来做什么？", trigger=True)
+        s.pending_response = False
+        s._generate_response("player")
+        assert len(calls) == 2, f"工具→观察→再答应有 2 次模型调用，实际 {len(calls)} 次"
+        # 工具结果留在 buffer 里
+        assert any(getattr(m, "type", None) == "tool" for m in s.recent_buffer)
+        # 最终答复也进了 buffer
+        assert any("推进论文主线" in str(getattr(m, "content", ""))
+                   for m in s.recent_buffer), "第二轮答复应写入 buffer"
     finally:
         s.close()
 
@@ -736,8 +883,14 @@ def test_gap_hint_not_shown_in_history(data_root):
     s = PlannerSession(data_root, mock=True)
     try:
         s.enqueue_player_message("第一句")
-        time.sleep(0.2)
+        # ⚠️ 不能只 sleep 一个固定时长：全量跑时负载重，mock 生成可能超过它，
+        # 第二句会落进 _inbox 还没并回 buffer → next() 抛 StopIteration（偶发失败）。
+        # 等"彻底空闲"和"第二句确实进 buffer"两个确定条件，而不是等时间。
+        _wait_until(lambda: not s._generating and not s.pending_response and not s._inbox)
         s.enqueue_player_message("第二句")
+        _wait_until(lambda: any(
+            getattr(m, "type", "") == "human" and "第二句" in str(m.content)
+            for m in s.recent_buffer))
         second = next(m for m in s.recent_buffer
                       if getattr(m, "type", "") == "human" and "第二句" in str(m.content))
         c = str(second.content)
