@@ -60,6 +60,33 @@ class SettingsStore(context: Context) {
 
     val configured: Boolean get() = apiKey.isNotBlank()
 
+    /**
+     * 一次性迁移：把"沿用的旧默认端点"换成新默认。
+     *
+     * 为什么需要它：保存过的值优先于默认值，所以只改 `DEFAULT_*` 对**已经装过**的
+     * 用户完全无效——设置页里还是那个 opencode 地址，用户以为我没改。
+     * 判据刻意收得很紧：**只有保存值正好等于上一版的默认值**才动它
+     * （那说明用户从没主动改过）；用户自己填过的一律不碰。
+     *
+     * @return true 表示这次真的换掉了（界面据此提示一句）
+     */
+    fun migrateLegacyEndpointIfNeeded(): Boolean {
+        if (prefs.getBoolean(KEY_ENDPOINT_MIGRATED, false)) return false
+        val savedBase = prefs.getString(KEY_BASE, "").orEmpty()
+        val savedModel = prefs.getString(KEY_MODEL, "").orEmpty()
+        val isLegacy = com.xiaozhu.planner.core.llm.EndpointUrl.isLegacyOpencodeDefault(savedBase, savedModel)
+
+        prefs.edit().apply {
+            if (isLegacy) {
+                // 删掉而不是写死新值：这样以后改默认值它还会跟着走
+                remove(KEY_BASE)
+                remove(KEY_MODEL)
+            }
+            putBoolean(KEY_ENDPOINT_MIGRATED, true)
+        }.apply()
+        return isLegacy
+    }
+
     // ── 语音（TTS）────────────────────────────────────────
     // MiMo 是**独立的服务与密钥**（`api.xiaomimimo.com`），不能拿 LLM 的 key 去顶——
     // 两个供应商的 key 互不通用，混用只会得到 401。
@@ -118,6 +145,7 @@ class SettingsStore(context: Context) {
         private const val KEY_BASE = "llm_base_url"
         private const val KEY_MODEL = "llm_model"
         private const val KEY_OC_SESSION = "opencode_session"
+        private const val KEY_ENDPOINT_MIGRATED = "endpoint_migrated_v1"
         private const val KEY_TTS_ENABLED = "tts_enabled"
         private const val KEY_TTS_ENGINE = "tts_engine"
         private const val KEY_TTS_VOICE = "tts_voice"

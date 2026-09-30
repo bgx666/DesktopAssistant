@@ -58,7 +58,17 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     val state: StateFlow<ChatUiState> = _state.asStateFlow()
 
     init {
+        // 端点迁移要在读设置之前做：把"沿用的旧默认值"换成新默认（只动从没手改过的）
+        val migrated = runCatching { engine.settings.migrateLegacyEndpointIfNeeded() }.getOrDefault(false)
         refreshSettings()
+        if (migrated) {
+            _state.update {
+                it.copy(
+                    memoryNotice = "已把模型端点切到 DeepSeek 官方（${engine.settings.baseUrl}，" +
+                        "模型 ${engine.settings.model}）——实测比原来的网关快约三倍"
+                )
+            }
+        }
         AppPresence.uiAlive = true
         viewModelScope.launch {
             ReminderEvents.fired.collect { lines -> onReminderFired(lines) }

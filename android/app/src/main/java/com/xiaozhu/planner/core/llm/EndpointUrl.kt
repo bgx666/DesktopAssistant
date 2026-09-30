@@ -59,6 +59,21 @@ object EndpointUrl {
     }
 
     /**
+     * 是不是"上一版的默认值"（opencode 网关 + 它那套模型名）。
+     *
+     * 用来做**一次性迁移**：保存的值等于旧默认值，说明用户从没主动改过、
+     * 只是沿用了当时 app 填进去的——那就该跟着新默认走。
+     * 用户自己填过的（哪怕也是 opencode）不在此列，绝不覆盖。
+     */
+    fun isLegacyOpencodeDefault(base: String, model: String): Boolean {
+        val saved = normalize(base)
+        return saved == LEGACY_OPENCODE_BASE && model.trim() == LEGACY_OPENCODE_MODEL
+    }
+
+    const val LEGACY_OPENCODE_BASE = "https://opencode.ai/zen/go/v1"
+    const val LEGACY_OPENCODE_MODEL = "deepseek-v4.1-flash"
+
+    /**
      * 把服务商的报错翻译成"下一步该干什么"。
      *
      * 这一层踩过的坑都是**报错本身看不出病因**的：
