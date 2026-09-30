@@ -60,6 +60,17 @@ object NodeRenderer {
             append("\n\n原文（").append(info.details.size).append(" 条）：")
             info.details.forEach { m -> append("\n").append(speaker(m)).append("：").append(m.content.orEmpty()) }
         }
+        // 图片索引：原文里图片的位置是"（图片）"占位，模型看到占位却不知道是哪张，
+        // 把 id 一起给出，"翻到叶子 → 顺手看图"才走得通
+        if (info.images.isNotEmpty()) {
+            append("\n\n这段记忆里有 ").append(info.images.size).append(" 张图片：")
+            info.images.forEach { img ->
+                append("\n- id=").append(img.id)
+                append(" | 时间=").append(img.ts)
+                if (img.said.isNotBlank()) append(" | 当时说：").append(img.said.take(60))
+            }
+            append("\n（要看哪张就调 show_image(id=…)，它的画面会出现在你下一轮里）")
+        }
     }
 
     fun renderForCompression(node: NodeEntity, details: LeafDetails): String = buildString {

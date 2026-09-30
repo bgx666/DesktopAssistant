@@ -140,6 +140,11 @@ class MemoryStore(
                 profile = profile,
                 futureNotes = details.futureNotes,
                 details = details.messages,
+                // 叶子里的图片索引：模型看到原文里的"（图片）"占位后，
+                // 靠这些 id 就能直接 show_image，不用再单独搜一次
+                images = details.imageRefs.mapIndexed { index, ref ->
+                    NodeImageRef(id = "node:${node.id}:$index", ts = ref.ts, said = ref.said)
+                },
             )
         } else {
             NodeInfo(
@@ -233,6 +238,12 @@ class MemoryStore(
      *
      * 第二条是关键——用户问的往往是"很久以前"的图，那时原消息早被压缩掉了，
      * 只有节点里那份引用还在。
+     *
+     * **关键词匹配用的是节点自己的 `searchText`**（也就是 `search_memory` 用的同一份索引，
+     * 它含"摘要 + 画像 + 叶子里的每条原文"）。这一点很重要：
+     * 用户常常是"先发图、下一句才说那是什么"——
+     * 图片那条消息的正文可能是空的，光比 `ref.said` 就会漏，
+     * 而叶子原文里的字能命中，图就找得回来。
      */
     suspend fun findImages(
         fromMillis: Long?,
@@ -241,13 +252,17 @@ class MemoryStore(
         limit: Int,
     ): List<ImageHit> {
         val hits = mutableListOf<ImageHit>()
-
-        // ① buffer 里的
         val from = fromMillis ?: 0L
         val to = toMillis ?: Long.MAX_VALUE
-        db.messages().withImagesBetween(from, to, limit * 2).forEach { row ->
+        // 与 search_memory 同一套分词：多词是"都要命中"的关系
+        val terms = MemorySearch.terms(query)
+
+        // ① buffer 里的
+        val bufferRows = db.messages().withImagesBetween(from, to, limit * 2)
+        val allRows = if (terms.isEmpty()) emptyList() else db.messages().raw()
+        bufferRows.forEach { row ->
+            if (terms.isNotEmpty() && !bufferAroundMatches(allRows, row.seq, terms)) return@forEach
             val said = if (row.role == "user") row.content else ""
-            if (query.isNotBlank() && !said.contains(query, ignoreCase = true)) return@forEach
             MessageMapping.rawImagesOf(row).forEachIndexed { index, ref ->
                 hits += ImageHit(
                     id = "msg:${row.seq}:$index",
@@ -263,13 +278,17 @@ class MemoryStore(
         db.nodes().allForExport(characterId).forEach { node ->
             val details = MemoryJson.decodeDetails(node.details) ?: return@forEach
             if (details.imageRefs.isEmpty()) return@forEach
+            // 命中判据：节点可检索文本（含叶子原文）命中，或图片自己那句话命中
+            val nodeMatches = terms.isEmpty() || terms.all { term ->
+                node.searchText.contains(term, ignoreCase = true) ||
+                    node.summary.contains(term, ignoreCase = true)
+            }
             details.imageRefs.forEachIndexed { index, ref ->
-                val inRange = inRange(ref.ts, from, to)
-                if (!inRange) return@forEachIndexed
-                if (query.isNotBlank() &&
-                    !ref.said.contains(query, ignoreCase = true) &&
-                    !node.summary.contains(query, ignoreCase = true)
-                ) return@forEachIndexed
+                if (!inRange(ref.ts, from, to)) return@forEachIndexed
+                val hit = nodeMatches || (terms.isNotEmpty() && terms.all { term ->
+                    ref.said.contains(term, ignoreCase = true)
+                })
+                if (!hit) return@forEachIndexed
                 hits += ImageHit(
                     id = "node:${node.id}:$index",
                     ts = ref.ts,
@@ -281,6 +300,26 @@ class MemoryStore(
         }
 
         return hits.sortedByDescending { it.ts }.take(limit)
+    }
+
+    /**
+     * buffer 里的关键词命中判定：**图片那条消息附近**（含自己、往后 2 条）出现关键词就算命中。
+     *
+     * 为什么要看附近：用户最常见的说法是"先发图，下一句才说那是什么"，
+     * 甚至只有图不说话。只看图片那条消息的正文会大量漏掉。
+     * 往后 2 条足够覆盖"图片 + 用户补一句 + 小助应一声"这个常见结构。
+     */
+    private fun bufferAroundMatches(
+        rows: List<MessageEntity>,
+        seq: Long,
+        terms: List<String>,
+    ): Boolean {
+        val index = rows.indexOfFirst { it.seq == seq }
+        if (index < 0) return false
+        val window = rows.subList(index, (index + 3).coerceAtMost(rows.size))
+        return terms.all { term ->
+            window.any { it.content.contains(term, ignoreCase = true) }
+        }
     }
 
     /** 时间范围过滤（节点里存的是 `yyyy-MM-dd HH:mm:ss` 文本）。 */

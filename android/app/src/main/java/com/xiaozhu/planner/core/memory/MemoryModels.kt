@@ -70,6 +70,21 @@ data class NodeInfo(
     val futureNotes: List<String> = emptyList(),
     val details: List<ChatMessage> = emptyList(),
     val children: List<NodeInfo> = emptyList(),
+    /**
+     * 这个节点里的图片（叶子才有）。
+     *
+     * 为什么要带出来：叶子原文里图片的位置是"（图片）"占位——
+     * 模型看到占位却不知道**是哪张**，就没法调 `show_image`。
+     * 把 id 一起给它，"搜记忆 → 翻到叶子 → 顺手看图"才是一条连贯的路。
+     */
+    val images: List<NodeImageRef> = emptyList(),
+)
+
+/** 节点里的一张图（给模型看的索引，含可直接传给 `show_image` 的 id）。 */
+data class NodeImageRef(
+    val id: String,
+    val ts: String,
+    val said: String,
 )
 
 /** 检索命中。 */

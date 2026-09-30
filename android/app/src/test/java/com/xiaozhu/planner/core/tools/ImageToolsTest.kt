@@ -156,6 +156,112 @@ class ImageToolsTest {
         assertTrue(ListImagesTool(store).run(args()).contains("还没有找到任何图片"))
     }
 
+    // ── 关键词要能命中"叶子原文里的字"（这是关键的一条）──────
+
+    @Test
+    fun `先发图、下一句才说那是什么——靠叶子原文也能找到`() = runBlocking {
+        // 场景：图片那条消息**没有文字**，下一句才说"今天天气真好，你看这云"。
+        // 只比"发图时那句话"会漏；叶子原文里的字必须能命中。
+        val ref = ImageStore.put(dataUrl(20))!!
+        store.addLeaf(
+            summary = "一段日常闲聊", // 摘要里故意**不含**"天气"
+            roundRange = 0 to 10,
+            details = LeafDetails(
+                // 叶子原文：图片那条是占位，下一句才是描述
+                messages = listOf(
+                    ChatMessage.user("（图片）"),
+                    ChatMessage.user("今天天气真好，你看这云"),
+                ),
+                imageRefs = listOf(ImageRef(ref = ref, ts = "2026-09-27 14:20:00", said = "")),
+            ),
+            timeRange = "2026-09-27 14:20:00" to "2026-09-27 14:21:00",
+        )
+
+        val result = ListImagesTool(store).run(args("query" to "天气"))
+
+        assertTrue(
+            "摘要里没有、发图时也没说话，但叶子原文里有「天气」——必须能找到：$result",
+            result.contains("找到 1 张图片"),
+        )
+    }
+
+    @Test
+    fun `多词查询是都要命中的关系（与 search_memory 一致）`() = runBlocking {
+        val ref = ImageStore.put(dataUrl(21))!!
+        store.addLeaf(
+            summary = "用户拍了天空，说云很厚",
+            roundRange = 0 to 5,
+            details = LeafDetails(
+                imageRefs = listOf(ImageRef(ref = ref, ts = "2026-09-27 14:20:00", said = "天空")),
+            ),
+            timeRange = "2026-09-27 14:20:00" to "2026-09-27 14:20:00",
+        )
+        val tool = ListImagesTool(store)
+
+        assertTrue("两个词都命中：应该找得到", tool.run(args("query" to "天空 云")).contains("找到 1 张"))
+        assertTrue("有一个词不命中：找不到", tool.run(args("query" to "天空 考试")).contains("没有找到"))
+    }
+
+    @Test
+    fun `buffer 里图片附近那句话也能命中`() = runBlocking {
+        // 图片那条消息没文字，**下一条**才是描述（都还在 buffer 里，没被压缩）
+        insertImageMessage("", ImageStore.put(dataUrl(22))!!, sept27)
+        insertText("今天天气真好，你看这云", sept27 + 60_000)
+
+        val result = ListImagesTool(store).run(args("query" to "天气"))
+
+        assertTrue("图片附近那句描述要能命中它：$result", result.contains("找到 1 张图片"))
+    }
+
+    /** 只插一条纯文字消息（造"图片附近那句描述"用）。 */
+    private suspend fun insertText(content: String, ts: Long) {
+        db.messages().insert(MessageEntity(role = "user", content = content, tsMillis = ts))
+    }
+
+    // ── explore_memory_tree 要带上图片索引 ──────────────────
+
+    @Test
+    fun `展开叶子时给出图片 id，可以直接 show_image`() = runBlocking {
+        val ref = ImageStore.put(dataUrl(24))!!
+        val nodeId = store.addLeaf(
+            summary = "拍了天空",
+            roundRange = 0 to 5,
+            details = LeafDetails(
+                messages = listOf(ChatMessage.user("（图片）")),
+                imageRefs = listOf(ImageRef(ref = ref, ts = "2026-09-27 14:20:00", said = "今天的天空")),
+            ),
+            timeRange = "2026-09-27 14:20:00" to "2026-09-27 14:20:00",
+        )
+
+        val info = store.nodeInfo(nodeId)!!
+        assertEquals("节点信息里要带出图片", 1, info.images.size)
+        assertEquals("node:$nodeId:0", info.images.single().id)
+
+        val rendered = com.xiaozhu.planner.core.memory.NodeRenderer.renderForTool(info)
+        assertTrue("展开结果里要写明有图片：$rendered", rendered.contains("这段记忆里有 1 张图片"))
+        assertTrue("要给出 id", rendered.contains("id=node:$nodeId:0"))
+        assertTrue("要提示下一步怎么调", rendered.contains("show_image"))
+
+        // 拿这个 id 真的能调出来（这条链要闭环）
+        val stash = PendingImageStash()
+        val reply = ShowImageTool(stash) { store.findImageById(it) }
+            .run(args("id" to info.images.single().id))
+        assertTrue("应该调得出来：$reply", reply.contains("已经调出来"))
+        assertEquals(ref, stash.drain().single().first)
+    }
+
+    @Test
+    fun `没有图片的节点不会多出一段噪音`() = runBlocking {
+        val nodeId = store.addLeaf(
+            summary = "纯文字的一段",
+            roundRange = 0 to 5,
+            details = LeafDetails(messages = listOf(ChatMessage.user("只是聊天"))),
+            timeRange = "2026-09-27 14:20:00" to "2026-09-27 14:20:00",
+        )
+        val rendered = com.xiaozhu.planner.core.memory.NodeRenderer.renderForTool(store.nodeInfo(nodeId)!!)
+        assertFalse("没有图就不该提图片：$rendered", rendered.contains("张图片"))
+    }
+
     // ── show_image ──────────────────────────────────────────
 
     @Test
