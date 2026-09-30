@@ -11,6 +11,10 @@
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <!-- 语音输入（系统 SpeechRecognizer）。只录音，识别在本机/系统服务里做 -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- 心跳到点时要跑一轮（联网调模型 + 可能调工具）。用前台服务是因为
+         后台进程随时会被冻住/杀掉，跑到一半断掉还会留下半截 buffer。 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 
     <!-- 语音识别是可选能力：没装语音服务的设备（部分平板/模拟器）也不该被市场过滤掉 -->
     <uses-feature
@@ -37,6 +41,17 @@
         <receiver
             android:name=".reminder.ReminderReceiver"
             android:exported="false" />
+
+        <!-- 心跳到点（不精确闹钟即可；界面活着交给界面，否则起服务跑一轮） -->
+        <receiver
+            android:name=".proactive.HeartbeatReceiver"
+            android:exported="false" />
+
+        <!-- 后台跑一轮心跳：起来 → 想一轮 → 推通知 → 自己停 -->
+        <service
+            android:name=".proactive.HeartbeatService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
 
         <!-- 重启 / 改时间 / 覆盖安装后重排闹钟 + 补提醒 + 重复系列续期 -->
         <receiver

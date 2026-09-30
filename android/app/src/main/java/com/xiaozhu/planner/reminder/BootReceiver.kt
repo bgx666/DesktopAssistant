@@ -6,7 +6,9 @@ import android.content.Intent
 import com.xiaozhu.planner.core.calendar.CalendarDates
 import com.xiaozhu.planner.core.calendar.CalendarStore
 import com.xiaozhu.planner.data.PrefsDndStore
+import com.xiaozhu.planner.data.PrefsHeartbeatStore
 import com.xiaozhu.planner.data.db.PlannerDatabase
+import com.xiaozhu.planner.proactive.HeartbeatScheduler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -36,6 +38,8 @@ class BootReceiver : BroadcastReceiver() {
                 store.extendAllSeries()
                 catchUp(appContext, store, scheduler)
                 scheduler.sync()
+                // 心跳闹钟也要补：时间存在 Prefs 里，重启后 AlarmManager 是空的
+                HeartbeatScheduler(appContext, PrefsHeartbeatStore(appContext)).arm()
             } catch (_: Exception) {
                 // 接不回来也不该崩；下一次启动再试
             } finally {

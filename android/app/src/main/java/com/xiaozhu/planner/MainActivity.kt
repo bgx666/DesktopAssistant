@@ -19,6 +19,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.xiaozhu.planner.proactive.AppPresence
 import com.xiaozhu.planner.reminder.ReminderNotifications
 import com.xiaozhu.planner.ui.calendar.CalendarScreen
 import com.xiaozhu.planner.ui.calendar.CalendarViewModel
@@ -39,6 +40,16 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         ReminderNotifications.ensureChannel(this)
         setContent { PlannerApp() }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        AppPresence.foreground = true
+    }
+
+    override fun onStop() {
+        AppPresence.foreground = false
+        super.onStop()
     }
 }
 

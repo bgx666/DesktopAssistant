@@ -52,12 +52,17 @@ ALLOWED = set(LOCAL_TOOLS) | set(REMOTE_TOOLS)
 
 # 注册表交叉校验用：从 Kotlin 源码里读出**真正注册了的**工具名
 ANDROID_SRC = REPO_ROOT / "android" / "app" / "src" / "main" / "java" / "com" / "xiaozhu" / "planner"
-CHAT_VM = ANDROID_SRC / "ui" / "chat" / "ChatViewModel.kt"
 TOOLS_DIR = ANDROID_SRC / "core" / "tools"
+# 注册表在引擎里（`ConversationEngine`）——后台心跳也要跑同一套工具，所以它不能长在 UI 层。
+# 兼容旧的 ChatViewModel 位置，免得改回去时脚本静默失效。
+REGISTRY_FILES = [
+    ANDROID_SRC / "core" / "agent" / "ConversationEngine.kt",
+    ANDROID_SRC / "ui" / "chat" / "ChatViewModel.kt",
+]
 
 
 def _registered_tool_names() -> set[str]:
-    """ChatViewModel 里 ToolRegistry(listOf(...)) 的每个类 → 它声明的 name。
+    """注册表里的每个类 → 它声明的 name。
 
     做法是笨但可靠的文本解析：先按括号配对取出注册块，再到 core/tools/*.kt 里
     逐类找 `override val name = "..."`。这样"prompt 说有、代码里没有"和
@@ -66,10 +71,13 @@ def _registered_tool_names() -> set[str]:
     为什么不用正则一把梭：`class X(private val f: () -> Unit)` 这种嵌套括号会让
     `[^)]*` 提前收尾，之前就是这么漏掉 DndTool 的。
     """
-    if not CHAT_VM.exists():
-        return set()
-    vm = CHAT_VM.read_text(encoding="utf-8")
-    block = _balanced_block(vm, "ToolRegistry(", "listOf(")
+    block = None
+    for path in REGISTRY_FILES:
+        if not path.exists():
+            continue
+        block = _balanced_block(path.read_text(encoding="utf-8"), "ToolRegistry(", "listOf(")
+        if block is not None:
+            break
     if block is None:
         return set()
     classes = set(re.findall(r"\b([A-Z]\w*Tool)\(", block))
@@ -168,7 +176,9 @@ def main() -> int:
 
     if not registered:
         ok = False
-        print(f"[FAIL] 没能从 {CHAT_VM.relative_to(REPO_ROOT)} 读出注册的工具（解析失败？）")
+        print("[FAIL] 没能从注册表源码读出注册的工具（解析失败？）：")
+        for path in REGISTRY_FILES:
+            print(f"        - {path.relative_to(REPO_ROOT)}")
     else:
         if not_registered:
             ok = False

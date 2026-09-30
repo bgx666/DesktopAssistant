@@ -51,13 +51,22 @@ object ReminderNotifications {
      * 弹一条提醒。[lines] 是"「内容」（原定 …）"形式的描述。
      *
      * 同一次触发里的多项合成一条通知：手机上连弹五条比一条都没有更烦。
+     *
+     * [title] 为 null 时按条数自动生成（提醒的语义）；心跳回复这类
+     * "它自己说的话"由调用方给标题。
      */
-    fun post(context: Context, id: Int, lines: List<String>, late: Boolean = false) {
+    fun post(
+        context: Context,
+        id: Int,
+        lines: List<String>,
+        late: Boolean = false,
+        title: String? = null,
+    ) {
         if (lines.isEmpty()) return
         ensureChannel(context)
         if (!canPost(context)) return
 
-        val title = when {
+        val heading = title ?: when {
             late -> "有安排到点了（刚才在免打扰）"
             lines.size == 1 -> "该做这件事了"
             else -> "${lines.size} 件事到点了"

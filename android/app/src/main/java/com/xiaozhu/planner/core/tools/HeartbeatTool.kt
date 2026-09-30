@@ -3,6 +3,7 @@ package com.xiaozhu.planner.core.tools
 import com.xiaozhu.planner.core.agent.Tool
 import com.xiaozhu.planner.core.agent.double
 import com.xiaozhu.planner.core.agent.str
+import com.xiaozhu.planner.core.calendar.CalendarDates
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.add
@@ -13,10 +14,21 @@ import kotlinx.serialization.json.putJsonObject
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 
-/** 下一次「主动醒来」落在哪 —— 由 P2 的 AlarmManager 真正唤醒，这里只负责记下来。 */
+/** 下一次「主动醒来」落在哪 —— 由 AlarmManager 真正唤醒（见 `proactive/HeartbeatScheduler`）。 */
 interface HeartbeatStore {
     fun setNextWake(atMillis: Long, note: String)
     fun current(): Pair<Long, String>?
+}
+
+/**
+ * 「把下次醒来真的排上闹钟」——工具层只依赖这个接口，实现是 AlarmManager。
+ *
+ * 为什么不让工具直接存时间就完事：PC 版的心跳由后端调度线程唤醒，安卓上没有那个线程，
+ * 不排闹钟的话"心跳"就只是一个数字，永远等不到那一次醒来。
+ */
+interface HeartbeatPlanner {
+    /** 按已存的醒来时间排闹钟（幂等：同一时刻重复排等于覆盖）。 */
+    fun arm()
 }
 
 /**
@@ -26,6 +38,7 @@ interface HeartbeatStore {
  */
 class HeartbeatTool(
     private val store: HeartbeatStore,
+    private val planner: HeartbeatPlanner? = null,
     private val now: () -> ZonedDateTime = { ZonedDateTime.now() },
 ) : Tool {
 
@@ -56,14 +69,10 @@ class HeartbeatTool(
         }
         val at = now().plusSeconds((delayMinutes * 60).toLong())
         store.setNextWake(at.toInstant().toEpochMilli(), note)
+        // 真的排上闹钟：只存时间不排闹钟的话，这次"醒来"永远不会发生
+        planner?.arm()
 
-        val human = if (delayMinutes < 1) {
-            "${(delayMinutes * 60).toInt()} 秒"
-        } else if (delayMinutes < 60) {
-            "${delayMinutes.toInt()} 分钟"
-        } else {
-            "%.1f 小时".format(delayMinutes / 60.0)
-        }
+        val human = CalendarDates.fmtDuration(delayMinutes)
         val clock = at.format(DateTimeFormatter.ofPattern("HH:mm"))
         return "好，${human}后（$clock）我再来" + if (note.isBlank()) "。" else "，记着：$note。"
     }
