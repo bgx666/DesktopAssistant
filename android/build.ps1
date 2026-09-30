@@ -29,7 +29,9 @@ if (-not (Test-Path $gradlew)) {
     throw "gradlew.bat not found. Run 'gradle wrapper --gradle-version 8.9' in android/ first (gradle: D:\Android\gradle-8.9\bin\gradle.bat)."
 }
 
-& $gradlew $Task
+# --no-daemon is deliberate: an interrupted CLI build leaves a stale "busy" daemon in
+# GRADLE_USER_HOME/daemon, and the next run then hangs trying to start a new one.
+& $gradlew $Task --no-daemon
 if ($LASTEXITCODE -ne 0) { throw "gradle $Task failed (exit $LASTEXITCODE)" }
 
 if ($Install) {
