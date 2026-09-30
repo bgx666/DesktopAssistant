@@ -181,6 +181,80 @@ class MemoryStore(
 
     // ── buffer ──────────────────────────────────────────────
 
+    /**
+     * 找以前发过的图片（`list_images` 工具用）。
+     *
+     * 检索两条线，合并后按时间倒序：
+     * 1. **buffer 里还留着的图**（`messages.images` 非空）
+     * 2. **已经压进记忆树的图**（节点的 `details.image_refs`）
+     *
+     * 第二条是关键——用户问的往往是"很久以前"的图，那时原消息早被压缩掉了，
+     * 只有节点里那份引用还在。
+     */
+    suspend fun findImages(
+        fromMillis: Long?,
+        toMillis: Long?,
+        query: String,
+        limit: Int,
+    ): List<ImageHit> {
+        val hits = mutableListOf<ImageHit>()
+
+        // ① buffer 里的
+        val from = fromMillis ?: 0L
+        val to = toMillis ?: Long.MAX_VALUE
+        db.messages().withImagesBetween(from, to, limit * 2).forEach { row ->
+            val said = if (row.role == "user") row.content else ""
+            if (query.isNotBlank() && !said.contains(query, ignoreCase = true)) return@forEach
+            MessageMapping.rawImagesOf(row).forEachIndexed { index, ref ->
+                hits += ImageHit(
+                    id = "msg:${row.seq}:$index",
+                    ts = tsText(row.tsMillis),
+                    said = said,
+                    nodeSummary = "",
+                    ref = ref,
+                )
+            }
+        }
+
+        // ② 记忆树节点里的
+        db.nodes().allForExport(characterId).forEach { node ->
+            val details = MemoryJson.decodeDetails(node.details) ?: return@forEach
+            if (details.imageRefs.isEmpty()) return@forEach
+            details.imageRefs.forEachIndexed { index, ref ->
+                val inRange = inRange(ref.ts, from, to)
+                if (!inRange) return@forEachIndexed
+                if (query.isNotBlank() &&
+                    !ref.said.contains(query, ignoreCase = true) &&
+                    !node.summary.contains(query, ignoreCase = true)
+                ) return@forEachIndexed
+                hits += ImageHit(
+                    id = "node:${node.id}:$index",
+                    ts = ref.ts,
+                    said = ref.said,
+                    nodeSummary = node.summary,
+                    ref = ref.ref,
+                )
+            }
+        }
+
+        return hits.sortedByDescending { it.ts }.take(limit)
+    }
+
+    /** 时间范围过滤（节点里存的是 `yyyy-MM-dd HH:mm:ss` 文本）。 */
+    private fun inRange(ts: String, from: Long, to: Long): Boolean {
+        if (from <= 0L && to == Long.MAX_VALUE) return true
+        val millis = runCatching {
+            java.time.LocalDateTime.parse(ts.replace(' ', 'T'))
+                .atZone(java.time.ZoneId.of("Asia/Shanghai")).toInstant().toEpochMilli()
+        }.getOrNull() ?: return true
+        return millis in from..to
+    }
+
+    private fun tsText(millis: Long): String =
+        java.time.Instant.ofEpochMilli(millis).atZone(java.time.ZoneId.of("Asia/Shanghai"))
+            .format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"))
+
+
     suspend fun appendMessage(
         role: String,
         content: String,

@@ -3,6 +3,7 @@ package com.xiaozhu.planner.core.agent
 import com.xiaozhu.planner.core.calendar.CalendarStore
 import com.xiaozhu.planner.core.calendar.DndStore
 import com.xiaozhu.planner.core.calendar.ReminderPlanner
+import com.xiaozhu.planner.core.memory.ImageHit
 import com.xiaozhu.planner.core.memory.MemoryStore
 import com.xiaozhu.planner.core.tools.AddScheduleTool
 import com.xiaozhu.planner.core.tools.CancelScheduleTool
@@ -11,8 +12,11 @@ import com.xiaozhu.planner.core.tools.ExploreMemoryTreeTool
 import com.xiaozhu.planner.core.tools.HeartbeatPlanner
 import com.xiaozhu.planner.core.tools.HeartbeatStore
 import com.xiaozhu.planner.core.tools.HeartbeatTool
+import com.xiaozhu.planner.core.tools.ListImagesTool
 import com.xiaozhu.planner.core.tools.ListScheduleTool
+import com.xiaozhu.planner.core.tools.PendingImageStash
 import com.xiaozhu.planner.core.tools.SearchMemoryTool
+import com.xiaozhu.planner.core.tools.ShowImageTool
 import com.xiaozhu.planner.core.tools.SetDoNotDisturbTool
 import com.xiaozhu.planner.core.tools.UpdateScheduleTool
 import com.xiaozhu.planner.core.tools.WebFetchTool
@@ -41,6 +45,8 @@ object ToolRegistryFactory {
         heartbeatPlanner: HeartbeatPlanner? = null,
         dndStore: DndStore,
         pacing: SpeechPacing = SpeechPacing(),
+        /** `show_image` 的暂存槽（引擎与 AgentLoop 共用同一个实例）。 */
+        pendingImages: PendingImageStash = PendingImageStash(),
     ): ToolRegistry = ToolRegistry(
         listOf(
             WebSearchTool(),
@@ -49,6 +55,9 @@ object ToolRegistryFactory {
             ContinueSpeakingTool(pacing),
             ExploreMemoryTreeTool(store),
             SearchMemoryTool(store),
+            // 图片寻回：先列信息，再决定看哪张（每张图至少 384 token，不能瞎塞）
+            ListImagesTool(store),
+            ShowImageTool(pendingImages) { id -> lookupImage(store, id) },
             ListScheduleTool(calendar),
             AddScheduleTool(calendar, reminderPlanner),
             UpdateScheduleTool(calendar, reminderPlanner),
@@ -56,4 +65,9 @@ object ToolRegistryFactory {
             SetDoNotDisturbTool(dndStore),
         )
     )
+
+    /** 按 `list_images` 给出的 id 找那一张图（id 形如 `msg:42:0` 或 `node:node1_003:1`）。 */
+    private suspend fun lookupImage(store: MemoryStore, id: String): ImageHit? =
+        store.findImages(fromMillis = null, toMillis = null, query = "", limit = 200)
+            .firstOrNull { it.id == id }
 }

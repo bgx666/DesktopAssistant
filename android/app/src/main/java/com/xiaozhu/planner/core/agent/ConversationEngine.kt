@@ -87,6 +87,9 @@ class ConversationEngine private constructor(private val app: Application) {
     /** `continue_speaking` 的说话节奏（跨轮沿用，跟 PC 版的 session 状态对齐）。 */
     val pacing = SpeechPacing()
 
+    /** `show_image` 调出来的旧图暂存在这里，AgentLoop 每次模型调用前取走注入。 */
+    val pendingImages = com.xiaozhu.planner.core.tools.PendingImageStash()
+
     /** 工具清单在 [ToolRegistryFactory] 里（那边能被测试直接复用，不必搭起整个引擎）。 */
     val registry = ToolRegistryFactory.create(
         store = store,
@@ -96,6 +99,7 @@ class ConversationEngine private constructor(private val app: Application) {
         heartbeatPlanner = heartbeat,
         dndStore = PrefsDndStore(app),
         pacing = pacing,
+        pendingImages = pendingImages,
     )
 
     /**
@@ -163,7 +167,7 @@ class ConversationEngine private constructor(private val app: Application) {
             val before = history.size
             runCatching { conversation.persist(listOf(message), System.currentTimeMillis()) }
 
-            val loop = AgentLoop(llmClient(), registry, pacing = pacing)
+            val loop = AgentLoop(llmClient(), registry, pacing = pacing, pendingImages = pendingImages)
             try {
                 // 直接把 history 交给 loop：它会把 assistant(tool_calls) 与 tool 结果成对追加进去，
                 // 下一轮就带着这些上下文再问模型（传副本会让上下文断在这里）

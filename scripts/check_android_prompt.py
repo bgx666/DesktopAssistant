@@ -21,6 +21,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 PROMPT_PATH = REPO_ROOT / "android" / "app" / "src" / "main" / "assets" / "prompts" / "system.md"
 
 # A 类：手机上常驻（不依赖电脑）。PC 版 13 个里的 10 个 + 安卓新增的 search_memory
+# 与图片寻回的 list_images / show_image
 LOCAL_TOOLS = [
     "add_schedule",
     "list_schedule",
@@ -31,6 +32,8 @@ LOCAL_TOOLS = [
     "set_do_not_disturb",
     "explore_memory_tree",
     "search_memory",
+    "list_images",
+    "show_image",
     "web_search",
     "fetch_web",
 ]
@@ -49,6 +52,18 @@ PC_ONLY_BANNED = [
 ]
 
 ALLOWED = set(LOCAL_TOOLS) | set(REMOTE_TOOLS)
+
+# 参数名（不是工具名）。
+#
+# 为什么需要这份名单：下面的启发式是"反引号里含下划线 ⇒ 像工具名"，而 prompt 里
+# 会**故意**用反引号写参数名（`start_date`、`item_id`…）好让模型知道该传什么。
+# 不加这份名单，写参数文档就会被误判成"prompt 提到了不存在的工具"。
+PARAM_NAMES = {
+    "date", "start_date", "end_date", "query", "limit", "id", "item_id", "node_id",
+    "time", "content", "kind", "repeat", "detail", "status", "whole_series",
+    "minutes", "seconds", "note", "enabled", "until_hour",
+    "path", "start", "max_chars", "url", "text", "voice", "engine",
+}
 
 # 注册表交叉校验用：从 Kotlin 源码里读出**真正注册了的**工具名
 ANDROID_SRC = REPO_ROOT / "android" / "app" / "src" / "main" / "java" / "com" / "xiaozhu" / "planner"
@@ -143,9 +158,12 @@ def main() -> int:
 
     text = PROMPT_PATH.read_text(encoding="utf-8")
 
-    # 只挑"看起来像工具名"的反引号片段：在允许清单里，或含下划线
+    # 只挑"看起来像工具名"的反引号片段：在允许清单里，或含下划线（但参数名不算）
     backticked = set(re.findall(r"`([a-z][a-z0-9_]{2,})`", text))
-    tool_like = {name for name in backticked if name in ALLOWED or "_" in name}
+    tool_like = {
+        name for name in backticked
+        if (name in ALLOWED or "_" in name) and name not in PARAM_NAMES
+    }
 
     unknown = sorted(tool_like - ALLOWED)
     missing_local = sorted(set(LOCAL_TOOLS) - backticked)

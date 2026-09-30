@@ -89,9 +89,13 @@ class LiveRegistryTest {
     fun tearDown() = db.close()
 
     @Test
-    fun `11 个真实工具 schema 全部合法（本地体检，不联网）`() {
+    fun `13 个真实工具 schema 全部合法（本地体检，不联网）`() {
         val specs = registry.specs()
-        assertEquals("工具数量变了要一起看 prompt 的 A 类清单", 11, specs.size)
+        assertEquals(
+            "工具数量变了要一起看 prompt 的 A 类清单与 scripts/check_android_prompt.py",
+            13,
+            specs.size,
+        )
         val problems = ToolSchemaCheck.problems(specs)
         assertTrue(
             "schema 不合法会被网关拒掉整个请求：\n" + problems.joinToString("\n"),
