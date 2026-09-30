@@ -7,6 +7,7 @@ import com.xiaozhu.planner.core.agent.AgentEvent
 import com.xiaozhu.planner.core.agent.ConversationEngine
 import com.xiaozhu.planner.core.agent.ProactivePrompts
 import com.xiaozhu.planner.core.calendar.CalendarDates
+import com.xiaozhu.planner.core.file.DocumentReader
 import com.xiaozhu.planner.core.image.ImagePreparer
 import com.xiaozhu.planner.core.llm.ChatMessage
 import com.xiaozhu.planner.core.llm.VisionSupport
@@ -242,6 +243,57 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * 选一个本地文档当附件。
+     *
+     * 三种归宿（见 [DocumentReader]）：纯文本/docx 读成正文拼进消息、
+     * PDF 渲染成图交给视觉模型、读不了的只报名字并说明。
+     * 正文先放在"待发"里（用户可以看一眼再发），发送时并进消息文本。
+     */
+    fun attachDocument(uri: android.net.Uri, displayName: String?) {
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching { DocumentReader.read(getApplication(), uri, displayName) }.getOrNull()
+            }
+            when (result) {
+                null -> showHint("读这个文件失败。")
+                is DocumentReader.Result.Unsupported -> showHint(result.reason)
+                is DocumentReader.Result.Text -> _state.update {
+                    it.copy(
+                        pendingText = DocumentReader.renderText(result),
+                        hint = null,
+                    )
+                }
+                is DocumentReader.Result.Images -> {
+                    val model = engine.settings.model
+                    if (!VisionSupport.isVisionCapable(model)) {
+                        // PDF 只能走"看图"这条路，模型看不了图就没法读
+                        showHint("PDF 是渲染成图片读的，而${VisionSupport.unsupportedHint(model)}")
+                        return@launch
+                    }
+                    _state.update {
+                        val room = ImagePreparer.MAX_IMAGES - it.pendingImages.size
+                        if (room <= 0) {
+                            it.copy(hint = "一次最多带 ${ImagePreparer.MAX_IMAGES} 张图。")
+                        } else {
+                            it.copy(
+                                pendingImages = it.pendingImages + result.dataUrls.take(room),
+                                pendingDocName = result.name,
+                                hint = null,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /** 把待发的附件正文并进消息（发送时调用）。 */
+    private fun mergePendingText(body: String): String {
+        val attachment = _state.value.pendingText ?: return body
+        return if (body.isBlank()) attachment else "$body\n\n$attachment"
+    }
+
     /** 输入框已经把恢复内容取走了，清掉这个一次性标记。 */
     fun consumeRestoreDraft() {
         _state.update { it.copy(restoreDraft = null) }
@@ -250,9 +302,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     // ── 对话 ────────────────────────────────────────────────
 
     fun send(text: String) {
-        val body = text.trim()
+        val body = mergePendingText(text.trim())
         val images = _state.value.pendingImages
-        // 只有图、没有字也可以发（"看看这张"这种）
+        // 只有图/只有附件、没有字也可以发（"看看这张""读一下这个"这种）
         if (body.isEmpty() && images.isEmpty()) return
         speaker.stop()
         val message = if (images.isEmpty()) {
@@ -260,7 +312,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         } else {
             ChatMessage.userWithImages(body, images)
         }
-        submit(message, UiMessageKind.User, body, images)
+        // 界面气泡里不重复贴整篇附件正文（那会把界面刷屏），只显示用户自己打的字
+        submit(message, UiMessageKind.User, text.trim().ifBlank { "（附件）" }, images)
     }
 
     fun speak(text: String) = speaker.speak(text)
@@ -347,8 +400,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 hint = null,
                 memoryNotice = null,
                 restoreDraft = null,
-                // 图已经随这条消息发出去了，待发区清空（与 PC 版发完 clearMounted 同义）
+                // 图与附件正文已经随这条消息发出去了，待发区清空（同 PC 的 clearMounted）
                 pendingImages = emptyList(),
+                pendingText = null,
+                pendingDocName = null,
             )
         }
 
@@ -599,8 +654,14 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             }
 
             is AgentEvent.Done -> patch(currentAssistantId) {
-                val final = it.text.ifBlank { "（这轮没有输出）" }
-                speaker.speak(final)
+                // 只调了工具、没有说话：留空（界面据此不画气泡，只留工具卡片）。
+                // 一个字都没有、也没有工具时才给个占位，免得用户觉得它没理人。
+                val final = when {
+                    it.text.isNotBlank() -> it.text
+                    it.tools.isNotEmpty() -> ""
+                    else -> "（这轮没有输出）"
+                }
+                if (final.isNotBlank()) speaker.speak(final)
                 it.copy(text = final, time = nowHHmm())
             }
 

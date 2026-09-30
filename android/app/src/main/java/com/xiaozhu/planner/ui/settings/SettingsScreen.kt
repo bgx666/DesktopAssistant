@@ -77,8 +77,7 @@ fun SettingsScreen(
                 .padding(16.dp)
                 .verticalScroll(rememberScrollState()),
         ) {
-            Text("模型服务", style = MaterialTheme.typography.titleMedium)
-            // 把"现在到底在用哪个端点"摆出来：只显示输入框的话，用户看不出默认值是否生效
+            Text("模型服务", style = MaterialTheme.typography.titleMedium)            // 把"现在到底在用哪个端点"摆出来：只显示输入框的话，用户看不出默认值是否生效
             Text(
                 "当前在用：${store.baseUrl}　模型 ${store.model}" +
                     if (store.usingDefaultEndpoint()) "（默认）" else "（你改过）",
@@ -265,6 +264,83 @@ fun SettingsScreen(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 8.dp),
             )
+
+            // ── 记忆压缩（与 PC 版同名同范围同交叉约束）──────────
+            HorizontalDivider(modifier = Modifier.padding(vertical = 16.dp))
+            Text("记忆压缩", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "对话攒到一定条数，最早的会被总结成一个记忆节点，逐层向上合并成记忆树。" +
+                    "四个参数和电脑上那套一样；改完立即生效，不用重启。",
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(top = 4.dp, bottom = 8.dp),
+            )
+
+            var triggerText by remember { mutableStateOf(store.compressTrigger.toString()) }
+            var keepText by remember { mutableStateOf(store.compressKeep.toString()) }
+            var thresholdText by remember { mutableStateOf(store.compactThreshold.toString()) }
+            var factorText by remember { mutableStateOf(store.compactFactor.toString()) }
+
+            NumberField(
+                label = "触发条数（原始消息到这么多条就压缩）",
+                hint = "20–500，默认 60",
+                value = triggerText,
+                onValue = { triggerText = it },
+            )
+            NumberField(
+                label = "保留条数（最近这么多条永远留在上下文）",
+                hint = "5–200，默认 20，必须小于触发条数",
+                value = keepText,
+                onValue = { keepText = it },
+            )
+            NumberField(
+                label = "合并阈值（某层节点到这么多就往上并）",
+                hint = "3–50，默认 8",
+                value = thresholdText,
+                onValue = { thresholdText = it },
+            )
+            NumberField(
+                label = "合并个数（每次并几个节点）",
+                hint = "2–10，默认 4，必须小于合并阈值",
+                value = factorText,
+                onValue = { factorText = it },
+            )
+
+            // 参数不合法就说清楚（PC 版是在示意图上画一行红字，同样不拦保存）
+            store.compressionProblem()?.let {
+                Text(
+                    "参数不合法：$it",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+            }
+
+            Row(modifier = Modifier.padding(top = 6.dp)) {
+                Button(
+                    onClick = {
+                        store.compressTrigger = triggerText.toIntOrNull() ?: store.compressTrigger
+                        store.compressKeep = keepText.toIntOrNull() ?: store.compressKeep
+                        store.compactThreshold = thresholdText.toIntOrNull() ?: store.compactThreshold
+                        store.compactFactor = factorText.toIntOrNull() ?: store.compactFactor
+                        // 夹紧之后再回显，用户能看到实际存下来的值
+                        triggerText = store.compressTrigger.toString()
+                        keepText = store.compressKeep.toString()
+                        thresholdText = store.compactThreshold.toString()
+                        factorText = store.compactFactor.toString()
+                        saved = true
+                    },
+                ) { Text("保存压缩参数") }
+                TextButton(
+                    onClick = {
+                        store.compressTrigger = 60
+                        store.compressKeep = 20
+                        store.compactThreshold = 8
+                        store.compactFactor = 4
+                        triggerText = "60"; keepText = "20"; thresholdText = "8"; factorText = "4"
+                    },
+                    modifier = Modifier.padding(start = 8.dp),
+                ) { Text("恢复默认") }
+            }
 
             // ── 提醒权限 ────────────────────────────────────────
             HorizontalDivider(modifier = Modifier.padding(vertical = 16.dp))
@@ -499,4 +575,26 @@ private fun PermissionRow(label: String, granted: Boolean, onOpen: () -> Unit) {
         Text(label, modifier = Modifier.weight(1f).padding(start = 8.dp))
         TextButton(onClick = onOpen, enabled = !granted) { Text("去设置") }
     }
+}
+
+/** 数字输入框（压缩参数用）：数字小键盘 + 标签 + 范围提示。 */
+@Composable
+private fun NumberField(
+    label: String,
+    hint: String,
+    value: String,
+    onValue: (String) -> Unit,
+) {
+    OutlinedTextField(
+        value = value,
+        // 只收数字（范围由 SettingsStore 夹紧，这里挡住明显非法的输入）
+        onValueChange = { raw -> onValue(raw.filter { it.isDigit() }.take(3)) },
+        label = { Text(label, style = MaterialTheme.typography.bodySmall) },
+        supportingText = { Text(hint, style = MaterialTheme.typography.labelMedium) },
+        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+            keyboardType = androidx.compose.ui.text.input.KeyboardType.Number,
+        ),
+        singleLine = true,
+        modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+    )
 }

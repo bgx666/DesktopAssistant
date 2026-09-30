@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -131,6 +132,11 @@ fun ChatScreen(
         if (ok && uri != null) vm.attachImage(uri) else if (!ok) vm.showHint("没有拍照。")
     }
 
+    // 本地文档：SAF 打开（拿到的是可读 URI，不需要存储权限）
+    val document = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri -> if (uri != null) vm.attachDocument(uri, displayNameOf(context, uri)) }
+
     LaunchedEffect(state.messages.size, state.messages.lastOrNull()?.text) {
         if (state.messages.isNotEmpty()) listState.scrollToItem(state.messages.lastIndex)
     }
@@ -241,6 +247,7 @@ fun ChatScreen(
                     listening = listening,
                     streaming = state.streaming,
                     pendingImages = state.pendingImages,
+                    pendingDocName = state.pendingDocName,
                     onMic = {
                         if (listening) {
                             voice.stop()
@@ -273,6 +280,19 @@ fun ChatScreen(
                         }
                     },
                     onRemoveImage = { vm.removePendingImage(it) },
+                    onPickDocument = {
+                        // SAF：任何能提供文档的 App 都行（文件管理器、网盘、下载…），
+                        // 不需要存储权限
+                        document.launch(arrayOf(
+                            "text/*",
+                            "application/pdf",
+                            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            "application/json",
+                            "application/octet-stream",
+                        ))
+                    },
                     onSend = { vm.send(draft); draft = "" },
                     onStop = { vm.stop() },
                 )
@@ -310,14 +330,15 @@ fun ChatScreen(
     }
 }
 
-/** PC 版标题栏的状态行：记忆概览 + token 估算 + 心跳倒计时。 */
-private fun statusLine(state: ChatUiState): String = buildString {
-    append(memoryLine(state.memory))
-    if (state.contextTokens > 0) {
-        append(" · 约 ").append(state.contextTokens).append(" token")
-    }
-    state.heartbeatLabel?.let { append(" · ").append(it) }
-}
+/**
+ * 标题栏那一行：**只显示当前上下文大概多少 token**。
+ *
+ * 之前这里还堆了"记忆 N 个节点 · 对话 M 条"和心跳倒计时——信息多但并不都需要
+ * 一直看着，而 token 数才是"它还记得多少"的直接指标（也直接关系到花钱）。
+ * 记忆概览移到设置页与记忆浏览页；心跳倒计时留在需要它的地方（日历页签的逾期角标照旧）。
+ */
+private fun statusLine(state: ChatUiState): String =
+    if (state.contextTokens > 0) "上下文约 ${state.contextTokens} token" else "还没有上下文"
 
 @Composable
 private fun EmptyState(onOpenImport: () -> Unit) {    Column(
@@ -467,9 +488,11 @@ private fun InputBar(
     listening: Boolean,
     streaming: Boolean,
     pendingImages: List<String>,
+    pendingDocName: String?,
     onMic: () -> Unit,
     onPickImage: () -> Unit,
     onTakePhoto: () -> Unit,
+    onPickDocument: () -> Unit,
     onRemoveImage: (Int) -> Unit,
     onSend: () -> Unit,
     onStop: () -> Unit,
@@ -477,6 +500,17 @@ private fun InputBar(
     var attachMenu by remember { mutableStateOf(false) }
 
     Column(modifier = Modifier.fillMaxWidth()) {
+        // 已附加的文档（正文在发送时并进消息，这里只报个名字）
+        pendingDocName?.let {
+            Text(
+                "已附加：$it",
+                style = MaterialTheme.typography.labelMedium,
+                color = PlannerColors.Primary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(bottom = 4.dp),
+            )
+        }
         // 已选待发的图（发送后清空，与 PC 版"发完清除挂载"同义）
         if (pendingImages.isNotEmpty()) {
             PendingImageStrip(pendingImages, onRemove = onRemoveImage)
@@ -521,14 +555,30 @@ private fun InputBar(
                         text = { Text("从相册选") },
                         onClick = { attachMenu = false; onPickImage() },
                     )
+                    DropdownMenuItem(
+                        text = { Text("本地文档（txt / docx / pdf…）") },
+                        onClick = { attachMenu = false; onPickDocument() },
+                    )
                 }
             }
 
             OutlinedTextField(
                 value = draft,
                 onValueChange = onDraft,
-                modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
-                placeholder = { Text(if (listening) "在听…" else "告诉小助你要做什么…") },
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(horizontal = 8.dp)
+                    // 固定最小高度：提示文字长短不该影响输入框大小
+                    // （之前那句"告诉小助你要做什么…"会折成两行，把空输入框撑高）
+                    .heightIn(min = 52.dp),
+                placeholder = {
+                    Text(
+                        if (listening) "在听…" else "说点什么…",
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                },
                 maxLines = 4,
                 shape = RoundedCornerShape(12.dp),
             )
@@ -546,6 +596,20 @@ private fun InputBar(
         }
     }
 }
+
+/**
+ * 从 SAF 的 URI 里问出显示名（"论文终稿.pdf"这种）。
+ *
+ * 取不到就退回路径末段——显示名只用于界面提示与附件标题，
+ * 取不到不该让整个选择失败。
+ */
+private fun displayNameOf(context: android.content.Context, uri: android.net.Uri): String? =
+    runCatching {
+        context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+            val index = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+            if (index >= 0 && cursor.moveToFirst()) cursor.getString(index) else null
+        }
+    }.getOrNull() ?: uri.lastPathSegment?.substringAfterLast('/')
 
 /**
  * 拍照输出用的临时文件 URI（走 FileProvider）。
@@ -613,7 +677,7 @@ private fun MessageRow(
         UiMessageKind.User -> UserRow(msg, onUndo)
         // 流式期间用纯文本（PC 版也是 `textContent +=`，等整段收束才渲染 markdown），
         // 否则半截的 `**加粗` 会把星号直接显示出来
-        UiMessageKind.Assistant -> AssistantRow(msg, onSpeak, plain = streaming)
+        UiMessageKind.Assistant -> AssistantRow(msg, onSpeak, plain = streaming, streaming = streaming)
     }
 }
 
@@ -689,7 +753,12 @@ private fun UserRow(msg: UiMessage, onUndo: () -> Unit) {
 
 /** 小助消息：头像 + 浅色气泡 + 工具卡片 + 朗读（PC 版气泡右侧一个圆形喇叭）。 */
 @Composable
-private fun AssistantRow(msg: UiMessage, onSpeak: (String) -> Unit, plain: Boolean) {
+private fun AssistantRow(msg: UiMessage, onSpeak: (String) -> Unit, plain: Boolean, streaming: Boolean) {
+    // 只调了工具、没有说话：**不画空气泡**，只留工具卡片（PC 版就是这样）。
+    // 之前会留一个"…"或空白气泡，看起来像它说了句空话。
+    val hasText = msg.text.isNotBlank()
+    if (!hasText && !streaming && msg.tools.isEmpty()) return
+
     Column(modifier = Modifier.fillMaxWidth()) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             AssistantAvatar()
@@ -698,42 +767,45 @@ private fun AssistantRow(msg: UiMessage, onSpeak: (String) -> Unit, plain: Boole
         }
         Spacer(Modifier.height(4.dp))
         // 气泡与喇叭横排、底部对齐（PC 版 .msg-body）
-        Row(verticalAlignment = Alignment.Bottom) {
-            Box(
-                modifier = Modifier
-                    .weight(1f, fill = false)
-                    .clip(RoundedCornerShape(14.dp, 14.dp, 14.dp, 5.dp))
-                    .background(if (msg.failed) Color(0xFFFFECEF) else PlannerColors.Surface)
-                    .border(1.dp, Color(0x22000000), RoundedCornerShape(14.dp, 14.dp, 14.dp, 5.dp))
-                    .padding(horizontal = 13.dp, vertical = 9.dp),
-            ) {
-                when {
-                    msg.text.isBlank() && msg.tools.isEmpty() -> Text(
-                        "…",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = PlannerColors.TextSoft,
-                    )
-                    plain || msg.failed -> Text(
-                        msg.text,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = if (msg.failed) PlannerColors.Danger else PlannerColors.Text,
-                    )
-                    else -> Text(
-                        markdownText(msg.text),
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
-                }
-            }
-            if (msg.text.isNotBlank() && !msg.failed) {
-                Spacer(Modifier.width(3.dp))
+        if (hasText || streaming) {
+            Row(verticalAlignment = Alignment.Bottom) {
                 Box(
                     modifier = Modifier
-                        .size(22.dp)
-                        .clip(CircleShape)
-                        .clickable { onSpeak(msg.text) },
-                    contentAlignment = Alignment.Center,
+                        .weight(1f, fill = false)
+                        .clip(RoundedCornerShape(14.dp, 14.dp, 14.dp, 5.dp))
+                        .background(if (msg.failed) Color(0xFFFFECEF) else PlannerColors.Surface)
+                        .border(1.dp, Color(0x22000000), RoundedCornerShape(14.dp, 14.dp, 14.dp, 5.dp))
+                        .padding(horizontal = 13.dp, vertical = 9.dp),
                 ) {
-                    Text("🔊", style = MaterialTheme.typography.labelMedium)
+                    when {
+                        // 还没吐字、也没有卡片：这一轮刚开始，先占个位
+                        !hasText -> Text(
+                            "…",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = PlannerColors.TextSoft,
+                        )
+                        plain || msg.failed -> Text(
+                            msg.text,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = if (msg.failed) PlannerColors.Danger else PlannerColors.Text,
+                        )
+                        else -> Text(
+                            markdownText(msg.text),
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                    }
+                }
+                if (hasText && !msg.failed) {
+                    Spacer(Modifier.width(3.dp))
+                    Box(
+                        modifier = Modifier
+                            .size(22.dp)
+                            .clip(CircleShape)
+                            .clickable { onSpeak(msg.text) },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text("🔊", style = MaterialTheme.typography.labelMedium)
+                    }
                 }
             }
         }
@@ -840,6 +912,7 @@ private fun BannerText(text: String, color: Color) {
 }
 
 /** 顶栏副标题：让"它记得多少"一眼可见（用户以为记忆丢了，就是因为这里什么都不显示）。 */
+/** 记忆概览文案（设置页 / 记忆浏览页用；标题栏只显示 token）。 */
 private fun memoryLine(stats: MemoryStats): String = when {
     stats.totalNodes == 0 && stats.rawMessages == 0 -> "还没有记忆"
     stats.totalNodes == 0 -> "对话 ${stats.rawMessages} 条"

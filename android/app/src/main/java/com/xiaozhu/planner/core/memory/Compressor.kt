@@ -8,13 +8,26 @@ import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
-/** 压缩参数（与 PC 版默认值一致，可后续放进设置页）。 */
+/** 压缩参数（默认值与 PC 版一致；设置页可改，改完立即生效）。 */
 data class CompressionSettings(
     val trigger: Int = 60,
     val keep: Int = 20,
     val compactThreshold: Int = 8,
     val compactFactor: Int = 4,
-)
+) {
+    /**
+     * 参数不合法就返回原因（PC 版同款判据）。
+     *
+     * 不合法时**不拦保存**——PC 就是在示意图上画一行红字，参数照存；
+     * 这里保持同样的宽容度，只是把话说清楚。
+     */
+    fun problem(): String? = when {
+        keep >= trigger -> "保留条数（$keep）得小于触发条数（$trigger），否则永远压不动。"
+        compactFactor >= compactThreshold ->
+            "合并个数（$compactFactor）得小于合并阈值（$compactThreshold），否则每层一合并就立刻再合并。"
+        else -> null
+    }
+}
 
 sealed interface CompressionOutcome {
     data object Skipped : CompressionOutcome

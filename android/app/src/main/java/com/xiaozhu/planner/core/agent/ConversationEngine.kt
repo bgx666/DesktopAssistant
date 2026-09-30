@@ -273,6 +273,9 @@ class ConversationEngine private constructor(private val app: Application) {
             store = store,
             llm = llmClient(),
             systemPrompt = systemPromptText(),
+            // 参数每次现读：设置页改完立即生效，不用重启（PC 也是每轮从 settings 读）
+            settings = runCatching { settings.compressionSettings() }
+                .getOrElse { com.xiaozhu.planner.core.memory.CompressionSettings() },
         )
         val outcomes = compressor.compressIfNeeded()
         lastCompression = outcomes

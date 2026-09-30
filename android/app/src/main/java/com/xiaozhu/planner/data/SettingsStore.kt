@@ -60,6 +60,49 @@ class SettingsStore(context: Context) {
 
     val configured: Boolean get() = apiKey.isNotBlank()
 
+    // ── 记忆压缩参数（与 PC 版同名同范围同交叉约束）─────────────
+    //
+    // PC 的设置页（settings.html）四个框：
+    //   compress_trigger  20–500，默认 60   原始消息到这个条数就把最早的压成一个叶子
+    //   compress_keep      5–200，默认 20   最近这么多条永远留在上下文里
+    //   compact_threshold  3–50， 默认 8    某层活跃节点到这个数就往上合并
+    //   compact_factor     2–10， 默认 4    每次合并几个节点
+    // 交叉约束（PC 里参数不合法是**画红字**而不是禁用保存）：
+    //   保留条数 < 触发条数、合并个数 < 合并阈值
+
+    var compressTrigger: Int
+        get() = prefs.getInt(KEY_COMPRESS_TRIGGER, 60).coerceIn(20, 500)
+        set(v) = prefs.edit().putInt(KEY_COMPRESS_TRIGGER, v.coerceIn(20, 500)).apply()
+
+    var compressKeep: Int
+        get() = prefs.getInt(KEY_COMPRESS_KEEP, 20).coerceIn(5, 200)
+        set(v) = prefs.edit().putInt(KEY_COMPRESS_KEEP, v.coerceIn(5, 200)).apply()
+
+    var compactThreshold: Int
+        get() = prefs.getInt(KEY_COMPACT_THRESHOLD, 8).coerceIn(3, 50)
+        set(v) = prefs.edit().putInt(KEY_COMPACT_THRESHOLD, v.coerceIn(3, 50)).apply()
+
+    var compactFactor: Int
+        get() = prefs.getInt(KEY_COMPACT_FACTOR, 4).coerceIn(2, 10)
+        set(v) = prefs.edit().putInt(KEY_COMPACT_FACTOR, v.coerceIn(2, 10)).apply()
+
+    /** 当前压缩参数（引擎每轮读一次，改完立即生效）。 */
+    fun compressionSettings() = com.xiaozhu.planner.core.memory.CompressionSettings(
+        trigger = compressTrigger,
+        keep = compressKeep,
+        compactThreshold = compactThreshold,
+        compactFactor = compactFactor,
+    )
+
+    /** 参数不合法时给出原因（PC 版同款文案与判据）。 */
+    fun compressionProblem(): String? = com.xiaozhu.planner.core.memory.CompressionSettings(
+        trigger = compressTrigger,
+        keep = compressKeep,
+        compactThreshold = compactThreshold,
+        compactFactor = compactFactor,
+    ).problem()
+
+
     /**
      * 恢复成出厂默认端点（设置页的按钮）。
      *
@@ -163,6 +206,10 @@ class SettingsStore(context: Context) {
         private const val KEY_MODEL = "llm_model"
         private const val KEY_OC_SESSION = "opencode_session"
         private const val KEY_ENDPOINT_MIGRATED = "endpoint_migrated_v1"
+        private const val KEY_COMPRESS_TRIGGER = "compress_trigger"
+        private const val KEY_COMPRESS_KEEP = "compress_keep"
+        private const val KEY_COMPACT_THRESHOLD = "compact_threshold"
+        private const val KEY_COMPACT_FACTOR = "compact_factor"
         private const val KEY_TTS_ENABLED = "tts_enabled"
         private const val KEY_TTS_ENGINE = "tts_engine"
         private const val KEY_TTS_VOICE = "tts_voice"

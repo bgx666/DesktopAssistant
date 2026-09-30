@@ -14,10 +14,11 @@ android {
         applicationId = "com.xiaozhu.planner"
         minSdk = 26
         targetSdk = 35
-        versionCode = 12
-        // 0.4.0：图片输入（拍照 / 相册）。带图时 content 按 OpenAI 协议发成块数组；
-        // 图片常驻 buffer、每轮重发；压缩时换成"（图片）"占位。
-        versionName = "0.4.0"
+        versionCode = 13
+        // 0.4.1：本地文档附件（txt/docx 读正文、pdf 渲染成图、读不了的直说）；
+        // 只调工具不说话的空气泡不再显示；输入框提示不再撑高；标题栏只留 token；
+        // 记忆压缩四个参数进设置页。
+        versionName = "0.4.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 

@@ -81,6 +81,12 @@ data class ChatUiState(
      */
     val pendingImages: List<String> = emptyList(),
 
+    /** 待发的附件正文（纯文本/docx 读出来的，发送时并进消息文本）。 */
+    val pendingText: String? = null,
+
+    /** 待发附件的显示名（界面提示"已附加：xxx"）。 */
+    val pendingDocName: String? = null,
+
     /** 逾期未完成的数量（PC 版"日历"页签上的角标）。 */
     val overdueCount: Int = 0,
 
