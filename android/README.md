@@ -68,6 +68,27 @@ python scripts\export_to_android.py `
 第一次装 App 选「清空后导入」；已经在手机上聊过一阵子就选「追加」。
 `--no-details` 能大幅减小体积，但**叶子原文就没了**（只剩摘要），导入时会明确提醒这一点。
 
+模拟器或数据线都行，先把文件推上去：
+
+```powershell
+& "D:\Android\sdk\platform-tools\adb.exe" push D:\Android\logs\planner-export.json /sdcard/Download/
+```
+
+### 用真实数据验一遍导入（不需要设备）
+
+`RealExportImportTest` 拿**真实导出文件**跑完整导入，断言一条记忆都不丢：每个叶子的原文、
+画像四维度、活跃标记（被合并的节点不进上下文）、父子链接、重复系列 id、buffer 的角色与工具配对。
+文件不在就自动跳过（仓库里不放私人对话），想验就：
+
+```powershell
+python scripts\export_to_android.py --memory-tree ...\memory_tree.db --calendar ...\planner.db `
+    --out D:\Android\logs\planner-export.json
+$env:PLANNER_ANDROID_EXPORT = "D:\Android\logs\planner-export.json"
+cd android; powershell -File build.ps1 -Task test
+```
+
+导出端形状若变化，`scripts\check_export_contract.py` 会在电脑上就报出来，不用等导完才发现。
+
 ## 目录结构
 
 ```
