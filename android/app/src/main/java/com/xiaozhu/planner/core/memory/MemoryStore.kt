@@ -182,6 +182,49 @@ class MemoryStore(
     // ── buffer ──────────────────────────────────────────────
 
     /**
+     * 按 id 精确取一张图（`show_image` 用）。
+     *
+     * id 形如 `msg:<seq>:<index>`（buffer 里那条消息的第几张）
+     * 或 `node:<nodeId>:<index>`（某个记忆节点里的第几张）。
+     *
+     * **不走全表扫描**：图片多了以后"扫前 200 条再匹配"会漏（用户有 300 张图时，
+     * 第 250 张的 id 就永远找不到）。这里直接按 id 里的坐标去读那一行/那个节点。
+     */
+    suspend fun findImageById(id: String): ImageHit? {
+        val parts = id.split(":")
+        if (parts.size < 3) return null
+        val index = parts.last().toIntOrNull() ?: return null
+
+        return when (parts[0]) {
+            "msg" -> {
+                val seq = parts[1].toLongOrNull() ?: return null
+                val row = db.messages().all().firstOrNull { it.seq == seq } ?: return null
+                val ref = MessageMapping.rawImagesOf(row).getOrNull(index) ?: return null
+                ImageHit(
+                    id = id,
+                    ts = tsText(row.tsMillis),
+                    said = if (row.role == "user") row.content else "",
+                    ref = ref,
+                )
+            }
+            "node" -> {
+                val nodeId = parts[1]
+                val node = db.nodes().byId(characterId, nodeId) ?: return null
+                val details = MemoryJson.decodeDetails(node.details) ?: return null
+                val ref = details.imageRefs.getOrNull(index) ?: return null
+                ImageHit(
+                    id = id,
+                    ts = ref.ts,
+                    said = ref.said,
+                    nodeSummary = node.summary,
+                    ref = ref.ref,
+                )
+            }
+            else -> null
+        }
+    }
+
+    /**
      * 找以前发过的图片（`list_images` 工具用）。
      *
      * 检索两条线，合并后按时间倒序：

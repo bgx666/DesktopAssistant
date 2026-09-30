@@ -66,8 +66,12 @@ object ToolRegistryFactory {
         )
     )
 
-    /** 按 `list_images` 给出的 id 找那一张图（id 形如 `msg:42:0` 或 `node:node1_003:1`）。 */
+    /**
+     * 按 `list_images` 给出的 id 找那一张图（id 形如 `msg:42:0` 或 `node:node1_003:1`）。
+     *
+     * 走 [MemoryStore.findImageById] 精确取，**不做全表扫描**：
+     * 图片多了以后"扫前 N 条再匹配"会漏掉靠后的那些。
+     */
     private suspend fun lookupImage(store: MemoryStore, id: String): ImageHit? =
-        store.findImages(fromMillis = null, toMillis = null, query = "", limit = 200)
-            .firstOrNull { it.id == id }
+        store.findImageById(id)
 }

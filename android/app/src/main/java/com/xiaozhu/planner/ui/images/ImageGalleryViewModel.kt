@@ -48,7 +48,7 @@ data class GalleryUiState(
     /** 只看失效的。 */
     val onlyMissing: Boolean = false,
     /** 建议上限（设置页与这里共用，超过就提醒，但**不自动删**）。 */
-    val capBytes: Long = 500L * 1024 * 1024,
+    val capBytes: Long = com.xiaozhu.planner.data.SettingsStore.DEFAULT_IMAGE_CAP,
 ) {
     val selectedBytes: Long get() = items.filter { it.id in selected }.sumOf { it.bytes }
     val overCap: Boolean get() = totalBytes > capBytes

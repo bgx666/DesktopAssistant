@@ -10,6 +10,8 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -17,6 +19,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -608,27 +611,57 @@ private fun PermissionRow(label: String, granted: Boolean, onOpen: () -> Unit) {
  */
 @Composable
 private fun ImageStorageRow(onOpenImages: () -> Unit) {
+    // LocalContext.current 不能在 remember 的 lambda 里取（那是非 @Composable 上下文）
+    val ctx = LocalContext.current
+    val store = remember { SettingsStore(ctx.applicationContext) }
     var stats by remember { mutableStateOf(com.xiaozhu.planner.core.image.ImageStore.stats()) }
+    var cap by remember { mutableStateOf(store.imageCapBytes) }
     LaunchedEffect(Unit) {
         stats = withContext(Dispatchers.IO) { com.xiaozhu.planner.core.image.ImageStore.stats() }
     }
     val (count, bytes) = stats
-    val cap = 500L * 1024 * 1024
-    val over = bytes > cap
+    val over = cap > 0 && bytes > cap
 
     Text(
-        "共 $count 张 · ${formatBytes(bytes)} / 建议上限 ${formatBytes(cap)}",
+        "共 $count 张 · ${formatBytes(bytes)}" +
+            if (cap > 0) " / 建议上限 ${formatBytes(cap)}" else "（不限制）",
         style = MaterialTheme.typography.bodyMedium,
         color = if (over) PlannerColors.Danger else MaterialTheme.colorScheme.onSurface,
         modifier = Modifier.padding(top = 4.dp),
     )
     Text(
         "图片存在手机里（不是数据库），发过的图会一直留着，方便以后问起时它能找回来。" +
-            if (over) "**已经超过建议上限了**——去图片页筛出旧图，先导出再删。" else "",
+            if (over) "已经超过建议上限了——去图片页筛出旧图，先导出再删。" else "",
         style = MaterialTheme.typography.bodySmall,
         modifier = Modifier.padding(top = 2.dp),
     )
-    TextButton(onClick = onOpenImages, modifier = Modifier.padding(top = 4.dp)) {
+
+    // 上限可选，但**只影响提示**，永远不自动删（用户明确要求）
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState())
+            .padding(top = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        listOf(
+            200L * 1024 * 1024 to "200 MB",
+            500L * 1024 * 1024 to "500 MB",
+            1024L * 1024 * 1024 to "1 GB",
+            0L to "不限制",
+        ).forEach { (value, label) ->
+            FilterChip(
+                selected = cap == value,
+                onClick = {
+                    store.imageCapBytes = value
+                    cap = value
+                },
+                label = { Text(label) },
+            )
+        }
+    }
+
+    TextButton(onClick = onOpenImages, modifier = Modifier.padding(top = 2.dp)) {
         Text(if (over) "去清理图片" else "查看图片")
     }
 }

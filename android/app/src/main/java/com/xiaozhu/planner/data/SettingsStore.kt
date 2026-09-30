@@ -86,6 +86,16 @@ class SettingsStore(context: Context) {
         get() = prefs.getInt(KEY_COMPACT_FACTOR, 4).coerceIn(2, 10)
         set(v) = prefs.edit().putInt(KEY_COMPACT_FACTOR, v.coerceIn(2, 10)).apply()
 
+    /**
+     * 图片占用的**建议上限**（字节）。0 = 不限制。
+     *
+     * 到上限**只提示、不自动删**（用户明确要求）：图片是用户的东西，
+     * 删不删由他在图片页决定。默认 500 MB，约 1500–3000 张 1568px 的图。
+     */
+    var imageCapBytes: Long
+        get() = prefs.getLong(KEY_IMAGE_CAP, DEFAULT_IMAGE_CAP)
+        set(v) = prefs.edit().putLong(KEY_IMAGE_CAP, v.coerceAtLeast(0)).apply()
+
     /** 当前压缩参数（引擎每轮读一次，改完立即生效）。 */
     fun compressionSettings() = com.xiaozhu.planner.core.memory.CompressionSettings(
         trigger = compressTrigger,
@@ -210,6 +220,10 @@ class SettingsStore(context: Context) {
         private const val KEY_COMPRESS_KEEP = "compress_keep"
         private const val KEY_COMPACT_THRESHOLD = "compact_threshold"
         private const val KEY_COMPACT_FACTOR = "compact_factor"
+        private const val KEY_IMAGE_CAP = "image_cap_bytes"
+
+        /** 图片占用的默认建议上限：500 MB。 */
+        const val DEFAULT_IMAGE_CAP = 500L * 1024 * 1024
         private const val KEY_TTS_ENABLED = "tts_enabled"
         private const val KEY_TTS_ENGINE = "tts_engine"
         private const val KEY_TTS_VOICE = "tts_voice"
