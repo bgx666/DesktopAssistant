@@ -107,24 +107,28 @@ fun ChatScreen(
         ActivityResultContracts.PickVisualMedia()
     ) { uri -> if (uri != null) vm.attachImage(uri) }
 
-    // 拍照：拍完写进我们给的临时文件，从那里读全分辨率原图
-    var photoUri by remember { mutableStateOf<android.net.Uri?>(null) }
+    // 拍照：拍完写进我们给的临时文件，从那里读全分辨率原图。
+    // 用自定义契约：既授写权限给相机，又把相机回传的缩略图一起收下——
+    // 部分 ROM 的相机会忽略 EXTRA_OUTPUT 只回缩略图（见 CapturePhoto 的注释）。
+    var cameraContract by remember { mutableStateOf<CapturePhoto?>(null) }
     val camera = rememberLauncherForActivityResult(
-        // 用自定义契约：必须把写权限授给相机 App，否则它写不进文件（见该类的注释）
-        TakePictureWithPermission()
-    ) { ok ->
-        val uri = photoUri
-        photoUri = null
-        if (ok && uri != null) vm.attachImage(uri) else if (!ok) vm.showHint("没有拍照。")
-    }
+        contract = cameraContract ?: CapturePhoto(android.net.Uri.EMPTY)
+    ) { result -> vm.attachCapture(result) }
 
     // 相机权限：先申请再启动（部分 ROM 的相机 App 会检查调用方是否持有 CAMERA，
     // 没有就直接拒绝——这是"点了拍照没反应/拍完读不出来"的另一条路径）
     val cameraPermission = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
-        if (granted) launchCamera(context) { photoUri = it; camera.launch(it) }
-        else vm.showHint("没有相机权限，拍不了照。可以先用「从相册选」，或在系统设置里给相机权限。")
+        if (granted) {
+            launchCamera(context) { uri, contract ->
+                vm.captureUri = uri
+                cameraContract = contract
+                camera.launch(Unit)
+            }
+        } else {
+            vm.showHint("没有相机权限，拍不了照。可以先用「从相册选」，或在系统设置里给相机权限。")
+        }
     }
 
     // 本地文档：SAF 打开（拿到的是可读 URI，不需要存储权限）
@@ -256,7 +260,11 @@ fun ChatScreen(
                                 context, Manifest.permission.CAMERA
                             ) == PackageManager.PERMISSION_GRANTED
                         ) {
-                            launchCamera(context) { photoUri = it; camera.launch(it) }
+                            launchCamera(context) { uri, contract ->
+                                vm.captureUri = uri
+                                cameraContract = contract
+                                camera.launch(Unit)
+                            }
                         } else {
                             cameraPermission.launch(Manifest.permission.CAMERA)
                         }
@@ -676,16 +684,19 @@ private fun AttachRow(
 }
 
 /**
- * 启动相机：先建好临时文件 URI，再交给相机 App 写。
+ * 启动相机：先建好临时文件 URI，再把它交给相机（契约里同时带上这个 URI）。
  *
  * 建不出 URI（FileProvider 配错、cache 满了）时给一句人话，而不是静默什么都不发生。
  */
-private fun launchCamera(context: android.content.Context, onReady: (android.net.Uri) -> Unit) {
+private fun launchCamera(
+    context: android.content.Context,
+    onReady: (android.net.Uri, CapturePhoto) -> Unit,
+) {
     val uri = runCatching { newPhotoUri(context) }.getOrNull()
     if (uri == null) {
         android.widget.Toast.makeText(context, "没法创建拍照用的临时文件", android.widget.Toast.LENGTH_SHORT).show()
     } else {
-        onReady(uri)
+        onReady(uri, CapturePhoto(uri))
     }
 }
 

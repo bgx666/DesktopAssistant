@@ -14,10 +14,10 @@ android {
         applicationId = "com.xiaozhu.planner"
         minSdk = 26
         targetSdk = 35
-        versionCode = 17
-        // 0.5.1：气泡文字可长按选中复制（SelectionContainer，与 PC 的 user-select
-        // 同一套范围），并给每条消息加了「复制整条」。
-        versionName = "0.5.1"
+        versionCode = 18
+        // 0.5.2：拍照改用自定义契约 CapturePhoto —— 既授写权限给相机，又收下相机回传的
+        // 缩略图（部分 ROM 忽略 EXTRA_OUTPUT 只回缩略图，那种情况下原来只能报"读不出来"）。
+        versionName = "0.5.2"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 

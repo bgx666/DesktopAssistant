@@ -144,4 +144,17 @@ object ImagePreparer {
         val bytes = Base64.decode(base64, Base64.DEFAULT)
         BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
     }.getOrNull()
+
+    /**
+     * 位图 → data URL（相机只回传缩略图时走这条路）。
+     *
+     * 缩略图本来就只有一两百像素，不需要再缩；直接编码即可。
+     */
+    fun fromBitmap(bitmap: Bitmap): String? = runCatching {
+        val bytes = ByteArrayOutputStream().use { out ->
+            bitmap.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, out)
+            out.toByteArray()
+        }
+        "data:image/jpeg;base64," + Base64.encodeToString(bytes, Base64.NO_WRAP)
+    }.getOrNull()
 }

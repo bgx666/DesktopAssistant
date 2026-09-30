@@ -71,6 +71,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     /** 这一轮开始前库里的原文条数（判断落盘成没成，不看文本）。 */
     private var rawCountBeforeRound: Int? = null
 
+    /** 本次拍照的输出文件（读原图用；相机可能压根没写它）。 */
+    var captureUri: android.net.Uri? = null
+
     private val _state = MutableStateFlow(ChatUiState())
     val state: StateFlow<ChatUiState> = _state.asStateFlow()
 
@@ -207,6 +210,67 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     // ── 图片输入（拍照 / 相册）─────────────────────────────
 
     /**
+     * 拍照回来的图：**先按原图读，读不到就用相机回传的缩略图**。
+     *
+     * 为什么要这个兜底：不少国内 ROM 的相机 App 会忽略 `EXTRA_OUTPUT`，
+     * 只回一张缩略图。那种情况下我们给的文件是 0 字节——如果只认文件，
+     * 用户拍完就只能看到一句"读不出来"，白拍一次。
+     */
+    fun attachCapture(result: CaptureResult) {
+        if (!result.ok) {
+            showHint("没有拍照。")
+            return
+        }
+        viewModelScope.launch {
+            val (dataUrl, usedThumbnail) = withContext(Dispatchers.IO) {
+                val fromFile = captureUri?.let { uri ->
+                    runCatching { ImagePreparer.toDataUrl(getApplication(), uri) }.getOrNull()
+                }
+                when {
+                    fromFile != null -> fromFile to false
+                    result.thumbnail != null ->
+                        ImagePreparer.fromBitmap(result.thumbnail) to true
+                    result.thumbnailUri != null ->
+                        runCatching {
+                            ImagePreparer.toDataUrl(getApplication(), result.thumbnailUri)
+                        }.getOrNull() to true
+                    else -> null to false
+                }
+            }
+            captureUri = null
+
+            if (dataUrl == null) {
+                val reason = withContext(Dispatchers.IO) {
+                    captureUri?.let {
+                        runCatching { ImagePreparer.diagnose(getApplication(), it) }.getOrNull()
+                    }
+                } ?: "这台手机的相机没有把照片交给我们（既没写文件也没回缩略图）。" +
+                    "换用「从相册选」可以绕过它。"
+                showHint(reason)
+                return@launch
+            }
+
+            if (usedThumbnail) {
+                // 缩略图很小，拍文档会糊——必须说清楚，否则用户以为是自己拍的问题
+                showHint("这台手机的相机只回传了缩略图（原图没写进来），画面会比较糊。" +
+                    "要看清楚字建议用「从相册选」，或换个相机 App。")
+            }
+            addImage(dataUrl)
+        }
+    }
+
+    /** 把一张 data URL 放进待发区（含数量上限检查）。 */
+    private fun addImage(dataUrl: String) {
+        _state.update {
+            if (it.pendingImages.size >= ImagePreparer.MAX_IMAGES) {
+                it.copy(hint = "一次最多带 ${ImagePreparer.MAX_IMAGES} 张图。")
+            } else {
+                it.copy(pendingImages = it.pendingImages + dataUrl, hint = null)
+            }
+        }
+    }
+
+    /**
      * 把一张图放进"待发送"区（已经缩小摆正过）。
      *
      * 模型看不了图时**直接拦下并说清楚**——发出去只会得到一句看不懂的 400。
@@ -231,13 +295,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 showHint(reason)
                 return@launch
             }
-            _state.update {
-                if (it.pendingImages.size >= ImagePreparer.MAX_IMAGES) {
-                    it.copy(hint = "一次最多带 ${ImagePreparer.MAX_IMAGES} 张图。")
-                } else {
-                    it.copy(pendingImages = it.pendingImages + dataUrl, hint = null)
-                }
-            }
+            addImage(dataUrl)
         }
     }
 
