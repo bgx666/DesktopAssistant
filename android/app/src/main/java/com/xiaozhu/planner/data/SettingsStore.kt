@@ -61,6 +61,23 @@ class SettingsStore(context: Context) {
     val configured: Boolean get() = apiKey.isNotBlank()
 
     /**
+     * 恢复成出厂默认端点（设置页的按钮）。
+     *
+     * 与自动迁移分开：迁移只在"保存值正好等于上一版默认"时悄悄生效，
+     * 而这个是用户明确要求"就用默认的那套"，任何值都能一键还原。
+     */
+    fun resetEndpointToDefaults() {
+        prefs.edit().remove(KEY_BASE).remove(KEY_MODEL).apply()
+    }
+
+    /** 当前端点是不是就是默认值（设置页据此提示"你改过"）。 */
+    fun usingDefaultEndpoint(): Boolean {
+        val savedBase = prefs.getString(KEY_BASE, "").orEmpty().trim()
+        val savedModel = prefs.getString(KEY_MODEL, "").orEmpty().trim()
+        return savedBase.isEmpty() && savedModel.isEmpty()
+    }
+
+    /**
      * 一次性迁移：把"沿用的旧默认端点"换成新默认。
      *
      * 为什么需要它：保存过的值优先于默认值，所以只改 `DEFAULT_*` 对**已经装过**的

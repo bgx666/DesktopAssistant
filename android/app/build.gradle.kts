@@ -14,11 +14,12 @@ android {
         applicationId = "com.xiaozhu.planner"
         minSdk = 26
         targetSdk = 35
-        versionCode = 7
-        // 0.3.1：把 PC 版前端与后端**逐条审计**后的差异补齐——历史里的系统注入消息不再
-        // 当用户气泡显示、工具卡片两态可展开、朗读改圆形图标、记忆卡片走 markdown、
-        // 流式期间不渲染 markdown、心跳兜底 30 分钟。
-        versionName = "0.3.1"
+        versionCode = 8
+        // 0.3.2：端点切到 DeepSeek 官方（deepseek-flash）并**自动迁移**旧默认值；
+        // 设置页可以直接看到当前用的是哪个端点、也能一键恢复默认。
+        // 教训：0.3.1 期间我连着重打了七八个包却没递增 versionCode，
+        // 结果"你装的是哪一版"连我自己都分不清——以后每次重打都必须递增。
+        versionName = "0.3.2"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 

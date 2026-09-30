@@ -78,11 +78,26 @@ fun SettingsScreen(
                 .verticalScroll(rememberScrollState()),
         ) {
             Text("模型服务", style = MaterialTheme.typography.titleMedium)
+            // 把"现在到底在用哪个端点"摆出来：只显示输入框的话，用户看不出默认值是否生效
+            Text(
+                "当前在用：${store.baseUrl}　模型 ${store.model}" +
+                    if (store.usingDefaultEndpoint()) "（默认）" else "（你改过）",
+                style = MaterialTheme.typography.bodySmall,
+                color = if (store.usingDefaultEndpoint()) PlannerColors.TextSoft else PlannerColors.Primary,
+                modifier = Modifier.padding(top = 4.dp),
+            )
             Text(
                 "密钥用 Android 的加密存储保存，只留在本机，不上传。",
                 style = MaterialTheme.typography.bodySmall,
-                modifier = Modifier.padding(top = 4.dp, bottom = 12.dp),
+                modifier = Modifier.padding(top = 4.dp, bottom = 4.dp),
             )
+            // 一键还原：不用去猜"默认到底填什么"
+            TextButton(onClick = {
+                store.resetEndpointToDefaults()
+                baseUrl = store.baseUrl
+                model = store.model
+                saved = true
+            }) { Text("恢复默认端点（DeepSeek 官方 + deepseek-flash）") }
 
             OutlinedTextField(
                 value = apiKey,
