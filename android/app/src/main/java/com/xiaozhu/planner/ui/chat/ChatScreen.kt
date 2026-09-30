@@ -9,6 +9,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -60,7 +61,10 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalTextToolbar
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -177,7 +181,9 @@ fun ChatScreen(
     }
 
     Scaffold(
-        containerColor = PlannerColors.Background,        topBar = {
+        containerColor = PlannerColors.Background,
+        // 点空白处收起粘贴/复制那个悬浮条（否则它会一直挂着）
+        modifier = dismissTextToolsOnOutsideTap(),        topBar = {
             TopAppBar(
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = PlannerColors.Background,
@@ -741,6 +747,30 @@ private fun AttachRow(
                 color = PlannerColors.TextSoft,
             )
         }
+    }
+}
+
+/**
+ * 点空白处就把文字工具条收掉（粘贴/复制/全选那个悬浮条）。
+ *
+ * 为什么必须自己收：Compose 的输入框与 `SelectionContainer` 在**失焦或选区清空**时才会
+ * 收起工具条，而"点一下别处"既不会让输入框失焦、也不会清掉选区——于是那个悬浮菜单
+ * 会一直挂在屏幕上，看着像卡住了（用户报的就是这个）。
+ *
+ * 放在**父级**上：子级可点击控件会先消费掉点击，所以点按钮/气泡不会误触发这里；
+ * 只有点到真正的空白处才会走到。
+ */
+@Composable
+private fun dismissTextToolsOnOutsideTap(): Modifier {
+    val focusManager = LocalFocusManager.current
+    val textToolbar = LocalTextToolbar.current
+    return Modifier.pointerInput(Unit) {
+        detectTapGestures(
+            onTap = {
+                focusManager.clearFocus(force = true)
+                textToolbar.hide()
+            },
+        )
     }
 }
 

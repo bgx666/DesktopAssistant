@@ -6,12 +6,14 @@ import android.os.Build
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -44,8 +46,7 @@ import com.xiaozhu.planner.ui.theme.PlannerColors
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SettingsScreen(
-    onBack: () -> Unit,
+fun SettingsScreen(    onBack: () -> Unit,
     incomingFile: android.net.Uri? = null,
     onFileConsumed: () -> Unit = {},
 ) {
@@ -62,8 +63,21 @@ fun SettingsScreen(
     var ocSession by remember { mutableStateOf(store.openCodeSession) }
     var showKey by remember { mutableStateOf(false) }
     var saved by remember { mutableStateOf(false) }
+    // 收起文字工具条要用（点空白处调一次）
+    val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
+    val textToolbar = androidx.compose.ui.platform.LocalTextToolbar.current
 
     Scaffold(
+        // 点空白处收起粘贴/复制那个悬浮条（设置页也有好几个输入框）
+        modifier = Modifier.pointerInput(Unit) {
+            // detectTapGestures 是 PointerInputScope 的扩展，必须直接调（不能写全限定名）
+            detectTapGestures(
+                onTap = {
+                    focusManager.clearFocus(force = true)
+                    textToolbar.hide()
+                },
+            )
+        },
         topBar = {
             TopAppBar(
                 title = { Text("设置") },

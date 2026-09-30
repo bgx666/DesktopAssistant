@@ -14,10 +14,10 @@ android {
         applicationId = "com.xiaozhu.planner"
         minSdk = 26
         targetSdk = 35
-        versionCode = 19
-        // 0.5.3：启动图标换成小助那个球（含自适应图标）；按钮去 emoji 改文字/自绘图标；
-        // 用户消息不再有复制按钮；已附加的文档可以移除；相机权限被永久拒绝时给说明与去设置。
-        versionName = "0.5.3"
+        versionCode = 20
+        // 0.5.4：点空白处收起文字工具条（粘贴/复制那个悬浮菜单原来会一直挂着）。
+        // 版本号规矩（用户要求）：**只涨最低位**，别再动不动跳 0.6 / 0.7。
+        versionName = "0.5.4"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
