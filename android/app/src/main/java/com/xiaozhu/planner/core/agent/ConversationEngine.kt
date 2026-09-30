@@ -56,6 +56,9 @@ class ConversationEngine private constructor(private val app: Application) {
     /** 心跳闹钟（模型调 heartbeat 时由工具排上，见 HeartbeatPlanner）。 */
     val heartbeat = HeartbeatScheduler(app, PrefsHeartbeatStore(app))
 
+    /** 下次醒来时留的备注（标题栏倒计时要带上它，与 PC 版一致）。 */
+    fun heartbeatNote(): String = PrefsHeartbeatStore(app).current()?.second.orEmpty()
+
     /** `continue_speaking` 的说话节奏（跨轮沿用，跟 PC 版的 session 状态对齐）。 */
     val pacing = SpeechPacing()
 

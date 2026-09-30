@@ -35,6 +35,18 @@ class HeartbeatScheduler(
         armAt(at)
     }
 
+    /**
+     * 没排过心跳时兜底排一个（PC 版 `DEFAULT_WAKE_MINUTES = 30`）。
+     *
+     * 为什么必须有：模型完全可能一整轮都不调 `heartbeat`（prompt 明确说"纯问答不用设"）。
+     * 没有兜底的话，它就**再也不会主动醒**——"主动找你"这件事从此消失，
+     * 而用户看到的只是"它变被动了"，很难联想到是心跳没排上。
+     */
+    fun armWithFallback(minutes: Long = FALLBACK_MINUTES) {
+        if (remainingMillis() != null) return
+        armAt(System.currentTimeMillis() + minutes * 60_000)
+    }
+
     fun armAt(atMillis: Long) {
         val manager = alarmManager ?: return
         if (atMillis <= System.currentTimeMillis()) return
@@ -66,6 +78,9 @@ class HeartbeatScheduler(
 
     companion object {
         private const val HEARTBEAT_REQUEST = 0x7A11
+
+        /** 兜底唤醒间隔（与 PC 版 `DEFAULT_WAKE_MINUTES` 一致）。 */
+        const val FALLBACK_MINUTES = 30L
 
         /** 醒来时刻的人类可读形式（写进提示里让模型知道现在几点）。 */
         fun stamp(atMillis: Long): String =

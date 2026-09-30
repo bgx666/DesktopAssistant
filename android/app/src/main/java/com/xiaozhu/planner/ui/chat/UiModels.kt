@@ -37,10 +37,16 @@ data class UiMessage(
     val fromUser: Boolean get() = kind == UiMessageKind.User
 }
 
+/** 工具调用卡片的数据。 */
 data class UiTool(
     val name: String,
     val args: String,
     val result: String? = null,
+    /**
+     * 是不是"正在执行"的那张卡（PC 版实时卡片转圈 + 「正在执行 X」，历史重放的直接是完成态）。
+     * 历史里的卡片没有结果文本（结果在后面的 tool 消息里），所以不能靠 result 判断。
+     */
+    val live: Boolean = false,
 )
 
 data class ChatUiState(
@@ -56,6 +62,15 @@ data class ChatUiState(
     val restoreDraft: String? = null,
     /** 历史是否已经载入界面（决定要不要显示"正在读取…"）。 */
     val historyLoaded: Boolean = false,
+    /**
+     * 上下文 token 估算（PC 版标题栏那一行）。
+     * 算法照抄 PC：`chars × 1.2`，超过 60000 变红。
+     */
+    val contextTokens: Int = 0,
+    /** 下次主动醒来的倒计时文案（PC 版标题栏第二行）。 */
+    val heartbeatLabel: String? = null,
+    /** 逾期未完成的数量（PC 版"日历"页签上的角标）。 */
+    val overdueCount: Int = 0,
 )
 
 /** 记忆浏览页的概览数据。 */

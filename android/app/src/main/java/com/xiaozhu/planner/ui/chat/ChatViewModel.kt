@@ -68,10 +68,18 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch(Dispatchers.IO) {
             runCatching { engine.calendar.extendAllSeries() }
             runCatching { engine.scheduler.sync() }
-            runCatching { engine.heartbeat.arm() }
+            // 排心跳：没排过就兜底 30 分钟（PC 版同款），否则"主动找你"会永远不发生
+            runCatching { engine.heartbeat.armWithFallback() }
         }
         // 把库里的历史读出来画上（这是"记忆搬过来了"唯一看得见的地方）
         viewModelScope.launch { reloadFromStore() }
+        // 标题栏的心跳倒计时与逾期角标要跟着时间走（PC 版靠后端推 state，这边自己滴答）
+        viewModelScope.launch {
+            while (true) {
+                refreshLiveStatus()
+                kotlinx.coroutines.delay(30_000)
+            }
+        }
     }
 
     override fun onCleared() {
@@ -210,8 +218,27 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         nodes.forEach { row ->
             built += memoryCard(row)
         }
+
+        // PC 版 `/history` 的渲染规则（server.py:218-243），逐条照做：
+        // 1. `（`/`[当前` 开头的 human 是**系统注入**（提醒、心跳、议程、日历操作注记），
+        //    **不显示**——它们是"小助在跟你说话"，不是用户说的。当成用户气泡显示，
+        //    用户会看到一堆自己从没说过的话（导入历史里就有）。
+        // 2. `[` 开头且含 `对你说：` → 只取后半段（去掉时间前缀）。
+        // 3. tool 消息不单独成行：结果填回对应的工具卡片。
+        // 4. `continue_speaking` 的卡片两处都屏蔽（它只是个停顿，不是工具调用）。
+        val resultsByCallId = raw
+            .filter { it.role == "tool" && !it.toolCallId.isNullOrBlank() }
+            .associate { it.toolCallId!! to it.content }
+
         raw.forEachIndexed { index, row ->
-            built += rawBubble(row, index)
+            when (row.role) {
+                "tool" -> Unit // 结果已经填进卡片
+                "user" -> {
+                    val text = userVisibleText(row.content) ?: return@forEachIndexed
+                    built += rawBubble(row.copy(content = text), index)
+                }
+                else -> built += rawBubble(row, index, resultsByCallId)
+            }
         }
 
         _state.update { current ->
@@ -222,14 +249,63 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 messages = if (tail != null) built + tail else built,
                 memory = stats,
                 historyLoaded = true,
+                // token 估算与 PC 版一致：字符数 × 1.2（估算只会偏保守）
+                contextTokens = estimateTokens(built),
             )
         }
+        refreshLiveStatus()
+    }
+
+    /** PC 版 `context_stats()`：`tokens = int(chars * 1.2)`。 */
+    private fun estimateTokens(messages: List<UiMessage>): Int {
+        val chars = messages.sumOf { it.text.length + it.tools.sumOf { t -> t.args.length } }
+        return (chars * 1.2).toInt()
+    }
+
+    /**
+     * 标题栏那两个跟时间有关的显示：心跳倒计时 + 逾期角标。
+     *
+     * PC 版是后端每次推 `state` 时带上；安卓这边没有那个推送，就自己定期刷。
+     */
+    private suspend fun refreshLiveStatus() {
+        val (label, overdue) = withContext(Dispatchers.IO) {
+            val left = engine.heartbeat.remainingMillis()
+            val note = engine.heartbeatNote()
+            // PC 文案：<60 秒说"秒后醒来"，否则"分钟后醒来"；有备注就缀在括号里
+            val text = left?.let {
+                val seconds = it / 1000
+                val base = if (seconds < 60) "${seconds} 秒后醒来" else "${seconds / 60} 分钟后醒来"
+                if (note.isBlank()) base else "$base：$note"
+            }
+            val overdue = runCatching { engine.calendar.overdue().size }.getOrDefault(0)
+            text to overdue
+        }
+        _state.update { it.copy(heartbeatLabel = label, overdueCount = overdue) }
+    }
+
+    /**
+     * 用户在界面上该看到的正文（PC 版 `server.py:222-228` 的规则）。
+     *
+     * 返回 null = **这条不该显示**：`（`/`[当前` 开头的是系统注入
+     * （提醒、心跳、议程快照、日历操作注记），模型看得到但用户不该看到。
+     */
+    private fun userVisibleText(content: String): String? {
+        val text = content.trim()
+        if (text.isEmpty()) return null
+        if (text.startsWith("（") || text.startsWith("[当前")) return null
+        if (text.startsWith("[")) {
+            val marker = "对你说："
+            val at = text.indexOf(marker)
+            return if (at >= 0) text.substring(at + marker.length).trim().ifEmpty { null } else null
+        }
+        return text
     }
 
     private fun memoryCard(row: MessageEntity): UiMessage {
         val nodeId = row.nodeId ?: "node?"
         val level = nodeId.removePrefix("node").substringBefore('_').toIntOrNull() ?: 0
-        val title = if (level == 0) "一段对话已经收进长期记忆" else "更早的记忆已经上卷"
+        // PC 版标题是 CSS 的 ::before 固定文案
+        val title = if (level == 0) "记忆摘要（早期对话已压缩）" else "记忆摘要（更早的对话已上卷）"
         return UiMessage(
             id = nextId++,
             kind = UiMessageKind.Memory,
@@ -238,11 +314,14 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         )
     }
 
-    private fun rawBubble(row: MessageEntity, index: Int): UiMessage {
+    private fun rawBubble(
+        row: MessageEntity,
+        index: Int,
+        resultsByCallId: Map<String, String> = emptyMap(),
+    ): UiMessage {
         val kind = when (row.role) {
             "user" -> UiMessageKind.User
-            "assistant" -> UiMessageKind.Assistant
-            else -> UiMessageKind.System
+            else -> UiMessageKind.Assistant
         }
         return UiMessage(
             id = nextId++,
@@ -250,7 +329,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             text = row.content,
             time = hhmm(row.tsMillis),
             rawIndex = index,
-            tools = MessageTools.parse(row.toolCalls, row.name),
+            // 历史里的工具卡片是**已完成**态（不该转圈），结果按 tool_call_id 填回去
+            tools = MessageTools.parse(row.toolCalls, row.name, resultsByCallId, live = false),
         )
     }
 
@@ -294,15 +374,22 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         when (event) {
             is AgentEvent.TextDelta -> patch(assistantId) { it.copy(text = it.text + event.text) }
 
-            is AgentEvent.ToolStarted -> patch(assistantId) {
-                it.copy(tools = it.tools + UiTool(name = event.name, args = event.args))
+            is AgentEvent.ToolStarted -> {
+                // continue_speaking 只是个停顿，PC 版两处都屏蔽它的卡片
+                if (event.name in MessageTools.HIDDEN) return
+                patch(assistantId) {
+                    it.copy(tools = it.tools + UiTool(name = event.name, args = event.args, live = true))
+                }
             }
 
-            is AgentEvent.ToolFinished -> patch(assistantId) { msg ->
-                val tools = msg.tools.toMutableList()
-                val idx = tools.indexOfLast { it.name == event.name && it.result == null }
-                if (idx >= 0) tools[idx] = tools[idx].copy(result = event.result)
-                msg.copy(tools = tools)
+            is AgentEvent.ToolFinished -> {
+                if (event.name in MessageTools.HIDDEN) return
+                patch(assistantId) { msg ->
+                    val tools = msg.tools.toMutableList()
+                    val idx = tools.indexOfLast { it.name == event.name && it.result == null }
+                    if (idx >= 0) tools[idx] = tools[idx].copy(result = event.result, live = false)
+                    msg.copy(tools = tools)
+                }
             }
 
             is AgentEvent.Done -> patch(assistantId) {
@@ -349,16 +436,22 @@ internal fun describeCompression(outcomes: List<CompressionOutcome>): String? {
 /**
  * 历史里的工具调用：原文只存了 `tool_calls` 的 JSON，这里还原成卡片要的信息。
  *
- * 历史消息的工具卡片是"只读回放"——结果早就在后面的 tool 消息里了，
- * 所以这里只给名字与参数，不给结果（PC 版历史回放也是这样）。
+ * 与 PC 版一致的两点：
+ * - **历史卡片是完成态**（不转圈）——`live = false`
+ * - `continue_speaking` **两处都屏蔽**（实时与历史）：它只是个停顿，不是真的调了工具
  */
 internal object MessageTools {
 
-    fun parse(toolCallsJson: String?, name: String?): List<UiTool> {
-        if (toolCallsJson.isNullOrBlank()) {
-            return if (name.isNullOrBlank()) emptyList()
-            else listOf(UiTool(name = name, args = "", result = null))
-        }
+    /** 不展示的工具（PC 版 server.py:237-243 与 session.py:1407-1417 都跳过它）。 */
+    val HIDDEN = setOf("continue_speaking")
+
+    fun parse(
+        toolCallsJson: String?,
+        name: String?,
+        resultsByCallId: Map<String, String> = emptyMap(),
+        live: Boolean = false,
+    ): List<UiTool> {
+        if (toolCallsJson.isNullOrBlank()) return emptyList()
         return runCatching {
             com.xiaozhu.planner.core.llm.PlannerJson
                 .decodeFromString(
@@ -367,7 +460,15 @@ internal object MessageTools {
                     ),
                     toolCallsJson,
                 )
-                .map { UiTool(name = it.function.name, args = it.function.arguments, result = null) }
+                .filter { it.function.name !in HIDDEN }
+                .map {
+                    UiTool(
+                        name = it.function.name,
+                        args = it.function.arguments,
+                        result = resultsByCallId[it.id],
+                        live = live,
+                    )
+                }
         }.getOrDefault(emptyList())
     }
 }

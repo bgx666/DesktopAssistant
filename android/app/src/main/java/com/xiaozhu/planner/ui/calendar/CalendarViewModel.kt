@@ -3,6 +3,7 @@ package com.xiaozhu.planner.ui.calendar
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.xiaozhu.planner.core.calendar.AgendaSnapshot
 import com.xiaozhu.planner.core.calendar.CalendarDates
 import com.xiaozhu.planner.core.calendar.CalendarStore
 import com.xiaozhu.planner.core.calendar.Dnd
@@ -40,9 +41,22 @@ data class CalendarUiState(
     val dayItems: List<CalendarItemEntity>
         get() = monthItems.filter { it.date == selected.toString() }
 
-    /** 每天有几项（画点用）。 */
-    val countByDay: Map<String, Int>
-        get() = monthItems.groupingBy { it.date }.eachCount()
+    /**
+     * 每天**未完成**的数量（PC 版格子角标就是这个：`list.filter(x => x.status === 'todo').length`）。
+     * 已取消的不占格子。
+     */
+    val undoneByDay: Map<String, Int>
+        get() = monthItems
+            .filter { it.status == CalendarItemEntity.STATUS_TODO }
+            .groupingBy { it.date }
+            .eachCount()
+
+    /** 逾期未完成的总数（PC 版"日历"页签上的角标）。 */
+    val overdueCount: Int
+        get() = monthItems.count {
+            it.status == CalendarItemEntity.STATUS_TODO &&
+                CalendarDates.dueKey(it.date, it.time) < CalendarDates.stamp()
+        }
 }
 
 /**
@@ -101,8 +115,18 @@ class CalendarViewModel(app: Application) : AndroidViewModel(app) {
         reload()
     }
 
-    /** 手加一条到**选中的那天**；时刻留空＝全天项（不参与到点提醒）。 */
-    fun add(content: String, time: String, detail: String = "") {
+    /**
+     * 手加一条到**选中的那天**（PC 版添加表单的三个输入：时刻 / 类型 / 重复）。
+     *
+     * 时刻留空＝全天项（不参与到点提醒）；选了重复就按规则排一串实体行。
+     */
+    fun add(
+        content: String,
+        time: String,
+        kind: String = CalendarItemEntity.KIND_EVENT,
+        repeat: String = "",
+        detail: String = "",
+    ) {
         val text = content.trim()
         if (text.isEmpty()) return
         viewModelScope.launch {
@@ -112,11 +136,21 @@ class CalendarViewModel(app: Application) : AndroidViewModel(app) {
                 _state.update { it.copy(status = "时刻格式应为 HH:MM") }
                 return@launch
             }
+            val rule = repeat.trim().lowercase()
+            if (rule.isNotEmpty() && rule !in CalendarItemEntity.REPEAT_RULES) {
+                _state.update { it.copy(status = "不支持的重复规则：$repeat") }
+                return@launch
+            }
             withContext(Dispatchers.IO) {
-                store.add(date, text, t, detail = detail)
+                if (rule.isEmpty()) {
+                    store.add(date, text, t, kind, detail)
+                } else {
+                    store.addSeries(date, text, rule, t, kind, detail)
+                }
                 scheduler.sync()
             }
-            _state.update { it.copy(status = "已加：$date ${t ?: "全天"}「$text」") }
+            val label = if (rule.isEmpty()) "" else "（${AgendaSnapshot.REPEAT_LABELS[rule] ?: rule}）"
+            _state.update { it.copy(status = "已加：$date ${t ?: "全天"}$label「$text」") }
             reload()
         }
     }

@@ -3,6 +3,7 @@ package com.xiaozhu.planner.ui.calendar
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -23,6 +24,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
@@ -71,6 +73,8 @@ fun CalendarScreen(vm: CalendarViewModel, onBack: () -> Unit) {
     val state by vm.state.collectAsState()
     var draft by remember { mutableStateOf("") }
     var draftTime by remember { mutableStateOf("") }
+    var draftKind by remember { mutableStateOf(CalendarItemEntity.KIND_EVENT) }
+    var draftRepeat by remember { mutableStateOf("") }
 
     Scaffold(
         containerColor = PlannerColors.Background,
@@ -91,7 +95,18 @@ fun CalendarScreen(vm: CalendarViewModel, onBack: () -> Unit) {
             MonthHeader(state, vm)
             MonthGrid(state, vm)
             Spacer(Modifier.height(8.dp))
-            DayDetail(state, vm, draft, draftTime, onDraft = { draft = it }, onTime = { draftTime = it })
+            DayDetail(
+                state = state,
+                vm = vm,
+                draft = draft,
+                draftTime = draftTime,
+                kind = draftKind,
+                repeat = draftRepeat,
+                onDraft = { draft = it },
+                onTime = { draftTime = it },
+                onKind = { draftKind = it },
+                onRepeat = { draftRepeat = it },
+            )
 
             state.status.takeIf { it.isNotBlank() }?.let {
                 Text(
@@ -160,7 +175,9 @@ private fun MonthHeader(state: CalendarUiState, vm: CalendarViewModel) {
 
 @Composable
 private fun MonthGrid(state: CalendarUiState, vm: CalendarViewModel) {
-    val weekdays = listOf("一", "二", "三", "四", "五", "六", "日")
+    // PC 版是**周日开头**（index.html 的 cal-weekdays：日一二三四五六），
+    // 且 lead = new Date(y, m, 1).getDay()（0=周日）——照抄，别自作主张改成周一
+    val weekdays = listOf("日", "一", "二", "三", "四", "五", "六")
     Row(modifier = Modifier.fillMaxWidth()) {
         weekdays.forEach { label ->
             Text(
@@ -175,11 +192,9 @@ private fun MonthGrid(state: CalendarUiState, vm: CalendarViewModel) {
     Spacer(Modifier.height(4.dp))
 
     val first = state.month.atDay(1)
-    // 周一为一周起点：把 1 号之前的空位补出来
-    val leading = (first.dayOfWeek.value + 6) % 7
+    val leading = first.dayOfWeek.value % 7          // 周日=0 … 周六=6
     val daysInMonth = state.month.lengthOfMonth()
-    val cells = leading + daysInMonth
-    val rows = (cells + 6) / 7
+    val rows = (leading + daysInMonth + 6) / 7
 
     Column {
         repeat(rows) { row ->
@@ -191,7 +206,8 @@ private fun MonthGrid(state: CalendarUiState, vm: CalendarViewModel) {
                             val date = state.month.atDay(dayNumber)
                             DayCell(
                                 date = date,
-                                count = state.countByDay[date.toString()] ?: 0,
+                                // PC 版的角标是**未完成的数量**（undone），不是"有几项"
+                                undone = state.undoneByDay[date.toString()] ?: 0,
                                 selected = date == state.selected,
                                 today = date == CalendarDates.today(),
                                 onClick = { vm.selectDate(date) },
@@ -207,7 +223,7 @@ private fun MonthGrid(state: CalendarUiState, vm: CalendarViewModel) {
 @Composable
 private fun DayCell(
     date: LocalDate,
-    count: Int,
+    undone: Int,
     selected: Boolean,
     today: Boolean,
     onClick: () -> Unit,
@@ -234,24 +250,27 @@ private fun DayCell(
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Text(
-                date.dayOfMonth.toString(),
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = if (selected || today) FontWeight.SemiBold else FontWeight.Normal,
-                color = fg,
-            )
-            if (count > 0) {
-                Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                    repeat(minOf(count, 3)) {
-                        Box(
-                            modifier = Modifier
-                                .size(4.dp)
-                                .clip(CircleShape)
-                                .background(if (selected) Color.White else PlannerColors.Accent),
-                        )
-                    }
-                }
+        Text(
+            date.dayOfMonth.toString(),
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = if (selected || today) FontWeight.SemiBold else FontWeight.Normal,
+            color = fg,
+        )
+        // 右下角一个小圆里写数字（PC 版 .cal-dot）
+        if (undone > 0) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .size(14.dp)
+                    .clip(CircleShape)
+                    .background(if (selected) Color.White else PlannerColors.Accent),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    undone.toString(),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (selected) PlannerColors.Primary else Color.White,
+                )
             }
         }
     }
@@ -263,10 +282,15 @@ private fun DayDetail(
     vm: CalendarViewModel,
     draft: String,
     draftTime: String,
+    kind: String,
+    repeat: String,
     onDraft: (String) -> Unit,
     onTime: (String) -> Unit,
+    onKind: (String) -> Unit,
+    onRepeat: (String) -> Unit,
 ) {
     val date = state.selected
+    // PC 版标题格式：`M 月 D 日 · 周X`
     Text(
         "${date.monthValue} 月 ${date.dayOfMonth} 日 · " + weekdayName(date) +
             if (date == CalendarDates.today()) "（今天）" else "",
@@ -289,101 +313,190 @@ private fun DayDetail(
         horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         OutlinedTextField(
+            value = draftTime,
+            onValueChange = onTime,
+            label = { Text("时刻") },
+            placeholder = { Text("HH:MM") },
+            singleLine = true,
+            modifier = Modifier.width(96.dp),
+        )
+        // PC 版的添加表单有 类型 / 重复 两个选择器（index.html 的 cal-kind / cal-repeat）
+        KindPicker(kind, onKind)
+        RepeatPicker(repeat, onRepeat)
+    }
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        OutlinedTextField(
             value = draft,
             onValueChange = onDraft,
-            label = { Text("加一条") },
+            label = { Text("添加日程或任务") },
             singleLine = true,
             modifier = Modifier.weight(1f),
         )
-        OutlinedTextField(
-            value = draftTime,
-            onValueChange = onTime,
-            label = { Text("HH:MM") },
-            singleLine = true,
-            modifier = Modifier.width(104.dp),
-        )
         Button(onClick = {
-            vm.add(draft, draftTime)
+            vm.add(draft, draftTime, kind = kind, repeat = repeat)
             onDraft("")
             onTime("")
-        }) { Text("加") }
+            onRepeat("")
+        }) { Text("添加") }
     }
     Text(
-        "时刻留空＝全天项（不到点弹提醒，但议程里看得见）",
+        "时刻留空＝全天项（不到点弹提醒，但议程里看得见）；选了重复就按规则排一串",
         style = MaterialTheme.typography.bodySmall,
         color = PlannerColors.TextSoft,
     )
+}
+
+/** 类型：日程 / 任务（PC 版是个 `<select>`）。 */
+@Composable
+private fun KindPicker(kind: String, onChange: (String) -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        listOf(
+            CalendarItemEntity.KIND_EVENT to "日程",
+            CalendarItemEntity.KIND_TASK to "任务",
+        ).forEach { (value, label) ->
+            FilterChipLike(selected = kind == value, label = label) { onChange(value) }
+        }
+    }
+}
+
+/** 重复：不重复 / 每天 / 每周 / 工作日（PC 版是个 `<select>`）。 */
+@Composable
+private fun RepeatPicker(repeat: String, onChange: (String) -> Unit) {
+    Row(
+        modifier = Modifier.horizontalScroll(rememberScrollState()),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        listOf(
+            "" to "不重复",
+            "daily" to "每天",
+            "weekly" to "每周",
+            "weekdays" to "工作日",
+        ).forEach { (value, label) ->
+            FilterChipLike(selected = repeat == value, label = label) { onChange(value) }
+        }
+    }
+}
+
+/** 一个轻量的"选中态标签"，避免为了两个小选择器引入 Chip 的一堆默认样式。 */
+@Composable
+private fun FilterChipLike(selected: Boolean, label: String, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .padding(end = 4.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .background(if (selected) PlannerColors.Primary else PlannerColors.SurfaceSoft)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 8.dp, vertical = 5.dp),
+    ) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelMedium,
+            color = if (selected) Color.White else PlannerColors.Text,
+        )
+    }
 }
 
 @Composable
 private fun ItemCard(item: CalendarItemEntity, vm: CalendarViewModel, selected: LocalDate) {
     val done = item.status == CalendarItemEntity.STATUS_DONE
     val cancelled = item.status == CalendarItemEntity.STATUS_CANCELLED
+    // PC 版一行是：勾选框 + 时刻 + 类型 + 内容 + [↻ 重复] + [✕ 取消这一次]
+    var confirmingSeries by remember { mutableStateOf(false) }
+
     Card(
         modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
         colors = CardDefaults.cardColors(
             containerColor = if (done || cancelled) PlannerColors.SurfaceSoft else PlannerColors.Surface
         ),
     ) {
-        Column(modifier = Modifier.padding(10.dp)) {
+        Column(modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
+                Checkbox(checked = done, onCheckedChange = { vm.toggleDone(item) })
                 Text(
                     item.time ?: "全天",
                     style = MaterialTheme.typography.labelLarge,
-                    color = if (done || cancelled) PlannerColors.TextSoft else PlannerColors.Primary,
-                    modifier = Modifier.width(48.dp),
+                    color = if (done) PlannerColors.TextSoft else PlannerColors.Primary,
+                    modifier = Modifier.width(46.dp),
+                )
+                Text(
+                    if (item.kind == CalendarItemEntity.KIND_TASK) "任务" else "日程",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = PlannerColors.TextSoft,
+                    modifier = Modifier.width(32.dp),
                 )
                 Text(
                     item.content,
                     style = MaterialTheme.typography.bodyMedium,
-                    textDecoration = if (done || cancelled) TextDecoration.LineThrough else null,
-                    color = if (done || cancelled) PlannerColors.TextSoft else PlannerColors.Text,
+                    textDecoration = if (done) TextDecoration.LineThrough else null,
+                    color = if (done) PlannerColors.TextSoft else PlannerColors.Text,
                     modifier = Modifier.weight(1f),
                 )
-            }
-            val marks = buildList {
-                if (item.kind == CalendarItemEntity.KIND_TASK) add("任务")
-                item.seriesId?.takeIf { it.isNotBlank() }?.let {
-                    add(AgendaSnapshot.REPEAT_LABELS[item.repeat] ?: "重复")
+                if (!item.seriesId.isNullOrBlank()) {
+                    Text(
+                        "↻" + (AgendaSnapshot.REPEAT_LABELS[item.repeat] ?: "重复"),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = PlannerColors.Primary,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .clickable { confirmingSeries = !confirmingSeries }
+                            .padding(horizontal = 6.dp, vertical = 4.dp),
+                    )
                 }
-                if (done) add("已完成")
-                if (cancelled) add("已取消")
-                item.remindedAt?.let { add("已提醒 $it") }
-            }
-            if (marks.isNotEmpty()) {
                 Text(
-                    marks.joinToString(" · "),
-                    style = MaterialTheme.typography.labelMedium,
+                    "✕",
+                    style = MaterialTheme.typography.labelLarge,
                     color = PlannerColors.TextSoft,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(6.dp))
+                        .clickable { vm.cancel(item) }
+                        .padding(horizontal = 8.dp, vertical = 4.dp),
                 )
             }
+
             if (item.detail.isNotBlank()) {
-                Text(item.detail, style = MaterialTheme.typography.bodySmall, color = PlannerColors.TextSoft)
+                Text(
+                    item.detail,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = PlannerColors.TextSoft,
+                    modifier = Modifier.padding(start = 4.dp),
+                )
             }
-            if (!cancelled) {
-                Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                    TextButton(
-                        onClick = { vm.toggleDone(item) },
-                        contentPadding = PaddingValues(horizontal = 6.dp),
-                    ) { Text(if (done) "撤销完成" else "完成", style = MaterialTheme.typography.labelMedium) }
+            if (done) {
+                Text(
+                    "已完成" + (item.remindedAt?.let { " · 已提醒 $it" } ?: ""),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = PlannerColors.TextSoft,
+                    modifier = Modifier.padding(start = 4.dp),
+                )
+            }
 
+            // 重复项：PC 版点 ↻ 展开一条内联确认（不用系统弹窗）
+            if (confirmingSeries) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(start = 4.dp, top = 2.dp),
+                ) {
+                    Text(
+                        "取消该系列自 ${item.date} 起、今后所有未完成的期？",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = PlannerColors.TextSoft,
+                        modifier = Modifier.weight(1f),
+                    )
                     TextButton(
-                        onClick = { vm.cancel(item) },
+                        onClick = {
+                            confirmingSeries = false
+                            vm.cancel(item, wholeSeries = true)
+                        },
                         contentPadding = PaddingValues(horizontal = 6.dp),
-                    ) { Text("取消", style = MaterialTheme.typography.labelMedium) }
-
-                    if (item.date != selected.toString()) {
-                        TextButton(
-                            onClick = { vm.moveToSelected(item) },
-                            contentPadding = PaddingValues(horizontal = 6.dp),
-                        ) { Text("改到这天", style = MaterialTheme.typography.labelMedium) }
-                    }
-                    if (!item.seriesId.isNullOrBlank()) {
-                        TextButton(
-                            onClick = { vm.cancel(item, wholeSeries = true) },
-                            contentPadding = PaddingValues(horizontal = 6.dp),
-                        ) { Text("取消整个系列", style = MaterialTheme.typography.labelMedium) }
-                    }
+                    ) { Text("确定", style = MaterialTheme.typography.labelMedium) }
+                    TextButton(
+                        onClick = { confirmingSeries = false },
+                        contentPadding = PaddingValues(horizontal = 6.dp),
+                    ) { Text("算了", style = MaterialTheme.typography.labelMedium) }
                 }
             }
         }

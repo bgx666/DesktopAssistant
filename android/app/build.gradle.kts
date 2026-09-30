@@ -14,12 +14,11 @@ android {
         applicationId = "com.xiaozhu.planner"
         minSdk = 26
         targetSdk = 35
-        versionCode = 6
-        // 0.3.0：界面按 PC 版对齐——聊天显示历史与记忆卡片、头像、撤销（两段确认）、
-        // 真正的月历、配色取自 PC 版前端；导入旧数据支持"点开文件直接导入"。
-        // 之前一直是 0.1.0，导致几次构建之间**版本号区分不了**——排查"你装的是哪一版"
-        // 只能看设置页页脚的安装时间。以后每次可安装的改动都递增 versionCode。
-        versionName = "0.3.0"
+        versionCode = 7
+        // 0.3.1：把 PC 版前端与后端**逐条审计**后的差异补齐——历史里的系统注入消息不再
+        // 当用户气泡显示、工具卡片两态可展开、朗读改圆形图标、记忆卡片走 markdown、
+        // 流式期间不渲染 markdown、心跳兜底 30 分钟。
+        versionName = "0.3.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
