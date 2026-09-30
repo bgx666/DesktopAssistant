@@ -705,19 +705,30 @@ private fun UserRow(msg: UiMessage, onUndo: () -> Unit) {
                 ImageStrip(msg.images, modifier = Modifier.padding(bottom = 4.dp))
             }
             if (msg.text.isNotBlank()) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth(0.86f)
-                        .clip(RoundedCornerShape(14.dp, 14.dp, 5.dp, 14.dp))
-                        .background(PlannerColors.UserBubble)
-                        .padding(horizontal = 13.dp, vertical = 9.dp),
+                // 靠右 + **贴着文字宽度**
+                //
+                // 之前是 `fillMaxWidth(0.86f)`：不管文字多短，气泡都占满 86% 宽度，
+                // 于是短消息右边拖着一大片蓝色空白，看着像左对齐的宽条。
+                // 正确写法是放在 Arrangement.End 的 Row 里用 weight(fill = false)——
+                // 最多占满可用宽度、内容短就贴合内容，同时保持右对齐。
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
                 ) {
-                    // 用户消息**不渲染 markdown**（PC 版是 textContent 原样）
-                    Text(
-                        msg.text,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = Color.White,
-                    )
+                    Box(
+                        modifier = Modifier
+                            .weight(1f, fill = false)
+                            .clip(RoundedCornerShape(14.dp, 14.dp, 5.dp, 14.dp))
+                            .background(PlannerColors.UserBubble)
+                            .padding(horizontal = 13.dp, vertical = 9.dp),
+                    ) {
+                        // 用户消息**不渲染 markdown**（PC 版是 textContent 原样）
+                        Text(
+                            msg.text,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = Color.White,
+                        )
+                    }
                 }
             }
         // PC 版只在"这条能撤销"时才给按钮（记忆卡片与历史回放没有 id）

@@ -45,6 +45,16 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // 状态栏/导航栏图标改成深色：界面是浅色底，用系统默认的浅色图标
+        // （时间、电量、手势条）几乎看不见。
+        // 主题里也声明了，这里再设一次是为了保险——targetSdk 35 强制 edge-to-edge，
+        // 各厂商 ROM 对主题项的遵循程度不一，运行时设置是最终生效的那一层。
+        runCatching {
+            androidx.core.view.WindowCompat.getInsetsController(window, window.decorView).apply {
+                isAppearanceLightStatusBars = true
+                isAppearanceLightNavigationBars = true
+            }
+        }
         ReminderNotifications.ensureChannel(this)
         incomingFile = importUriFrom(intent)
         setContent { PlannerApp(incomingFile, onFileConsumed = { incomingFile = null }) }

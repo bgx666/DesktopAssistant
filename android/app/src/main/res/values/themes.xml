@@ -1,4 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.Planner" parent="@android:style/Theme.Material.Light.NoActionBar" />
+    <!--
+      状态栏 / 导航栏的图标颜色。
+
+      之前这个主题只有 parent，没有声明 windowLightStatusBar —— 平台主题的默认值是
+      **false**，也就是"浅色图标"。而我们的界面是浅色背景，于是时间、电量这些白字
+      在白底上几乎看不见（用户报的就是这个）。
+
+      minSdk 26，所以 windowLightStatusBar（API 23+）可以直接写在这里；
+      windowLightNavigationBar 是 API 27+，放在 values-v27 的同名主题里覆盖。
+    -->
+    <style name="Theme.Planner" parent="@android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:windowLightStatusBar">true</item>
+    </style>
 </resources>

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      API 27+ 才能声明导航栏图标为深色（windowLightNavigationBar）。
+      导航栏也是浅色背景，不声明的话手势条/三键按钮同样看不清。
+    -->
+    <style name="Theme.Planner" parent="@android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
+    </style>
+</resources>

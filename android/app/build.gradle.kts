@@ -14,10 +14,10 @@ android {
         applicationId = "com.xiaozhu.planner"
         minSdk = 26
         targetSdk = 35
-        versionCode = 14
-        // 0.4.2：DeepSeek V4 家族降推理档到 low（实测更快更省）；只发 reasoning_effort，
-        // 不发 thinking（实测没收益反而推理更多）。
-        versionName = "0.4.2"
+        versionCode = 15
+        // 0.4.3：用户气泡贴文字宽度并右对齐（之前固定 86% 宽，右边拖一片蓝）；
+        // 状态栏/导航栏图标改深色（浅色底上白图标看不见）。
+        versionName = "0.4.3"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
