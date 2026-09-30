@@ -14,11 +14,9 @@ android {
         applicationId = "com.xiaozhu.planner"
         minSdk = 26
         targetSdk = 35
-        versionCode = 22
-        // 0.5.6：拍照改成 **App 内自己拍（CameraX）**，不再依赖第三方相机 App
-        // （各家 ROM 行为不一致，是"拍了读不出来/没有拍照"的根因）；
-        // 日历角标的数字不再被圆形裁剪切掉。
-        versionName = "0.5.6"
+        versionCode = 23
+        // 0.5.7：图片可点击全屏查看（双指缩放、双击放大、捏小/点空白退出）。
+        versionName = "0.5.7"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 

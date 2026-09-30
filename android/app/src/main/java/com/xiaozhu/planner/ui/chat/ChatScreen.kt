@@ -125,6 +125,8 @@ fun ChatScreen(
     // 被永久拒绝（勾了"不再询问"）时系统不会再弹窗，所以自己弹说明 + 去设置。
     var showCamera by remember { mutableStateOf(false) }
     var showCameraRationale by remember { mutableStateOf(false) }
+    // 全屏看图的当前图片（null = 没打开）
+    var viewerImage by remember { mutableStateOf<String?>(null) }
     val cameraPermission = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
@@ -146,9 +148,21 @@ fun ChatScreen(
         if (state.messages.isNotEmpty()) listState.scrollToItem(state.messages.lastIndex)
     }
 
-    // App 内相机：全屏覆盖（Dialog 占满整屏，不走默认的窄对话框）
-    if (showCamera) {
+    // 全屏看图：点缩略图打开，双指缩放，捏小/单击空白退出
+    viewerImage?.let { url ->
         androidx.compose.ui.window.Dialog(
+            onDismissRequest = { viewerImage = null },
+            properties = androidx.compose.ui.window.DialogProperties(
+                usePlatformDefaultWidth = false,
+                decorFitsSystemWindows = false,
+            ),
+        ) {
+            ImageViewer(dataUrl = url, onDismiss = { viewerImage = null })
+        }
+    }
+
+    // App 内相机：全屏覆盖（Dialog 占满整屏，不走默认的窄对话框）
+    if (showCamera) {        androidx.compose.ui.window.Dialog(
             onDismissRequest = { showCamera = false },
             properties = androidx.compose.ui.window.DialogProperties(
                 usePlatformDefaultWidth = false,
@@ -279,6 +293,7 @@ fun ChatScreen(
                             msg = msg,
                             onSpeak = vm::speak,
                             onUndo = { vm.undo(msg.id) },
+                            onOpenImage = { viewerImage = it },
                             // 正在流式输出的那条用纯文本渲染（PC 版同款）
                             streaming = state.streaming && msg.id == state.messages.lastOrNull()?.id,
                         )
@@ -315,6 +330,7 @@ fun ChatScreen(
                     },
                     onRemoveImage = { vm.removePendingImage(it) },
                     onRemoveDocument = { vm.removePendingDocument() },
+                    onOpenImage = { viewerImage = it },
                     onPickDocument = {
                         // SAF：任何能提供文档的 App 都行（文件管理器、网盘、下载…），
                         // 不需要存储权限
@@ -442,11 +458,16 @@ private fun SeedPromptCard(
 /**
  * 一排图片缩略图（消息里显示用）。
  *
+ * 点任意一张 → 全屏放大（可双指缩放，捏小退出，见 [ImageViewer]）。
  * 自己拍的/选的图已经缩到长边 1568，直接解码显示即可；
  * 解码失败就跳过（不显示破图），不影响这条消息的文字。
  */
 @Composable
-private fun ImageStrip(images: List<String>, modifier: Modifier = Modifier) {
+private fun ImageStrip(
+    images: List<String>,
+    modifier: Modifier = Modifier,
+    onOpen: (String) -> Unit = {},
+) {
     Row(
         modifier = modifier,
         horizontalArrangement = Arrangement.spacedBy(4.dp),
@@ -463,7 +484,8 @@ private fun ImageStrip(images: List<String>, modifier: Modifier = Modifier) {
                     modifier = Modifier
                         .size(96.dp)
                         .clip(RoundedCornerShape(10.dp))
-                        .border(1.dp, Color(0x22000000), RoundedCornerShape(10.dp)),
+                        .border(1.dp, Color(0x22000000), RoundedCornerShape(10.dp))
+                        .clickable { onOpen(url) },
                 )
             }
         }
@@ -478,9 +500,13 @@ private fun ImageStrip(images: List<String>, modifier: Modifier = Modifier) {
     }
 }
 
-/** 待发送的图片：缩略图 + 右上角 ✕ 移除。 */
+/** 待发送的图片：缩略图 + 右上角 ✕ 移除；点缩略图也能放大看。 */
 @Composable
-private fun PendingImageStrip(images: List<String>, onRemove: (Int) -> Unit) {
+private fun PendingImageStrip(
+    images: List<String>,
+    onRemove: (Int) -> Unit,
+    onOpen: (String) -> Unit = {},
+) {
     Row(
         modifier = Modifier.padding(bottom = 6.dp),
         horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -498,7 +524,8 @@ private fun PendingImageStrip(images: List<String>, onRemove: (Int) -> Unit) {
                         modifier = Modifier
                             .size(56.dp)
                             .clip(RoundedCornerShape(8.dp))
-                            .border(1.dp, PlannerColors.Primary, RoundedCornerShape(8.dp)),
+                            .border(1.dp, PlannerColors.Primary, RoundedCornerShape(8.dp))
+                            .clickable { onOpen(url) },
                     )
                 }
                 Box(
@@ -537,6 +564,7 @@ private fun InputBar(
     onPickDocument: () -> Unit,
     onRemoveImage: (Int) -> Unit,
     onRemoveDocument: () -> Unit,
+    onOpenImage: (String) -> Unit,
     onSend: () -> Unit,
     onStop: () -> Unit,
 ) {
@@ -600,7 +628,7 @@ private fun InputBar(
                 }
             }
             if (pendingImages.isNotEmpty()) {
-                PendingImageStrip(pendingImages, onRemove = onRemoveImage)
+                PendingImageStrip(pendingImages, onRemove = onRemoveImage, onOpen = onOpenImage)
             }
 
             Row(verticalAlignment = Alignment.Bottom) {
@@ -901,12 +929,13 @@ private fun MessageRow(
     msg: UiMessage,
     onSpeak: (String) -> Unit,
     onUndo: () -> Unit,
+    onOpenImage: (String) -> Unit,
     streaming: Boolean,
 ) {
     when (msg.kind) {
         UiMessageKind.System -> CenterNote(msg.text)
         UiMessageKind.Memory -> MemoryCard(msg)
-        UiMessageKind.User -> UserRow(msg, onUndo)
+        UiMessageKind.User -> UserRow(msg, onUndo, onOpenImage)
         // 流式期间用纯文本（PC 版也是 `textContent +=`，等整段收束才渲染 markdown），
         // 否则半截的 `**加粗` 会把星号直接显示出来
         UiMessageKind.Assistant -> AssistantRow(msg, onSpeak, plain = streaming, streaming = streaming)
@@ -915,7 +944,7 @@ private fun MessageRow(
 
 /** 用户消息：右侧蓝色渐变气泡 + 撤销按钮（PC 版气泡下方右侧）。 */
 @Composable
-private fun UserRow(msg: UiMessage, onUndo: () -> Unit) {
+private fun UserRow(msg: UiMessage, onUndo: () -> Unit, onOpenImage: (String) -> Unit) {
     var confirming by remember { mutableStateOf(false) }
     val context = LocalContext.current
 
@@ -935,7 +964,11 @@ private fun UserRow(msg: UiMessage, onUndo: () -> Unit) {
         ) {
             // 图在气泡上方（自己的图看大一点，点开可放大）
             if (msg.images.isNotEmpty()) {
-                ImageStrip(msg.images, modifier = Modifier.padding(bottom = 4.dp))
+                ImageStrip(
+                    msg.images,
+                    modifier = Modifier.padding(bottom = 4.dp),
+                    onOpen = onOpenImage,
+                )
             }
             if (msg.text.isNotBlank()) {
                 // 靠右 + **贴着文字宽度**
