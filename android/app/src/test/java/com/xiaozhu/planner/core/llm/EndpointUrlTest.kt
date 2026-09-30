@@ -99,6 +99,18 @@ class EndpointUrlTest {
     }
 
     @Test
+    fun `认得出「模型名不对」并把可用名字说出来`() {
+        // DeepSeek 官方的原文（实测）：
+        // The supported API model names are deepseek-flash, deepseek-v4-pro,
+        // but you passed deepseek-v4.1-flash.
+        val body = """{"error":{"message":"The supported API model names are """ +
+            """deepseek-flash, deepseek-v4-pro, but you passed deepseek-v4.1-flash."}}"""
+        val hint = EndpointUrl.hintFor(400, body)!!
+        assertTrue("要说出正确的模型名：$hint", hint.contains("deepseek-flash"))
+        assertTrue("要点明另一个名字是 opencode 的：$hint", hint.contains("opencode"))
+    }
+
+    @Test
     fun `认得出「网关说没有 messages」那种只有模型名的报错`() {
         // 实测：messages 为空 / 为 null / 类型不对，网关都只回这一句
         listOf(

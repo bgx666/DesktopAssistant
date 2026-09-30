@@ -82,6 +82,13 @@ object EndpointUrl {
         status == 401 || status == 403 ->
             "API Key 不对或没有权限（换服务商时 key 不通用）。"
 
+        // DeepSeek 官方只认两个模型名；传 opencode 那套名字会 400，而且报错里
+        // 直接列出了可用名字——把它翻成人话，省得再去查文档
+        body.contains("supported API model names", ignoreCase = true) ->
+            "这个端点不认这个模型名。DeepSeek 官方只支持 `deepseek-flash`" +
+                "（它的正式名字是 DeepSeek-V4.1-Flash）与 `deepseek-v4-pro`；" +
+                "`deepseek-v4.1-flash` 是 opencode 网关的名字，官方端点不认。"
+
         status == 429 -> "触发了限流，等一会儿再试。"
 
         status >= 500 -> "服务端出错，不是配置问题，稍后再试。"

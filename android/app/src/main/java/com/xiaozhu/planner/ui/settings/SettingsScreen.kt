@@ -125,7 +125,13 @@ fun SettingsScreen(
                 onValueChange = { model = it; saved = false },
                 label = { Text("模型") },
                 singleLine = true,
-                supportingText = { Text("例如 ${SettingsStore.DEFAULT_MODEL}") },
+                supportingText = {
+                    Text(
+                        "例如 ${SettingsStore.DEFAULT_MODEL}" +
+                            "（DeepSeek 官方；它的正式名字是 DeepSeek-V4.1-Flash）。" +
+                            "官方只认 deepseek-flash / deepseek-v4-pro"
+                    )
+                },
                 modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
             )
 
