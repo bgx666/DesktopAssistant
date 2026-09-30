@@ -1,0 +1,125 @@
+package com.xiaozhu.planner.core.llm
+
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+/**
+ * 端点 URL 与请求头。**这里的每一条都对应一次真实的 404/400**：
+ *
+ * - 用户在「Base URL」里粘了完整端点（`.../v1/chat/completions`），
+ *   客户端再拼一次 → `.../chat/completions/chat/completions` →
+ *   网关返回的是**网站的 404 页面（HTML）**，看起来像"服务挂了"。
+ * - opencode 的网关没有 `x-opencode-session` 会直接 400（MissingSessionID）。
+ */
+class EndpointUrlTest {
+
+    @Test
+    fun `裸的 base 拼一次`() {
+        assertEquals(
+            "https://opencode.ai/zen/go/v1/chat/completions",
+            EndpointUrl.chatCompletions("https://opencode.ai/zen/go/v1"),
+        )
+    }
+
+    @Test
+    fun `粘了完整端点也不会拼两次（这次报的 404）`() {
+        assertEquals(
+            "https://opencode.ai/zen/go/v1/chat/completions",
+            EndpointUrl.chatCompletions("https://opencode.ai/zen/go/v1/chat/completions"),
+        )
+    }
+
+    @Test
+    fun `尾部斜杠与空白都吃掉`() {
+        val expect = "https://api.deepseek.com/v1/chat/completions"
+        assertEquals(expect, EndpointUrl.chatCompletions("https://api.deepseek.com/v1/"))
+        assertEquals(expect, EndpointUrl.chatCompletions("  https://api.deepseek.com/v1//  "))
+        assertEquals(expect, EndpointUrl.chatCompletions("https://api.deepseek.com/v1/chat/completions/"))
+    }
+
+    @Test
+    fun `带查询串的完整端点也能归一`() {
+        assertEquals(
+            "https://opencode.ai/zen/go/v1/chat/completions",
+            EndpointUrl.chatCompletions("https://opencode.ai/zen/go/v1/chat/completions?foo=1"),
+        )
+    }
+
+    @Test
+    fun `normalize 出来的是根，且幂等`() {
+        val root = EndpointUrl.normalize("https://opencode.ai/zen/go/v1/chat/completions/")
+        assertEquals("https://opencode.ai/zen/go/v1", root)
+        assertEquals(root, EndpointUrl.normalize(root))
+        assertEquals(root, EndpointUrl.normalize(EndpointUrl.normalize(root)))
+    }
+
+    @Test
+    fun `认得是不是 opencode 网关`() {
+        assertTrue(EndpointUrl.isOpenCode("https://opencode.ai/zen/go/v1"))
+        assertTrue(EndpointUrl.isOpenCode("https://opencode.ai/zen/go/v1/chat/completions"))
+        assertTrue(EndpointUrl.isOpenCode("https://OPENCODE.AI/zen/go/v1"))
+        assertFalse(EndpointUrl.isOpenCode("https://api.deepseek.com/v1"))
+        assertFalse(EndpointUrl.isOpenCode("https://api.xiaomimimo.com/v1"))
+    }
+
+    @Test
+    fun `opencode 带 session 头，别的服务商不带`() {
+        val oc = EndpointUrl.extraHeaders("https://opencode.ai/zen/go/v1", "abc-123")
+        assertEquals(mapOf("x-opencode-session" to "abc-123"), oc)
+
+        assertEquals(emptyMap<String, String>(),
+            EndpointUrl.extraHeaders("https://api.deepseek.com/v1", "abc-123"))
+        // 没配 session 就别发一个空头
+        assertEquals(emptyMap<String, String>(),
+            EndpointUrl.extraHeaders("https://opencode.ai/zen/go/v1", ""))
+        assertEquals(emptyMap<String, String>(),
+            EndpointUrl.extraHeaders("https://opencode.ai/zen/go/v1", null))
+    }
+}
+
+/** 直接看 `buildRequest` 造出来的东西——不联网就能钉住"URL 与头拼得对不对"。 */
+class OpenAiClientRequestTest {
+
+    private val messages = listOf(ChatMessage.user("在吗"))
+
+    private fun request(
+        base: String,
+        headers: Map<String, String> = emptyMap(),
+    ) = OpenAiClient(base, "test-key", "deepseek-v4.1-flash", extraHeaders = headers)
+        .buildRequest(messages, tools = null, stream = true)
+
+    @Test
+    fun `用户填的那种 base 不会拼成重复路径`() {
+        val url = request("https://opencode.ai/zen/go/v1/chat/completions").url.toString()
+        assertEquals("https://opencode.ai/zen/go/v1/chat/completions", url)
+        assertFalse("重复路径就是这次 404 的原因", url.contains("chat/completions/chat"))
+    }
+
+    @Test
+    fun `带上了认证头与流式 Accept`() {
+        val req = request("https://opencode.ai/zen/go/v1")
+        assertEquals("Bearer test-key", req.header("Authorization"))
+        assertEquals("text/event-stream", req.header("Accept"))
+        assertEquals("POST", req.method)
+    }
+
+    @Test
+    fun `附加头会带上（opencode 的 session）`() {
+        val req = request(
+            "https://opencode.ai/zen/go/v1",
+            EndpointUrl.extraHeaders("https://opencode.ai/zen/go/v1", "sess-9"),
+        )
+        assertEquals("sess-9", req.header("x-opencode-session"))
+    }
+
+    @Test
+    fun `请求体里是模型名与 stream 标记`() {
+        val body = request("https://opencode.ai/zen/go/v1").body!!
+        val text = okio.Buffer().also { body.writeTo(it) }.readUtf8()
+        assertTrue(text, text.contains("\"model\":\"deepseek-v4.1-flash\""))
+        assertTrue("流式必须显式带 stream=true，否则端点不走 SSE", text.contains("\"stream\":true"))
+        assertTrue(text.contains("\"stream_options\""))
+    }
+}

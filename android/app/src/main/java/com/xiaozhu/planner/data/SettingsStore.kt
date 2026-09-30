@@ -39,6 +39,22 @@ class SettingsStore(context: Context) {
         get() = prefs.getString(KEY_MODEL, DEFAULT_MODEL).orEmpty().ifBlank { DEFAULT_MODEL }
         set(v) = prefs.edit().putString(KEY_MODEL, v.trim().ifBlank { DEFAULT_MODEL }).apply()
 
+    /**
+     * opencode 网关要求的会话头（`x-opencode-session`）。
+     *
+     * 默认自动生成一个并持久化：那个网关没有这个头会直接 400（MissingSessionID），
+     * 而它只需要"一个稳定的标识"，不要求特定值。设置页可以覆盖（万一以后变了）。
+     */
+    var openCodeSession: String
+        get() {
+            val saved = prefs.getString(KEY_OC_SESSION, "").orEmpty()
+            if (saved.isNotBlank()) return saved
+            val fresh = java.util.UUID.randomUUID().toString()
+            prefs.edit().putString(KEY_OC_SESSION, fresh).apply()
+            return fresh
+        }
+        set(v) = prefs.edit().putString(KEY_OC_SESSION, v.trim()).apply()
+
     val configured: Boolean get() = apiKey.isNotBlank()
 
     // ── 语音（TTS）────────────────────────────────────────
@@ -72,8 +88,14 @@ class SettingsStore(context: Context) {
         set(v) = prefs.edit().putString(KEY_MIMO_MODEL, v.trim().ifBlank { MIMO_DEFAULT_MODEL }).apply()
 
     companion object {
-        const val DEFAULT_BASE = "https://api.deepseek.com/v1"
-        const val DEFAULT_MODEL = "deepseek-v4-flash-vision-exp"
+        /**
+         * 默认走 opencode 的 zen 网关（用户日常用的那条）。
+         * Base URL 带不带 `/chat/completions` 都能填——见 `core/llm/EndpointUrl.kt`。
+         * 换回 DeepSeek 官方：把 Base 改成 `https://api.deepseek.com/v1`、模型填对应名字。
+         */
+        const val DEFAULT_BASE = "https://opencode.ai/zen/go/v1"
+        const val DEFAULT_MODEL = "deepseek-v4.1-flash"
+        const val DEEPSEEK_BASE = "https://api.deepseek.com/v1"
 
         const val TTS_ENGINE_MIMO = "mimo"
         const val TTS_ENGINE_SYSTEM = "system"
@@ -84,6 +106,7 @@ class SettingsStore(context: Context) {
         private const val KEY_API = "llm_api_key"
         private const val KEY_BASE = "llm_base_url"
         private const val KEY_MODEL = "llm_model"
+        private const val KEY_OC_SESSION = "opencode_session"
         private const val KEY_TTS_ENABLED = "tts_enabled"
         private const val KEY_TTS_ENGINE = "tts_engine"
         private const val KEY_TTS_VOICE = "tts_voice"

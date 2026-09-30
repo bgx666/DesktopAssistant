@@ -5,6 +5,7 @@ import com.xiaozhu.planner.core.calendar.AgendaSnapshot
 import com.xiaozhu.planner.core.calendar.CalendarDates
 import com.xiaozhu.planner.core.calendar.CalendarStore
 import com.xiaozhu.planner.core.llm.ChatMessage
+import com.xiaozhu.planner.core.llm.EndpointUrl
 import com.xiaozhu.planner.core.llm.OpenAiClient
 import com.xiaozhu.planner.core.memory.CompressionOutcome
 import com.xiaozhu.planner.core.memory.Compressor
@@ -104,6 +105,17 @@ class ConversationEngine private constructor(private val app: Application) {
     }
 
     /**
+     * 建模型客户端。**只此一处**：URL 归一化与附加请求头（opencode 的 session）
+     * 必须每条路径一致——对话、压缩各建一份的话，很容易只修了其中一处。
+     */
+    fun llmClient(): OpenAiClient = OpenAiClient(
+        baseUrl = settings.baseUrl,
+        apiKey = settings.apiKey,
+        model = settings.model,
+        extraHeaders = EndpointUrl.extraHeaders(settings.baseUrl, settings.openCodeSession),
+    )
+
+    /**
      * 跑一轮：把 [message] 追加进历史、落盘、把事件交给 [onEvent]，结束后落盘 + 压缩 + 重排闹钟。
      *
      * 用回调而不是返回 Flow：整轮（含工具往返）必须在一把锁里完成，
@@ -120,11 +132,7 @@ class ConversationEngine private constructor(private val app: Application) {
             val before = history.size
             runCatching { conversation.persist(listOf(message), System.currentTimeMillis()) }
 
-            val loop = AgentLoop(
-                OpenAiClient(settings.baseUrl, settings.apiKey, settings.model),
-                registry,
-                pacing = pacing,
-            )
+            val loop = AgentLoop(llmClient(), registry, pacing = pacing)
             try {
                 // 直接把 history 交给 loop：它会把 assistant(tool_calls) 与 tool 结果成对追加进去，
                 // 下一轮就带着这些上下文再问模型（传副本会让上下文断在这里）
@@ -188,7 +196,7 @@ class ConversationEngine private constructor(private val app: Application) {
         }
         val compressor = Compressor(
             store = store,
-            llm = OpenAiClient(settings.baseUrl, settings.apiKey, settings.model),
+            llm = llmClient(),
             systemPrompt = systemPromptText(),
         )
         val outcomes = compressor.compressIfNeeded()

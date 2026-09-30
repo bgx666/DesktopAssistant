@@ -14,16 +14,20 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import java.util.concurrent.TimeUnit
 
 /**
- * 直连 OpenAI 兼容端点（默认 DeepSeek）。
+ * 直连 OpenAI 兼容端点（默认 DeepSeek / opencode 网关）。
  *
  * - [stream]：对话用，SSE 流式 + tool calls；取消即断开连接
  * - [complete]：压缩摘要用，一次性返回正文（不进对话上下文）
+ *
+ * [baseUrl] 带不带 `/chat/completions` 都行（见 [EndpointUrl]）；
+ * [extraHeaders] 放服务商额外要求的头（如 opencode 的 session）。
  */
 class OpenAiClient(
     private val baseUrl: String,
     private val apiKey: String,
     private val model: String,
     private val client: OkHttpClient = defaultClient(),
+    private val extraHeaders: Map<String, String> = emptyMap(),
 ) : LlmStreamer, LlmCompleter {
 
     override fun stream(
@@ -69,7 +73,8 @@ class OpenAiClient(
         }
     }
 
-    private fun buildRequest(
+    /** 内部可见是为了能单测"URL 与请求头拼得对不对"——这次的 404 就是拼错了。 */
+    internal fun buildRequest(
         messages: List<ChatMessage>,
         tools: List<ToolSpec>?,
         stream: Boolean,
@@ -84,12 +89,12 @@ class OpenAiClient(
                 streamOptions = if (stream) StreamOptions() else null,
             ),
         )
-        return Request.Builder()
-            .url(baseUrl.trimEnd('/') + "/chat/completions")
+        val builder = Request.Builder()
+            .url(EndpointUrl.chatCompletions(baseUrl))
             .addHeader("Authorization", "Bearer $apiKey")
             .addHeader("Accept", if (stream) "text/event-stream" else "application/json")
-            .post(body.toRequestBody(JSON_MEDIA))
-            .build()
+        extraHeaders.forEach { (name, value) -> builder.addHeader(name, value) }
+        return builder.post(body.toRequestBody(JSON_MEDIA)).build()
     }
 
     private fun errorBody(response: okhttp3.Response): String = try {

@@ -87,7 +87,13 @@ fun SettingsScreen(onBack: () -> Unit) {
                 onValueChange = { baseUrl = it; saved = false },
                 label = { Text("Base URL") },
                 singleLine = true,
-                supportingText = { Text("默认 DeepSeek：${SettingsStore.DEFAULT_BASE}") },
+                supportingText = {
+                    Text(
+                        "默认 opencode 网关：${SettingsStore.DEFAULT_BASE}\n" +
+                            "带不带 /chat/completions 都行（会自动去掉重复的一段）。" +
+                            "换 DeepSeek 官方：${SettingsStore.DEEPSEEK_BASE}"
+                    )
+                },
                 modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
             )
             OutlinedTextField(
@@ -95,7 +101,7 @@ fun SettingsScreen(onBack: () -> Unit) {
                 onValueChange = { model = it; saved = false },
                 label = { Text("模型") },
                 singleLine = true,
-                supportingText = { Text("例如 deepseek-v4-flash-vision-exp") },
+                supportingText = { Text("例如 ${SettingsStore.DEFAULT_MODEL}") },
                 modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
             )
 
