@@ -14,12 +14,12 @@ android {
         applicationId = "com.xiaozhu.planner"
         minSdk = 26
         targetSdk = 35
-        versionCode = 4
-        // 0.2.2：空 messages 在客户端拦下；报错带上"本次请求发了什么"；
-        // 认得出网关那句只有模型名的 400。
+        versionCode = 5
+        // 0.2.3：修掉 continue_speaking 的非法 schema（properties 写成了字符串，
+        // 网关因此拒掉整个请求、只回一句模型名）；新增工具 schema 体检与真实工具集的 live 检查。
         // 之前一直是 0.1.0，导致几次构建之间**版本号区分不了**——排查"你装的是哪一版"
         // 只能看设置页页脚的安装时间。以后每次可安装的改动都递增 versionCode。
-        versionName = "0.2.2"
+        versionName = "0.2.3"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 

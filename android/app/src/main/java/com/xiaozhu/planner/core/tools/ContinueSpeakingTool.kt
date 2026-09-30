@@ -32,9 +32,11 @@ class ContinueSpeakingTool(
 
     override val parameters: JsonObject = buildJsonObject {
         put("type", "object")
-        putJsonObject("properties") {
-            put("description", "不需要参数：调用它就表示「我还要接着说下一点」。")
-        }
+        // 无参数工具：properties 必须是**空对象** `{}`。
+        // 早先这里写成了 `put("description", "...")`，于是 properties 变成字符串——
+        // 那是非法 JSON Schema，网关会把**整个请求**拒掉（只回一句模型名，
+        // 完全看不出是哪个工具的问题）。见 ToolSchemaTest。
+        putJsonObject("properties") { }
     }
 
     override suspend fun run(args: JsonObject): String {

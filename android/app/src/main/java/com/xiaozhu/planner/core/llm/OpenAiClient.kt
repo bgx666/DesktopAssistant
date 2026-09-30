@@ -100,7 +100,9 @@ class OpenAiClient(
     private fun describeFailure(response: okhttp3.Response, requestInfo: String): String {
         val body = errorBody(response)
         val head = "HTTP ${response.code} ${response.message}".trim()
-        val hint = EndpointUrl.hintFor(response.code, body)
+        // 报错路径**绝不允许再抛异常**：hint 只是锦上添花，为它崩掉就把
+        // "看得见的 400" 变成了"看不懂的崩溃"（真机上真发生过一次）
+        val hint = runCatching { EndpointUrl.hintFor(response.code, body) }.getOrNull()
         return listOfNotNull(
             head,
             "本次请求：$requestInfo",

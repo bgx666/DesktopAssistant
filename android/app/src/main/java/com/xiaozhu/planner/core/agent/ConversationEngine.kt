@@ -59,20 +59,15 @@ class ConversationEngine private constructor(private val app: Application) {
     /** `continue_speaking` 的说话节奏（跨轮沿用，跟 PC 版的 session 状态对齐）。 */
     val pacing = SpeechPacing()
 
-    val registry = ToolRegistry(
-        listOf(
-            WebSearchTool(),
-            WebFetchTool(),
-            HeartbeatTool(PrefsHeartbeatStore(app), heartbeat),
-            ContinueSpeakingTool(pacing),
-            ExploreMemoryTreeTool(store),
-            SearchMemoryTool(store),
-            ListScheduleTool(calendar),
-            AddScheduleTool(calendar, scheduler),
-            UpdateScheduleTool(calendar, scheduler),
-            CancelScheduleTool(calendar, scheduler),
-            SetDoNotDisturbTool(PrefsDndStore(app)),
-        )
+    /** 工具清单在 [ToolRegistryFactory] 里（那边能被测试直接复用，不必搭起整个引擎）。 */
+    val registry = ToolRegistryFactory.create(
+        store = store,
+        calendar = calendar,
+        reminderPlanner = scheduler,
+        heartbeatStore = PrefsHeartbeatStore(app),
+        heartbeatPlanner = heartbeat,
+        dndStore = PrefsDndStore(app),
+        pacing = pacing,
     )
 
     /**

@@ -55,7 +55,10 @@ ANDROID_SRC = REPO_ROOT / "android" / "app" / "src" / "main" / "java" / "com" / 
 TOOLS_DIR = ANDROID_SRC / "core" / "tools"
 # 注册表在引擎里（`ConversationEngine`）——后台心跳也要跑同一套工具，所以它不能长在 UI 层。
 # 兼容旧的 ChatViewModel 位置，免得改回去时脚本静默失效。
+# 注册表在工具工厂里（`ToolRegistryFactory`）——那边能被测试直接复用，
+# 不必先把整个引擎（含加密设置）搭起来。依次回退到旧位置，免得改结构时脚本静默失效。
 REGISTRY_FILES = [
+    ANDROID_SRC / "core" / "agent" / "ToolRegistryFactory.kt",
     ANDROID_SRC / "core" / "agent" / "ConversationEngine.kt",
     ANDROID_SRC / "ui" / "chat" / "ChatViewModel.kt",
 ]

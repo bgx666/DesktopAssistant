@@ -71,7 +71,7 @@ object EndpointUrl {
                 "和 session 值；如果 session 是空的，把那个框清空再保存会自动生成一个。"
 
         // 网关对"没有 messages"的回复只有一句 {"model":"..."}，完全看不出病因
-        status == 400 && body.trim().matches(Regex("""\{\s*"model"\s*:\s*"[^"]*"\s*}""")) ->
+        status == 400 && looksLikeModelOnlyError(body) ->
             "网关说这次请求里没有可用的 messages（它只回了模型名）。" +
                 "多半是请求体不完整或消息列表为空；设置页「测试连接」里的「本次请求」会显示实际条数。"
 
@@ -87,5 +87,23 @@ object EndpointUrl {
         status >= 500 -> "服务端出错，不是配置问题，稍后再试。"
 
         else -> null
+    }
+
+    /**
+     * 是不是"只有模型名"的那种报错体（如 `{"model":"deepseek-v4.1-flash"}`）。
+     *
+     * **刻意不用正则**：原来写的是
+     * `Regex("""\{\s*"model"\s*:\s*"[^"]*"\s*}""")`，里面有未配对的 `}`——
+     * 桌面 JVM 的正则容忍它（所以单测全绿），而**安卓用的是 ICU 正则，
+     * 会直接抛 PatternSyntaxException**。表现就是"电脑上测好的代码在真机上崩"。
+     * 这种小判断用字符串操作更省事，也不会因为正则方言差异翻车。
+     */
+    private fun looksLikeModelOnlyError(body: String): Boolean {
+        val t = body.trim()
+        return t.length < 200 &&
+            t.startsWith("{") && t.endsWith("}") &&
+            t.contains("\"model\"") &&
+            !t.contains("messages") &&
+            !t.contains("error")
     }
 }

@@ -35,11 +35,22 @@ object SpeechText {
     /** 行内 markdown 符号：去掉了才不会被读成"星号星号"。 */
     private val MARKDOWN = listOf("**", "```", "`", "#", "*", "_", "~", ">")
 
+    /** 连续空白。 */
+    private val BLANK = Regex("\\s{2,}")
+
     fun clean(text: String?): String {
         if (text.isNullOrBlank()) return ""
         // 显式 orEmpty 而不是靠智能转换：text 是 String?，直接赋值会推出 String?
         // 类型，后面每个 replace 都要写 ?.，编译器还只报"候选都不适用"，很绕
-        var t: String = text.orEmpty()
+        val source: String = text.orEmpty()
+        // 朗读前的清洗是"锦上添花"：正则在这台机器上不认（安卓用 ICU 正则，
+        // 方言与桌面 JVM 不同，踩过一次 PatternSyntaxException）也**绝不能崩**，
+        // 退回一个只做字符替换的保守版本。
+        return runCatching { cleanWithRegex(source) }.getOrElse { cleanWithoutRegex(source) }
+    }
+
+    private fun cleanWithRegex(text: String): String {
+        var t = text
 
         t = MD_LINK.replace(t) { it.groupValues[1] }      // 链接保留文字
 
@@ -53,8 +64,20 @@ object SpeechText {
         t = EMOJI.replace(t, "")
         MARKDOWN.forEach { t = t.replace(it, "") }
         t = t.replace("\r", " ").replace("\n\n", "\n")
-        t = Regex("""\s{2,}""").replace(t, " ")
+        t = BLANK.replace(t, " ")
 
+        return joinLines(t)
+    }
+
+    /** 不碰正则的兜底版本：能去 markdown 符号、能合并行，只是清不掉 emoji 与括号。 */
+    private fun cleanWithoutRegex(text: String): String {
+        var t = text.replace("\r", " ").replace("\n\n", "\n")
+        MARKDOWN.forEach { t = t.replace(it, "") }
+        while (t.contains("  ")) t = t.replace("  ", " ")
+        return joinLines(t)
+    }
+
+    private fun joinLines(t: String): String {
         val lines = t.split("\n").map { it.trim() }.filter { it.isNotEmpty() }
         return lines.joinToString("。").take(MAX_CHARS)
     }
