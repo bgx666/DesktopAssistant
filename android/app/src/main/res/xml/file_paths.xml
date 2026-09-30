@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  拍照输出用的目录（只暴露 cache/photos，不暴露整个应用目录）。
+  见 ChatScreen.newPhotoUri()：用系统相机拍全分辨率原图，写到这里再读回来。
+-->
+<paths>
+    <cache-path name="photos" path="photos/" />
+</paths>

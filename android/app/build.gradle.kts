@@ -14,10 +14,10 @@ android {
         applicationId = "com.xiaozhu.planner"
         minSdk = 26
         targetSdk = 35
-        versionCode = 11
-        // 0.3.5：一轮里多次模型输出各自成一个气泡（与库里/PC 版一致）；
-        // 回读后是否保留内存那份气泡改为按"有没有新原文落库"判断，不再按文本比对。
-        versionName = "0.3.5"
+        versionCode = 12
+        // 0.4.0：图片输入（拍照 / 相册）。带图时 content 按 OpenAI 协议发成块数组；
+        // 图片常驻 buffer、每轮重发；压缩时换成"（图片）"占位。
+        versionName = "0.4.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -63,6 +63,8 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
     implementation("androidx.core:core-ktx:1.13.1")
+    // 读 EXIF 摆正照片方向（手机竖拍的像素常是横的，不摆正模型看到的就是躺着的图）
+    implementation("androidx.exifinterface:exifinterface:1.3.7")
 
     // 网络 + JSON：直连 OpenAI 兼容端点（DeepSeek），SSE 流式 + tool calls
     implementation("com.squareup.okhttp3:okhttp:4.12.0")

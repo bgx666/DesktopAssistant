@@ -33,6 +33,13 @@ data class UiMessage(
     val rawIndex: Int? = null,
     /** 记忆卡片的元信息（层级、时间范围），仅 [UiMessageKind.Memory] 有。 */
     val memoryMeta: String? = null,
+    /**
+     * 这条消息带的图片（data URL）。
+     *
+     * 与 PC 版一致：图片常驻 buffer、每轮模型调用重发；压缩成记忆节点时
+     * 换成"（图片）"占位，base64 不进记忆树。
+     */
+    val images: List<String> = emptyList(),
 ) {
     val fromUser: Boolean get() = kind == UiMessageKind.User
 }
@@ -69,8 +76,14 @@ data class ChatUiState(
     val contextTokens: Int = 0,
     /** 下次主动醒来的倒计时文案（PC 版标题栏第二行）。 */
     val heartbeatLabel: String? = null,
+    /**
+     * 已经选好、还没发出去的图片（data URL）。发送时随消息一起走，发完清空。
+     */
+    val pendingImages: List<String> = emptyList(),
+
     /** 逾期未完成的数量（PC 版"日历"页签上的角标）。 */
     val overdueCount: Int = 0,
+
     /**
      * 包里带了旧数据但还没导（库非空，自动路径跳过了）→ 界面问一句。
      *

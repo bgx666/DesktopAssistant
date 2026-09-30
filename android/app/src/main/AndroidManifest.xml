@@ -21,6 +21,13 @@
         android:name="android.hardware.microphone"
         android:required="false" />
 
+    <!-- 拍照同理：走系统相机（ACTION_IMAGE_CAPTURE），没有摄像头的设备也能装。
+         注意**故意不声明 CAMERA 权限**——只声明的话系统会要求用户授权，
+         而这里根本用不到（照片是系统相机 App 拍的，我们只是收结果）。 -->
+    <uses-feature
+        android:name="android.hardware.camera"
+        android:required="false" />
+
     <application
         android:allowBackup="false"
         android:label="@string/app_name"
@@ -58,6 +65,17 @@
         <receiver
             android:name=".reminder.ReminderReceiver"
             android:exported="false" />
+
+        <!-- 拍照输出用的临时文件（只暴露 cache/photos，见 res/xml/file_paths.xml） -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
 
         <!-- 心跳到点（不精确闹钟即可；界面活着交给界面，否则起服务跑一轮） -->
         <receiver

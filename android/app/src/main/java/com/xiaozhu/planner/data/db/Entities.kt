@@ -45,6 +45,13 @@ data class MessageEntity(
     val toolCalls: String? = null,  // JSON：assistant 带工具调用时
     val toolCallId: String? = null,
     val name: String? = null,
+    /**
+     * 图片（JSON 数组字符串，元素是 data URL）。
+     *
+     * 与 PC 版一致：图片**常驻 buffer**，每轮模型调用都重发（每张最多算 384 token）。
+     * 压缩成记忆节点时换成"（图片）"占位，base64 不进记忆树。
+     */
+    val images: String? = null,
 )
 
 /** buffer 的运行状态（重启恢复用）。 */

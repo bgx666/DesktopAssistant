@@ -112,6 +112,33 @@ class PlannerDatabaseMigrationTest {
             assertTrue(c.moveToFirst())
             assertEquals(0, c.getInt(0))
         }
+        // v3 新加的列也在，且老行的值为 NULL（图片是后加的能力）
+        db.query("SELECT images FROM messages").use { c ->
+            assertTrue(c.moveToFirst())
+            assertTrue("老消息没有图片，应该是 NULL", c.isNull(0))
+        }
+        helper.close()
+    }
+
+    @Test
+    fun `加图片列的迁移不动老数据`() {
+        val helper = v1Database()
+        val db = helper.writableDatabase
+        db.execSQL("INSERT INTO messages (role, content, tsMillis) VALUES ('user', '老对话', 1759020000000)")
+
+        PlannerDatabase.MIGRATIONS.sortedBy { it.startVersion }.forEach { it.migrate(db) }
+
+        db.query("SELECT content, images FROM messages").use { c ->
+            assertTrue(c.moveToFirst())
+            assertEquals("老对话", c.getString(0))
+            assertTrue(c.isNull(1))
+        }
+        // 新列可写（图片输入要靠它）
+        db.execSQL("UPDATE messages SET images = '[\"data:image/jpeg;base64,AAAA\"]'")
+        db.query("SELECT images FROM messages").use { c ->
+            assertTrue(c.moveToFirst())
+            assertTrue(c.getString(0).contains("base64"))
+        }
         helper.close()
     }
 

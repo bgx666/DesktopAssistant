@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -27,6 +28,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -49,11 +52,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import com.xiaozhu.planner.core.image.ImagePreparer
 import com.xiaozhu.planner.speech.VoiceInput
 import com.xiaozhu.planner.ui.theme.PlannerColors
 import kotlinx.coroutines.launch
@@ -108,6 +114,21 @@ fun ChatScreen(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
         if (granted) voice.start() else vm.showHint("没有麦克风权限，语音输入用不了；打字也一样。")
+    }
+
+    // 相册：用系统照片选择器（不需要读存储权限）
+    val gallery = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickVisualMedia()
+    ) { uri -> if (uri != null) vm.attachImage(uri) }
+
+    // 拍照：拍完写进我们给的临时文件，从那里读全分辨率原图
+    var photoUri by remember { mutableStateOf<android.net.Uri?>(null) }
+    val camera = rememberLauncherForActivityResult(
+        ActivityResultContracts.TakePicture()
+    ) { ok ->
+        val uri = photoUri
+        photoUri = null
+        if (ok && uri != null) vm.attachImage(uri) else if (!ok) vm.showHint("没有拍照。")
     }
 
     LaunchedEffect(state.messages.size, state.messages.lastOrNull()?.text) {
@@ -219,6 +240,7 @@ fun ChatScreen(
                     onDraft = { draft = it },
                     listening = listening,
                     streaming = state.streaming,
+                    pendingImages = state.pendingImages,
                     onMic = {
                         if (listening) {
                             voice.stop()
@@ -231,6 +253,26 @@ fun ChatScreen(
                             micPermission.launch(Manifest.permission.RECORD_AUDIO)
                         }
                     },
+                    onPickImage = {
+                        // 系统相册选择器（Android 13+ 是照片选择器，不需要读存储权限）
+                        gallery.launch(
+                            androidx.activity.result.PickVisualMediaRequest(
+                                ActivityResultContracts.PickVisualMedia.ImageOnly
+                            )
+                        )
+                    },
+                    onTakePhoto = {
+                        // 用系统相机拍，输出到 FileProvider 给的临时文件——
+                        // 这样拿到的是**全分辨率**原图，而不是 TakePicturePreview 的小缩略图
+                        val uri = runCatching { newPhotoUri(context) }.getOrNull()
+                        if (uri == null) {
+                            vm.showHint("没法创建拍照用的临时文件。")
+                        } else {
+                            photoUri = uri
+                            camera.launch(uri)
+                        }
+                    },
+                    onRemoveImage = { vm.removePendingImage(it) },
                     onSend = { vm.send(draft); draft = "" },
                     onStop = { vm.stop() },
                 )
@@ -336,9 +378,87 @@ private fun SeedPromptCard(
 }
 
 /**
+ * 一排图片缩略图（消息里显示用）。
+ *
+ * 自己拍的/选的图已经缩到长边 1568，直接解码显示即可；
+ * 解码失败就跳过（不显示破图），不影响这条消息的文字。
+ */
+@Composable
+private fun ImageStrip(images: List<String>, modifier: Modifier = Modifier) {
+    Row(
+        modifier = modifier,
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        images.take(3).forEach { url ->
+            val bitmap = remember(url) {
+                runCatching { ImagePreparer.decodeDataUrl(url) }.getOrNull()
+            }
+            if (bitmap != null) {
+                Image(
+                    bitmap = bitmap.asImageBitmap(),
+                    contentDescription = "图片",
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier
+                        .size(96.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .border(1.dp, Color(0x22000000), RoundedCornerShape(10.dp)),
+                )
+            }
+        }
+        if (images.size > 3) {
+            Text(
+                "+${images.size - 3}",
+                style = MaterialTheme.typography.labelMedium,
+                color = PlannerColors.TextSoft,
+                modifier = Modifier.align(Alignment.Bottom),
+            )
+        }
+    }
+}
+
+/** 待发送的图片：缩略图 + 右上角 ✕ 移除。 */
+@Composable
+private fun PendingImageStrip(images: List<String>, onRemove: (Int) -> Unit) {
+    Row(
+        modifier = Modifier.padding(bottom = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        images.forEachIndexed { index, url ->
+            val bitmap = remember(url) {
+                runCatching { ImagePreparer.decodeDataUrl(url) }.getOrNull()
+            }
+            Box {
+                if (bitmap != null) {
+                    Image(
+                        bitmap = bitmap.asImageBitmap(),
+                        contentDescription = "待发送的图片",
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier
+                            .size(56.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .border(1.dp, PlannerColors.Primary, RoundedCornerShape(8.dp)),
+                    )
+                }
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .size(18.dp)
+                        .clip(CircleShape)
+                        .background(Color(0xCC2A3040))
+                        .clickable { onRemove(index) },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text("✕", style = MaterialTheme.typography.labelSmall, color = Color.White)
+                }
+            }
+        }
+    }
+}
+
+/**
  * 输入区。PC 版发送按钮有三态：发送 / 停止（红）/ 录音（红，长按说话时）。
  * 安卓这边语音是独立的麦克风按钮（没有"长按发送键"这个手势），
- * 所以保留两态 + 录音态的高亮。
+ * 所以保留两态 + 录音态的高亮；发图是 ＋ 按钮（拍照 / 相册）。
  */
 @Composable
 private fun InputBar(
@@ -346,47 +466,101 @@ private fun InputBar(
     onDraft: (String) -> Unit,
     listening: Boolean,
     streaming: Boolean,
+    pendingImages: List<String>,
     onMic: () -> Unit,
+    onPickImage: () -> Unit,
+    onTakePhoto: () -> Unit,
+    onRemoveImage: (Int) -> Unit,
     onSend: () -> Unit,
     onStop: () -> Unit,
 ) {
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
-        verticalAlignment = Alignment.Bottom,
-    ) {
-        Box(
-            modifier = Modifier
-                .padding(bottom = 4.dp)
-                .size(42.dp)
-                .clip(RoundedCornerShape(12.dp))
-                .background(if (listening) PlannerColors.Danger else PlannerColors.Surface)
-                .border(1.dp, Color(0x28141E32), RoundedCornerShape(12.dp))
-                .clickable(onClick = onMic),
-            contentAlignment = Alignment.Center,
-        ) {
-            Text("🎤", style = MaterialTheme.typography.titleMedium)
+    var attachMenu by remember { mutableStateOf(false) }
+
+    Column(modifier = Modifier.fillMaxWidth()) {
+        // 已选待发的图（发送后清空，与 PC 版"发完清除挂载"同义）
+        if (pendingImages.isNotEmpty()) {
+            PendingImageStrip(pendingImages, onRemove = onRemoveImage)
         }
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.Bottom,
+        ) {
+            Box(
+                modifier = Modifier
+                    .padding(bottom = 4.dp)
+                    .size(42.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(if (listening) PlannerColors.Danger else PlannerColors.Surface)
+                    .border(1.dp, Color(0x28141E32), RoundedCornerShape(12.dp))
+                    .clickable(onClick = onMic),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text("🎤", style = MaterialTheme.typography.titleMedium)
+            }
 
-        OutlinedTextField(
-            value = draft,
-            onValueChange = onDraft,
-            modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
-            placeholder = { Text(if (listening) "在听…" else "告诉小助你要做什么…") },
-            maxLines = 4,
-            shape = RoundedCornerShape(12.dp),
-        )
+            // 发图：拍照 / 从相册选（DeepSeek 的 deepseek-flash 支持图片输入）
+            Box(modifier = Modifier.padding(bottom = 4.dp)) {
+                Box(
+                    modifier = Modifier
+                        .padding(start = 6.dp)
+                        .size(42.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(PlannerColors.Surface)
+                        .border(1.dp, Color(0x28141E32), RoundedCornerShape(12.dp))
+                        .clickable { attachMenu = true },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text("＋", style = MaterialTheme.typography.titleMedium)
+                }
+                DropdownMenu(expanded = attachMenu, onDismissRequest = { attachMenu = false }) {
+                    DropdownMenuItem(
+                        text = { Text("拍照") },
+                        onClick = { attachMenu = false; onTakePhoto() },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("从相册选") },
+                        onClick = { attachMenu = false; onPickImage() },
+                    )
+                }
+            }
 
-        Button(
-            onClick = if (streaming) onStop else onSend,
-            enabled = streaming || draft.isNotBlank(),
-            modifier = Modifier.padding(bottom = 4.dp),
-            shape = RoundedCornerShape(12.dp),
-            colors = androidx.compose.material3.ButtonDefaults.buttonColors(
-                // PC 版停止态是红渐变
-                containerColor = if (streaming) PlannerColors.Danger else PlannerColors.Primary,
-            ),
-        ) { Text(if (streaming) "停止" else "发送") }
+            OutlinedTextField(
+                value = draft,
+                onValueChange = onDraft,
+                modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
+                placeholder = { Text(if (listening) "在听…" else "告诉小助你要做什么…") },
+                maxLines = 4,
+                shape = RoundedCornerShape(12.dp),
+            )
+
+            Button(
+                onClick = if (streaming) onStop else onSend,
+                enabled = streaming || draft.isNotBlank() || pendingImages.isNotEmpty(),
+                modifier = Modifier.padding(bottom = 4.dp),
+                shape = RoundedCornerShape(12.dp),
+                colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                    // PC 版停止态是红渐变
+                    containerColor = if (streaming) PlannerColors.Danger else PlannerColors.Primary,
+                ),
+            ) { Text(if (streaming) "停止" else "发送") }
+        }
     }
+}
+
+/**
+ * 拍照输出用的临时文件 URI（走 FileProvider）。
+ *
+ * 用 `TakePicture` 而不是 `TakePicturePreview`：后者只给一张缩略图，
+ * 拍文档/白板时糊得看不清，模型也读不出内容。
+ */
+private fun newPhotoUri(context: android.content.Context): android.net.Uri {
+    val dir = java.io.File(context.cacheDir, "photos").apply { mkdirs() }
+    val file = java.io.File(dir, "shot-${System.currentTimeMillis()}.jpg")
+    return androidx.core.content.FileProvider.getUriForFile(
+        context,
+        "${context.packageName}.fileprovider",
+        file,
+    )
 }
 
 /** 顶栏图标按钮：图标在上、小字在下，宽度固定，不会被挤到截断。 */
@@ -457,24 +631,31 @@ private fun UserRow(msg: UiMessage, onUndo: () -> Unit) {
         }
     }
 
-    Column(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalAlignment = Alignment.End,
-    ) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth(0.86f)
-                .clip(RoundedCornerShape(14.dp, 14.dp, 5.dp, 14.dp))
-                .background(PlannerColors.UserBubble)
-                .padding(horizontal = 13.dp, vertical = 9.dp),
+        // 用户消息：右侧蓝色渐变气泡 + 撤销按钮（PC 版气泡下方右侧）
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalAlignment = Alignment.End,
         ) {
-            // 用户消息**不渲染 markdown**（PC 版是 textContent 原样）
-            Text(
-                msg.text,
-                style = MaterialTheme.typography.bodyMedium,
-                color = Color.White,
-            )
-        }
+            // 图在气泡上方（自己的图看大一点，点开可放大）
+            if (msg.images.isNotEmpty()) {
+                ImageStrip(msg.images, modifier = Modifier.padding(bottom = 4.dp))
+            }
+            if (msg.text.isNotBlank()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth(0.86f)
+                        .clip(RoundedCornerShape(14.dp, 14.dp, 5.dp, 14.dp))
+                        .background(PlannerColors.UserBubble)
+                        .padding(horizontal = 13.dp, vertical = 9.dp),
+                ) {
+                    // 用户消息**不渲染 markdown**（PC 版是 textContent 原样）
+                    Text(
+                        msg.text,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Color.White,
+                    )
+                }
+            }
         // PC 版只在"这条能撤销"时才给按钮（记忆卡片与历史回放没有 id）
         if (msg.rawIndex != null) {
             TextButton(

@@ -15,7 +15,13 @@ val PlannerJson: Json = Json {
     encodeDefaults = true
 }
 
-/** 一条对话消息（OpenAI /chat/completions 的形状）。 */
+/**
+ * 一条对话消息（OpenAI /chat/completions 的形状）。
+ *
+ * [images] 是 data URL（`data:image/jpeg;base64,...`）。**有图时 content 会变成数组**
+ * （`[{"type":"text",...},{"type":"image_url",...}]`），这是 OpenAI 协议的硬要求；
+ * 转换放在 [OpenAiClient] 里做，这一层保持"文本 + 图"的简单形状。
+ */
 @Serializable
 data class ChatMessage(
     val role: String,
@@ -23,10 +29,16 @@ data class ChatMessage(
     val name: String? = null,
     @SerialName("tool_calls") val toolCalls: List<ToolCall>? = null,
     @SerialName("tool_call_id") val toolCallId: String? = null,
+    val images: List<String> = emptyList(),
 ) {
     companion object {
         fun system(text: String) = ChatMessage(role = "system", content = text)
         fun user(text: String) = ChatMessage(role = "user", content = text)
+
+        /** 带图的一条用户消息。 */
+        fun userWithImages(text: String, images: List<String>) =
+            ChatMessage(role = "user", content = text, images = images)
+
         fun assistant(text: String) = ChatMessage(role = "assistant", content = text)
         fun assistantToolCalls(calls: List<ToolCall>, text: String = "") =
             ChatMessage(role = "assistant", content = text, toolCalls = calls)

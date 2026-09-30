@@ -89,7 +89,17 @@ class Compressor(
         val timeRange = ts(batch.first().tsMillis) to ts(batch.last().tsMillis)
 
         val details = LeafDetails(
-            messages = batch.map { MessageMapping.toChatMessage(it) },
+            // 图片换成"（图片）"占位（PC 版同款）：base64 绝不进记忆树——
+            // 那是几 MB 的字符串，写进 details 会让节点膨胀几百倍，而且模型也读不到"图"本身
+            messages = batch.map { row ->
+                val msg = MessageMapping.toChatMessage(row)
+                if (msg.images.isEmpty()) msg
+                else msg.copy(
+                    content = listOfNotNull(msg.content?.takeIf { it.isNotBlank() }, "（图片）")
+                        .joinToString(" "),
+                    images = emptyList(),
+                )
+            },
             futureNotes = out.futureNotes,
         )
         val nodeId = store.addLeaf(

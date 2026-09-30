@@ -7,7 +7,9 @@ import com.xiaozhu.planner.core.agent.AgentEvent
 import com.xiaozhu.planner.core.agent.ConversationEngine
 import com.xiaozhu.planner.core.agent.ProactivePrompts
 import com.xiaozhu.planner.core.calendar.CalendarDates
+import com.xiaozhu.planner.core.image.ImagePreparer
 import com.xiaozhu.planner.core.llm.ChatMessage
+import com.xiaozhu.planner.core.llm.VisionSupport
 import com.xiaozhu.planner.core.memory.CompressionOutcome
 import com.xiaozhu.planner.core.memory.MemoryHit
 import com.xiaozhu.planner.core.memory.MemoryStore
@@ -201,6 +203,45 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         _state.update { it.copy(seedPrompt = null) }
     }
 
+    // ── 图片输入（拍照 / 相册）─────────────────────────────
+
+    /**
+     * 把一张图放进"待发送"区（已经缩小摆正过）。
+     *
+     * 模型看不了图时**直接拦下并说清楚**——发出去只会得到一句看不懂的 400。
+     * PC 版在这种情况下会退回 OCR，安卓没有 OCR（不想为它背一个 ML Kit 依赖），
+     * 所以选择明确告知 + 建议换模型。
+     */
+    fun attachImage(uri: android.net.Uri) {
+        val model = engine.settings.model
+        if (!VisionSupport.isVisionCapable(model)) {
+            showHint(VisionSupport.unsupportedHint(model))
+            return
+        }
+        viewModelScope.launch {
+            val dataUrl = withContext(Dispatchers.IO) {
+                runCatching { ImagePreparer.toDataUrl(getApplication(), uri) }.getOrNull()
+            }
+            if (dataUrl == null) {
+                showHint("这张图读不出来（可能不是图片，或没有读取权限）。")
+                return@launch
+            }
+            _state.update {
+                if (it.pendingImages.size >= ImagePreparer.MAX_IMAGES) {
+                    it.copy(hint = "一次最多带 ${ImagePreparer.MAX_IMAGES} 张图。")
+                } else {
+                    it.copy(pendingImages = it.pendingImages + dataUrl, hint = null)
+                }
+            }
+        }
+    }
+
+    fun removePendingImage(index: Int) {
+        _state.update {
+            it.copy(pendingImages = it.pendingImages.filterIndexed { i, _ -> i != index })
+        }
+    }
+
     /** 输入框已经把恢复内容取走了，清掉这个一次性标记。 */
     fun consumeRestoreDraft() {
         _state.update { it.copy(restoreDraft = null) }
@@ -210,9 +251,16 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     fun send(text: String) {
         val body = text.trim()
-        if (body.isEmpty()) return
+        val images = _state.value.pendingImages
+        // 只有图、没有字也可以发（"看看这张"这种）
+        if (body.isEmpty() && images.isEmpty()) return
         speaker.stop()
-        submit(ChatMessage.user(body), UiMessageKind.User, body)
+        val message = if (images.isEmpty()) {
+            ChatMessage.user(body)
+        } else {
+            ChatMessage.userWithImages(body, images)
+        }
+        submit(message, UiMessageKind.User, body, images)
     }
 
     fun speak(text: String) = speaker.speak(text)
@@ -265,7 +313,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         )
     }
 
-    private fun submit(message: ChatMessage, kind: UiMessageKind, display: String) {
+    private fun submit(
+        message: ChatMessage,
+        kind: UiMessageKind,
+        display: String,
+        images: List<String> = emptyList(),
+    ) {
         if (_state.value.streaming) return
         if (!engine.settings.configured) {
             _state.update { it.copy(hint = "还没配置 API Key，先去设置页填一个。") }
@@ -287,12 +340,15 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         text = display,
                         time = nowHHmm(),
                         rawIndex = newRawIndex,
+                        images = images,
                     ) +
                     UiMessage(id = assistantId, kind = UiMessageKind.Assistant),
                 streaming = true,
                 hint = null,
                 memoryNotice = null,
                 restoreDraft = null,
+                // 图已经随这条消息发出去了，待发区清空（与 PC 版发完 clearMounted 同义）
+                pendingImages = emptyList(),
             )
         }
 
@@ -452,6 +508,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             rawIndex = index,
             // 历史里的工具卡片是**已完成**态（不该转圈），结果按 tool_call_id 填回去
             tools = MessageTools.parse(row.toolCalls, row.name, resultsByCallId, live = false),
+            // 图片从库里读回来（常驻 buffer，重开 app 也还在）
+            images = com.xiaozhu.planner.core.memory.MessageMapping.imagesOf(row),
         )
     }
 

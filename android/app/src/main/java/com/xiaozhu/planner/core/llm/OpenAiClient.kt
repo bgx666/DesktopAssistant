@@ -7,6 +7,10 @@ import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonObject
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -122,7 +126,7 @@ class OpenAiClient(
     private fun describeRequest(messages: List<ChatMessage>, toolCount: Int, stream: Boolean): String {
         val bytes = PlannerJson.encodeToString(
             ChatRequest.serializer(),
-            ChatRequest(model = model, messages = messages, stream = stream),
+            ChatRequest(model = model, messages = messages.map { it.toWire() }, stream = stream),
         ).length
         return buildString {
             append("messages=").append(messages.size)
@@ -142,7 +146,7 @@ class OpenAiClient(
             ChatRequest.serializer(),
             ChatRequest(
                 model = model,
-                messages = messages,
+                messages = messages.map { it.toWire() },
                 tools = tools,
                 stream = stream,
                 streamOptions = if (stream) StreamOptions() else null,
@@ -156,6 +160,37 @@ class OpenAiClient(
         extraHeaders.forEach { (name, value) -> builder.addHeader(name, value) }
         return builder.post(body.toRequestBody(JSON_MEDIA)).build()
     }
+
+    /**
+     * 把内部消息转成协议形状。
+     *
+     * **有图时 `content` 必须是数组**（`[{"type":"text",...},{"type":"image_url",...}]`），
+     * 纯文本时仍是字符串——这是 OpenAI 协议的规定，写错端点会 400。
+     * 转换只在这一处做，别的地方都按"文本 + 图"的简单形状处理。
+     */
+    private fun ChatMessage.toWire(): ChatMessageWire = ChatMessageWire(
+        role = role,
+        content = if (images.isEmpty()) {
+            content?.let { kotlinx.serialization.json.JsonPrimitive(it) }
+        } else {
+            buildJsonArray {
+                if (!content.isNullOrBlank()) {
+                    add(buildJsonObject { put("type", "text"); put("text", content) })
+                }
+                images.forEach { url ->
+                    add(
+                        buildJsonObject {
+                            put("type", "image_url")
+                            putJsonObject("image_url") { put("url", url) }
+                        }
+                    )
+                }
+            }
+        },
+        name = name,
+        toolCalls = toolCalls,
+        toolCallId = toolCallId,
+    )
 
     private fun errorBody(response: okhttp3.Response): String = try {
         response.body?.string()?.take(500).orEmpty()
@@ -187,10 +222,25 @@ class OpenAiClient(
 @Serializable
 internal data class ChatRequest(
     val model: String,
-    val messages: List<ChatMessage>,
+    val messages: List<ChatMessageWire>,
     val tools: List<ToolSpec>? = null,
     val stream: Boolean = true,
     @SerialName("stream_options") val streamOptions: StreamOptions? = null,
+)
+
+/**
+ * 真正发出去的报文形状：`content` 可能是字符串（纯文本），也可能是块数组（带图）。
+ *
+ * 用 [JsonElement] 而不是 String —— 只有这样才能在同一字段里表达两种形状，
+ * 而不用给 ChatMessage 写自定义序列化器（那会把"文本 + 图"的简单模型搞复杂）。
+ */
+@Serializable
+internal data class ChatMessageWire(
+    val role: String,
+    val content: kotlinx.serialization.json.JsonElement? = null,
+    val name: String? = null,
+    @SerialName("tool_calls") val toolCalls: List<ToolCall>? = null,
+    @SerialName("tool_call_id") val toolCallId: String? = null,
 )
 
 @Serializable

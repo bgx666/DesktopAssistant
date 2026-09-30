@@ -14,7 +14,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         BufferStateEntity::class,
         CalendarItemEntity::class,
     ],
-    version = 2,
+    version = 3,
     exportSchema = false,
 )
 abstract class PlannerDatabase : RoomDatabase() {
@@ -57,6 +57,17 @@ abstract class PlannerDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v2 → v3：消息加 `images` 列（图片输入）。
+         *
+         * 只加一列、老行填 NULL，所以老数据一条都不会动。
+         */
+        val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `messages` ADD COLUMN `images` TEXT")
+            }
+        }
+
         @Volatile
         private var instance: PlannerDatabase? = null
 
@@ -73,6 +84,7 @@ abstract class PlannerDatabase : RoomDatabase() {
          */
         val MIGRATIONS: Array<Migration> = arrayOf(
             MIGRATION_1_2,
+            MIGRATION_2_3,
         )
 
         /**
