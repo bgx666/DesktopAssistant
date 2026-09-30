@@ -108,6 +108,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             runCatching { engine.scheduler.sync() }
             // 排心跳：没排过就兜底 30 分钟（PC 版同款），否则"主动找你"会永远不发生
             runCatching { engine.heartbeat.armWithFallback() }
+            // 图片迁移：把库里老格式的内嵌 base64 搬进文件。每次一小批、逐行独立，
+            // 失败的行原样留着 base64 下次继续——见 ImageMigration（迁移不可能丢图）
+            runCatching { com.xiaozhu.planner.core.image.ImageMigration.runBatch(engine.db) }
         }
         // 把库里的历史读出来画上（这是"记忆搬过来了"唯一看得见的地方）
         viewModelScope.launch {

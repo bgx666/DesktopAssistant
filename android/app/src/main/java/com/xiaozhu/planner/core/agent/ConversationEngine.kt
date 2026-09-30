@@ -56,6 +56,12 @@ class ConversationEngine private constructor(private val app: Application) {
     val settings = SettingsStore(app)
     /** 数据库单例（种子导入等场景要直接用它）。 */
     val db = PlannerDatabase.get(app)
+
+    init {
+        // 图片仓库要拿到应用上下文（引用解析用在读消息的任何地方，见 ImageStore 的注释）
+        com.xiaozhu.planner.core.image.ImageStore.init(app)
+        runCatching { com.xiaozhu.planner.core.image.ImageStore.cleanupTemp() }
+    }
     val store = MemoryStore(db)
     val calendar = CalendarStore(db.calendar())
     val conversation = ConversationService(store)

@@ -30,6 +30,25 @@ data class ProfileInfo(
 data class LeafDetails(
     val messages: List<ChatMessage> = emptyList(),
     @SerialName("future_notes") val futureNotes: List<String> = emptyList(),
+    /**
+     * 这一段对话里出现过的图片的**引用**（本体在文件里，见 ImageStore）。
+     *
+     * 压缩时图片本体不进记忆树（base64 会把节点撑大几百倍），但"那天有张天空的照片"
+     * 这件事必须留下来——否则以后问"那天的天空什么样"就永远答不出。
+     * 留着引用 + 时间 + 当时的话，模型就能用 `list_images` / `show_image` 把它找回来。
+     */
+    @SerialName("image_refs") val imageRefs: List<ImageRef> = emptyList(),
+)
+
+/** 记忆节点里留下的一张图片的索引（不含图片本体）。 */
+@Serializable
+data class ImageRef(
+    /** `sha1:<hex>` 形式的引用。 */
+    val ref: String,
+    /** 这张图是什么时候发的（`yyyy-MM-dd HH:mm:ss`）。 */
+    val ts: String,
+    /** 发图时用户说的话（检索线索；空就是只发了图没说话）。 */
+    @SerialName("said") val said: String = "",
 )
 
 /** 压缩的产出（结构化输出，与 PC 版 `MemoryNodeOutput` 对齐）。 */

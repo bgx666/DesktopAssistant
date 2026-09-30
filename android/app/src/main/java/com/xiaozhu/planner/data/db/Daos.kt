@@ -95,6 +95,29 @@ interface MessageDao {
 
     @Query("DELETE FROM messages")
     suspend fun clear()
+
+    // ── 图片迁移（老格式 base64 → 文件引用）────────────────────
+    //
+    // 用 LIKE 粗筛 + 在代码里精确判断：迁移是**一次性**的，粗筛只会多带几行，
+    // 不会漏（漏了才是灾难）。SQLite 里判断 JSON 数组里有没有 "data:" 前缀
+    // 靠字符串匹配就够了。
+
+    @Query("SELECT * FROM messages WHERE images LIKE '%data:%' LIMIT :n")
+    suspend fun withInlineImages(n: Int): List<MessageEntity>
+
+    @Query("SELECT COUNT(*) FROM messages WHERE images LIKE '%data:%'")
+    suspend fun countInlineImages(): Int
+
+    /** 只改 images 一列（迁移时绝不能碰其它字段）。 */
+    @Query("UPDATE messages SET images = :value WHERE seq = :seq")
+    suspend fun updateImages(seq: Long, value: String): Int
+
+    /** 图片检索：按时间范围找带图的消息（list_images 工具用）。 */
+    @Query(
+        "SELECT * FROM messages WHERE images IS NOT NULL AND images != '' " +
+            "AND tsMillis >= :fromMillis AND tsMillis <= :toMillis ORDER BY tsMillis DESC LIMIT :limit"
+    )
+    suspend fun withImagesBetween(fromMillis: Long, toMillis: Long, limit: Int): List<MessageEntity>
 }
 
 @Dao

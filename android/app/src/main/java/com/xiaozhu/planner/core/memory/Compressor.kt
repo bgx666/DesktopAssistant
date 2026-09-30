@@ -95,7 +95,7 @@ class Compressor(
         // 这一段里出现过的图片，**要一起交给摘要模型**（见 callCompress 的注释）：
         // 不交的话，压缩后记忆里只剩一个"（图片）"，谁也不知道图里是什么。
         val images = batch.flatMap { row ->
-            runCatching { MessageMapping.imagesOf(row) }.getOrDefault(emptyList())
+            MessageMapping.imagesOf(row)
         }.take(MAX_SUMMARY_IMAGES)
         val out = callCompress(futureText, CompressionPrompts.leaf(original), images)
             ?: return CompressionOutcome.Failed("压缩调用失败或输出无法解析")
@@ -119,6 +119,19 @@ class Compressor(
                 )
             },
             futureNotes = out.futureNotes,
+            // 但**引用要留下**：以后用户问"那天的天空什么样"，模型靠它把图找回来
+            // （list_images / show_image 两个工具）。原图在文件里，不在节点里。
+            imageRefs = batch.flatMap { row ->
+                val refs = MessageMapping.rawImagesOf(row)
+                if (refs.isEmpty()) emptyList()
+                else refs.map { ref ->
+                    ImageRef(
+                        ref = ref,
+                        ts = ts(row.tsMillis),
+                        said = if (row.role == "user") row.content.take(120) else "",
+                    )
+                }
+            },
         )
         val nodeId = store.addLeaf(
             summary = out.summary,
