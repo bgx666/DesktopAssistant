@@ -238,37 +238,47 @@ private fun DayCell(
         today -> PlannerColors.Primary
         else -> PlannerColors.Text
     }
-    Box(
-        modifier = Modifier
-            .size(38.dp)
-            .clip(CircleShape)
-            .background(bg)
-            .then(
-                if (today && !selected) Modifier.border(1.dp, PlannerColors.Primary, CircleShape)
-                else Modifier
+    // 注意这里是两层 Box，不是一层：
+    //
+    // 之前把"圆形底 + 日期数字 + 右下角角标"放在同一个 Box 里，并且用了
+    // `.clip(CircleShape)` —— 圆形裁剪会把**方形容器右下角**的角标切掉，
+    // 于是角标只露出圈内那一小块（用户报的"数字显示不完整"）。
+    // 现在圆只画在**背景**上（`background(color, shape)` 不裁剪子元素），
+    // 角标叠在外层、不再被裁。
+    Box(modifier = Modifier.size(38.dp)) {
+        Box(
+            modifier = Modifier
+                .matchParentSize()
+                .clip(CircleShape)
+                .background(bg)
+                .then(
+                    if (today && !selected) Modifier.border(1.dp, PlannerColors.Primary, CircleShape)
+                    else Modifier
+                )
+                .clickable(onClick = onClick),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                date.dayOfMonth.toString(),
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = if (selected || today) FontWeight.SemiBold else FontWeight.Normal,
+                color = fg,
             )
-            .clickable(onClick = onClick),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(
-            date.dayOfMonth.toString(),
-            style = MaterialTheme.typography.bodyMedium,
-            fontWeight = if (selected || today) FontWeight.SemiBold else FontWeight.Normal,
-            color = fg,
-        )
+        }
         // 右下角一个小圆里写数字（PC 版 .cal-dot）
         if (undone > 0) {
             Box(
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
-                    .size(14.dp)
+                    .size(16.dp)
                     .clip(CircleShape)
                     .background(if (selected) Color.White else PlannerColors.Accent),
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
-                    undone.toString(),
-                    style = MaterialTheme.typography.labelMedium,
+                    // 两位数字在 16dp 圆里会挤，超过 9 就写 9+（PC 的悬浮球角标也是这么做的）
+                    if (undone > 9) "9+" else undone.toString(),
+                    style = MaterialTheme.typography.labelSmall,
                     color = if (selected) PlannerColors.Primary else Color.White,
                 )
             }

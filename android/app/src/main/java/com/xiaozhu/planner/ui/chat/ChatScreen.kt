@@ -118,29 +118,18 @@ fun ChatScreen(
         ActivityResultContracts.PickVisualMedia()
     ) { uri -> if (uri != null) vm.attachImage(uri) }
 
-    // 拍照：拍完写进我们给的临时文件，从那里读全分辨率原图。
-    // 用自定义契约：既授写权限给相机，又把相机回传的缩略图一起收下——
-    // 部分 ROM 的相机会忽略 EXTRA_OUTPUT 只回缩略图（见 CapturePhoto 的注释）。
-    var cameraContract by remember { mutableStateOf<CapturePhoto?>(null) }
-    val camera = rememberLauncherForActivityResult(
-        contract = cameraContract ?: CapturePhoto(android.net.Uri.EMPTY)
-    ) { result -> vm.attachCapture(result) }
-
-    // 相机权限：先申请再启动（部分 ROM 的相机 App 会检查调用方是否持有 CAMERA，
-    // 没有就直接拒绝——这是"点了拍照没反应/拍完读不出来"的另一条路径）
+    // 相机权限：先申请再启动
     //
-    // 被永久拒绝（勾了"不再询问"）时系统**不会再弹窗**，所以这里自己弹一个说明 + 去设置，
-    // 否则用户点了拍照什么都不发生，只能猜。
+    // 拍照走**App 内相机（CameraX）**，不再用系统相机 Intent——那要依赖第三方相机 App
+    // 的行为，各家 ROM 不一致（忽略 EXTRA_OUTPUT / 拒绝写我们的 URI / 明明写了却返回取消）。
+    // 被永久拒绝（勾了"不再询问"）时系统不会再弹窗，所以自己弹说明 + 去设置。
+    var showCamera by remember { mutableStateOf(false) }
     var showCameraRationale by remember { mutableStateOf(false) }
     val cameraPermission = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
         if (granted) {
-            launchCamera(context) { uri, contract ->
-                vm.captureUri = uri
-                cameraContract = contract
-                camera.launch(Unit)
-            }
+            showCamera = true
         } else if (activity?.shouldShowRequestPermissionRationale(Manifest.permission.CAMERA) == false) {
             showCameraRationale = true
         } else {
@@ -157,9 +146,27 @@ fun ChatScreen(
         if (state.messages.isNotEmpty()) listState.scrollToItem(state.messages.lastIndex)
     }
 
+    // App 内相机：全屏覆盖（Dialog 占满整屏，不走默认的窄对话框）
+    if (showCamera) {
+        androidx.compose.ui.window.Dialog(
+            onDismissRequest = { showCamera = false },
+            properties = androidx.compose.ui.window.DialogProperties(
+                usePlatformDefaultWidth = false,
+                decorFitsSystemWindows = false,
+            ),
+        ) {
+            com.xiaozhu.planner.ui.camera.CameraCaptureScreen(
+                onCaptured = { uri ->
+                    showCamera = false
+                    vm.attachImage(uri)
+                },
+                onCancel = { showCamera = false },
+            )
+        }
+    }
+
     // 相机权限被永久拒绝：系统不会再弹窗，所以自己说清楚 + 给一个去设置的入口
-    if (showCameraRationale) {
-        AlertDialog(
+    if (showCameraRationale) {        AlertDialog(
             onDismissRequest = { showCameraRationale = false },
             title = { Text("需要相机权限") },
             text = {
@@ -296,16 +303,12 @@ fun ChatScreen(
                         )
                     },
                     onTakePhoto = {
-                        // 先确认相机权限，再启动相机（见 cameraPermission 的注释）
+                        // 权限没给就先申请；给了就直接开 App 内相机
                         if (ContextCompat.checkSelfPermission(
                                 context, Manifest.permission.CAMERA
                             ) == PackageManager.PERMISSION_GRANTED
                         ) {
-                            launchCamera(context) { uri, contract ->
-                                vm.captureUri = uri
-                                cameraContract = contract
-                                camera.launch(Unit)
-                            }
+                            showCamera = true
                         } else {
                             cameraPermission.launch(Manifest.permission.CAMERA)
                         }
@@ -789,23 +792,6 @@ private fun openAppSettings(context: android.content.Context) {
 }
 
 /**
- * 启动相机：先建好临时文件 URI，再把它交给相机（契约里同时带上这个 URI）。
- *
- * 建不出 URI（FileProvider 配错、cache 满了）时给一句人话，而不是静默什么都不发生。
- */
-private fun launchCamera(
-    context: android.content.Context,
-    onReady: (android.net.Uri, CapturePhoto) -> Unit,
-) {
-    val uri = runCatching { newPhotoUri(context) }.getOrNull()
-    if (uri == null) {
-        android.widget.Toast.makeText(context, "没法创建拍照用的临时文件", android.widget.Toast.LENGTH_SHORT).show()
-    } else {
-        onReady(uri, CapturePhoto(uri))
-    }
-}
-
-/**
  * 从 SAF 的 URI 里问出显示名（"论文终稿.pdf"这种）。
  *
  * 取不到就退回路径末段——显示名只用于界面提示与附件标题，
@@ -819,48 +805,29 @@ private fun displayNameOf(context: android.content.Context, uri: android.net.Uri
         }
     }.getOrNull() ?: uri.lastPathSegment?.substringAfterLast('/')
 
-/**
- * 拍照输出的 URI。
- *
- * **API 29+ 走相册（MediaStore），而不是自建 FileProvider**：
- * 自建 provider 的 URI 属于"我们这个 App 自己定义的"，部分厂商相机（MIUI 等）
- * 会拒绝往里写、直接返回取消——用户看到的就是"没有拍照"。相册 URI 是系统级的，
- * 相机 App 对它有原生支持，兼容性最好。
- * 代价是照片会留在相册的 Pictures/小助 里（拍完想留就留，也符合"拍了张照"的预期）。
- *
- * API 26–28 没有 RELATIVE_PATH，继续用 FileProvider（那些年的相机对自定义 provider
- * 支持反而更好）。
- */
-private fun newPhotoUri(context: android.content.Context): android.net.Uri? {
-    if (android.os.Build.VERSION.SDK_INT >= 29) {
-        val values = android.content.ContentValues().apply {
-            put(
-                android.provider.MediaStore.Images.Media.DISPLAY_NAME,
-                "xiaozhu-${System.currentTimeMillis()}.jpg",
-            )
-            put(android.provider.MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
-            put(
-                android.provider.MediaStore.Images.Media.RELATIVE_PATH,
-                android.os.Environment.DIRECTORY_PICTURES + "/小助",
-            )
-        }
-        runCatching {
-            context.contentResolver.insert(
-                android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-                values,
-            )
-        }.getOrNull()?.let { return it }
-    }
-    // 退回 FileProvider
-    val dir = java.io.File(context.cacheDir, "photos").apply { mkdirs() }
-    val file = java.io.File(dir, "shot-${System.currentTimeMillis()}.jpg")
-    return runCatching {
-        androidx.core.content.FileProvider.getUriForFile(
-            context,
-            "${context.packageName}.fileprovider",
-            file,
+/** 顶栏图标按钮：图标在上、小字在下，宽度固定，不会被挤到截断。 */
+@Composable
+private fun IconAction(@DrawableRes iconRes: Int, label: String, onClick: () -> Unit) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier
+            .clip(RoundedCornerShape(10.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 8.dp, vertical = 4.dp),
+    ) {
+        // 自绘矢量图标（原来用的是 emoji，观感太随意）
+        Icon(
+            painter = painterResource(iconRes),
+            contentDescription = label,
+            tint = PlannerColors.Text,
+            modifier = Modifier.size(22.dp),
         )
-    }.getOrNull()
+        Text(
+            label,
+            style = MaterialTheme.typography.labelMedium,
+            color = PlannerColors.TextSoft,
+        )
+    }
 }
 
 /**
@@ -892,7 +859,7 @@ private fun copyToClipboard(context: android.content.Context, text: String) {
     }
 }
 
-/** 小图标按钮（复制 / 朗读）：22dp 圆形，点了有反馈。 */
+/** 小文字按钮（复制 / 朗读）：只用文字，不放 emoji（用户明确要求）。 */
 @Composable
 private fun BubbleAction(glyph: String, onClick: () -> Unit) {
     Box(
@@ -904,31 +871,6 @@ private fun BubbleAction(glyph: String, onClick: () -> Unit) {
     ) {
         Text(
             glyph,
-            style = MaterialTheme.typography.labelMedium,
-            color = PlannerColors.TextSoft,
-        )
-    }
-}
-
-/** 顶栏图标按钮：图标在上、小字在下，宽度固定，不会被挤到截断。 */
-@Composable
-private fun IconAction(@DrawableRes iconRes: Int, label: String, onClick: () -> Unit) {
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
-        modifier = Modifier
-            .clip(RoundedCornerShape(10.dp))
-            .clickable(onClick = onClick)
-            .padding(horizontal = 8.dp, vertical = 4.dp),
-    ) {
-        // 自绘矢量图标（原来用的是 emoji，观感太随意）
-        Icon(
-            painter = painterResource(iconRes),
-            contentDescription = label,
-            tint = PlannerColors.Text,
-            modifier = Modifier.size(22.dp),
-        )
-        Text(
-            label,
             style = MaterialTheme.typography.labelMedium,
             color = PlannerColors.TextSoft,
         )

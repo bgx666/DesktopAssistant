@@ -71,8 +71,6 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     /** 这一轮开始前库里的原文条数（判断落盘成没成，不看文本）。 */
     private var rawCountBeforeRound: Int? = null
 
-    /** 本次拍照的输出文件（读原图用；相机可能压根没写它）。 */
-    var captureUri: android.net.Uri? = null
 
     private val _state = MutableStateFlow(ChatUiState())
     val state: StateFlow<ChatUiState> = _state.asStateFlow()
@@ -208,60 +206,6 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     // ── 图片输入（拍照 / 相册）─────────────────────────────
-
-    /**
-     * 拍照回来的图：**先按原图读，读不到就用相机回传的缩略图**。
-     *
-     * 为什么要这个兜底：不少国内 ROM 的相机 App 会忽略 `EXTRA_OUTPUT`，
-     * 只回一张缩略图。那种情况下我们给的文件是 0 字节——如果只认文件，
-     * 用户拍完就只能看到一句"读不出来"，白拍一次。
-     */
-    fun attachCapture(result: CaptureResult) {
-        val output = captureUri
-        viewModelScope.launch {
-            val (dataUrl, usedThumbnail) = withContext(Dispatchers.IO) {
-                // **先看文件**，不看 result.ok：有些 ROM 明明写了文件却仍返回"取消"
-                // （用户报过"显示没有拍照"，其实照片已经写进去了）
-                val fromFile = output?.let { uri ->
-                    runCatching { ImagePreparer.toDataUrl(getApplication(), uri) }.getOrNull()
-                }
-                when {
-                    fromFile != null -> fromFile to false
-                    result.thumbnail != null ->
-                        ImagePreparer.fromBitmap(result.thumbnail) to true
-                    result.thumbnailUri != null ->
-                        runCatching {
-                            ImagePreparer.toDataUrl(getApplication(), result.thumbnailUri)
-                        }.getOrNull() to true
-                    else -> null to false
-                }
-            }
-
-            if (dataUrl == null) {
-                if (!result.ok) {
-                    showHint("相机取消了，没有拿到照片。可以再试一次，或者用「从相册选」。")
-                } else {
-                    val reason = withContext(Dispatchers.IO) {
-                        output?.let {
-                            runCatching { ImagePreparer.diagnose(getApplication(), it) }.getOrNull()
-                        }
-                    } ?: "这台手机的相机没有把照片交给我们（既没写文件也没回缩略图）。" +
-                        "换用「从相册选」可以绕过它。"
-                    showHint(reason)
-                }
-                captureUri = null
-                return@launch
-            }
-            captureUri = null
-
-            if (usedThumbnail) {
-                // 缩略图很小，拍文档会糊——必须说清楚，否则用户以为是自己拍的问题
-                showHint("这台手机的相机只回传了缩略图（原图没写进来），画面会比较糊。" +
-                    "要看清楚字建议用「从相册选」，或换个相机 App。")
-            }
-            addImage(dataUrl)
-        }
-    }
 
     /** 把一张 data URL 放进待发区（含数量上限检查）。 */
     private fun addImage(dataUrl: String) {

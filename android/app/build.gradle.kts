@@ -14,11 +14,11 @@ android {
         applicationId = "com.xiaozhu.planner"
         minSdk = 26
         targetSdk = 35
-        versionCode = 21
-        // 0.5.5：拍照输出改走相册（MediaStore，厂商相机兼容性更好）；相机返回"取消"时
-        // 也先看文件（有些 ROM 写了文件仍返回取消）；相册选图改为先落本地再解码
-        // （云相册/HEIC/一次性流直接解会失败）；复制/朗读移到气泡下方靠右。
-        versionName = "0.5.5"
+        versionCode = 22
+        // 0.5.6：拍照改成 **App 内自己拍（CameraX）**，不再依赖第三方相机 App
+        // （各家 ROM 行为不一致，是"拍了读不出来/没有拍照"的根因）；
+        // 日历角标的数字不再被圆形裁剪切掉。
+        versionName = "0.5.6"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -66,6 +66,14 @@ dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
     // 读 EXIF 摆正照片方向（手机竖拍的像素常是横的，不摆正模型看到的就是躺着的图）
     implementation("androidx.exifinterface:exifinterface:1.3.7")
+    // 在 App 内自己拍照（CameraX）。
+    // 为什么不用系统相机 Intent：那要依赖**第三方相机 App** 的行为——各家 ROM 不一致
+    // （有的忽略 EXTRA_OUTPUT、有的拒绝写我们的 URI、有的返回"取消"却写了文件），
+    // 用户那边反复失败就是这个原因。自己拍就把相机 App 从链路里彻底去掉。
+    implementation("androidx.camera:camera-core:1.3.4")
+    implementation("androidx.camera:camera-camera2:1.3.4")
+    implementation("androidx.camera:camera-lifecycle:1.3.4")
+    implementation("androidx.camera:camera-view:1.3.4")
 
     // 网络 + JSON：直连 OpenAI 兼容端点（DeepSeek），SSE 流式 + tool calls
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
