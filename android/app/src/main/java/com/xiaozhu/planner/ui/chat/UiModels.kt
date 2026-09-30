@@ -73,6 +73,19 @@ data class ChatUiState(
     val overdueCount: Int = 0,
 )
 
+/**
+ * 刚发出去的那条消息，在"原文"里排第几 —— 撤销要靠它定位。
+ *
+ * 踩过的坑：新消息不带这个序号，而界面又只在有序号时才画「撤销」，
+ * 于是**刚发完那几秒（回复还在流式输出）按钮是消失的**，等这一轮结束回读数据库才出现。
+ *
+ * 算法：界面上的原文气泡是按库里的顺序排的，所以"已有的原文条数"就是新消息的序号。
+ * 历史还没载入时算不出来，返回 null（宁可暂时不给按钮，也不能给错序号——
+ * 撤错位置会删掉不该删的对话）。
+ */
+internal fun rawIndexOfNewMessage(messages: List<UiMessage>, historyLoaded: Boolean): Int? =
+    if (!historyLoaded) null else messages.count { it.rawIndex != null }
+
 /** 记忆浏览页的概览数据。 */
 data class MemoryStats(
     val totalNodes: Int,

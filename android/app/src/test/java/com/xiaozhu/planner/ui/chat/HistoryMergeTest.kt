@@ -12,16 +12,18 @@ import org.junit.Test
  */
 class HistoryMergeTest {
 
-    private fun assistant(id: Long, text: String) = UiMessage(
+    private fun assistant(id: Long, text: String, rawIndex: Int? = null) = UiMessage(
         id = id,
         kind = UiMessageKind.Assistant,
         text = text,
+        rawIndex = rawIndex,
     )
 
-    private fun user(id: Long, text: String) = UiMessage(
+    private fun user(id: Long, text: String, rawIndex: Int? = null) = UiMessage(
         id = id,
         kind = UiMessageKind.User,
         text = text,
+        rawIndex = rawIndex,
     )
 
     @Test
@@ -75,5 +77,42 @@ class HistoryMergeTest {
         val tail = assistant(99, "")
         // 空文本无从比对，保守起见接上（界面上显示"（这轮没有输出）"之类）
         assertEquals(2, HistoryMerge.merge(built, tail).size)
+    }
+
+    // ── 新消息的原文序号（撤销靠它定位）──────────────────────
+
+    @Test
+    fun `已有的原文条数就是新消息的序号`() {
+        // 真实数据里从库回读的消息都带 rawIndex（0、1、2…）
+        val messages = listOf(
+            user(1, "第一句", rawIndex = 0),
+            assistant(2, "回第一句", rawIndex = 1),
+            user(3, "第二句", rawIndex = 2),
+        )
+        assertEquals(3, rawIndexOfNewMessage(messages, historyLoaded = true))
+    }
+
+    @Test
+    fun `记忆卡片不算原文`() {
+        val messages = listOf(
+            UiMessage(id = 1, kind = UiMessageKind.Memory, text = "很久以前"),
+            user(2, "刚说的", rawIndex = 0),
+        )
+        // 记忆卡片没有 rawIndex，所以只数到 1
+        assertEquals(1, rawIndexOfNewMessage(messages, historyLoaded = true))
+    }
+
+    @Test
+    fun `历史还没载入时算不出来，返回 null（宁可暂时不给按钮）`() {
+        assertEquals(null, rawIndexOfNewMessage(emptyList(), historyLoaded = false))
+        assertEquals(
+            null,
+            rawIndexOfNewMessage(listOf(user(1, "x")), historyLoaded = false),
+        )
+    }
+
+    @Test
+    fun `空列表且历史已载入时是第 0 条`() {
+        assertEquals(0, rawIndexOfNewMessage(emptyList(), historyLoaded = true))
     }
 }

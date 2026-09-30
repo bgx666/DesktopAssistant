@@ -184,9 +184,17 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val userId = nextId++
         val assistantId = nextId++
         _state.update {
+            // 给新消息算上原文序号：否则"刚发完那几秒"撤销按钮是消失的
+            val newRawIndex = rawIndexOfNewMessage(it.messages, it.historyLoaded)
             it.copy(
                 messages = it.messages +
-                    UiMessage(id = userId, kind = kind, text = display, time = nowHHmm()) +
+                    UiMessage(
+                        id = userId,
+                        kind = kind,
+                        text = display,
+                        time = nowHHmm(),
+                        rawIndex = newRawIndex,
+                    ) +
                     UiMessage(id = assistantId, kind = UiMessageKind.Assistant),
                 streaming = true,
                 hint = null,
