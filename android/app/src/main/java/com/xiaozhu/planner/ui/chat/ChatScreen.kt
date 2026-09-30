@@ -820,19 +820,47 @@ private fun displayNameOf(context: android.content.Context, uri: android.net.Uri
     }.getOrNull() ?: uri.lastPathSegment?.substringAfterLast('/')
 
 /**
- * 拍照输出用的临时文件 URI（走 FileProvider）。
+ * 拍照输出的 URI。
  *
- * 用 `TakePicture` 而不是 `TakePicturePreview`：后者只给一张缩略图，
- * 拍文档/白板时糊得看不清，模型也读不出内容。
+ * **API 29+ 走相册（MediaStore），而不是自建 FileProvider**：
+ * 自建 provider 的 URI 属于"我们这个 App 自己定义的"，部分厂商相机（MIUI 等）
+ * 会拒绝往里写、直接返回取消——用户看到的就是"没有拍照"。相册 URI 是系统级的，
+ * 相机 App 对它有原生支持，兼容性最好。
+ * 代价是照片会留在相册的 Pictures/小助 里（拍完想留就留，也符合"拍了张照"的预期）。
+ *
+ * API 26–28 没有 RELATIVE_PATH，继续用 FileProvider（那些年的相机对自定义 provider
+ * 支持反而更好）。
  */
-private fun newPhotoUri(context: android.content.Context): android.net.Uri {
+private fun newPhotoUri(context: android.content.Context): android.net.Uri? {
+    if (android.os.Build.VERSION.SDK_INT >= 29) {
+        val values = android.content.ContentValues().apply {
+            put(
+                android.provider.MediaStore.Images.Media.DISPLAY_NAME,
+                "xiaozhu-${System.currentTimeMillis()}.jpg",
+            )
+            put(android.provider.MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+            put(
+                android.provider.MediaStore.Images.Media.RELATIVE_PATH,
+                android.os.Environment.DIRECTORY_PICTURES + "/小助",
+            )
+        }
+        runCatching {
+            context.contentResolver.insert(
+                android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                values,
+            )
+        }.getOrNull()?.let { return it }
+    }
+    // 退回 FileProvider
     val dir = java.io.File(context.cacheDir, "photos").apply { mkdirs() }
     val file = java.io.File(dir, "shot-${System.currentTimeMillis()}.jpg")
-    return androidx.core.content.FileProvider.getUriForFile(
-        context,
-        "${context.packageName}.fileprovider",
-        file,
-    )
+    return runCatching {
+        androidx.core.content.FileProvider.getUriForFile(
+            context,
+            "${context.packageName}.fileprovider",
+            file,
+        )
+    }.getOrNull()
 }
 
 /**
@@ -1077,15 +1105,20 @@ private fun AssistantRow(msg: UiMessage, onSpeak: (String) -> Unit, plain: Boole
                         }
                     }
                 }
-                if (hasText && !msg.failed) {
-                    Spacer(Modifier.width(4.dp))
-                    // 只用文字，不放 emoji（用户明确要求）：
-                    // 复制整条 + 朗读这条，竖排贴在气泡右下
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        BubbleAction("复制") { copyToClipboard(context, msg.text) }
-                        BubbleAction("朗读") { onSpeak(msg.text) }
-                    }
-                }
+            }
+        }
+        // 操作放在**气泡下方靠右**（用户要求；之前竖排在气泡右侧，占宽度也挤）
+        if (hasText && !msg.failed) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 2.dp),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                BubbleAction("复制") { copyToClipboard(context, msg.text) }
+                Spacer(Modifier.width(10.dp))
+                BubbleAction("朗读") { onSpeak(msg.text) }
             }
         }
         msg.tools.forEach { ToolCard(it) }

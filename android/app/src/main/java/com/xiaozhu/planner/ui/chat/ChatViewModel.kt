@@ -217,13 +217,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
      * 用户拍完就只能看到一句"读不出来"，白拍一次。
      */
     fun attachCapture(result: CaptureResult) {
-        if (!result.ok) {
-            showHint("没有拍照。")
-            return
-        }
+        val output = captureUri
         viewModelScope.launch {
             val (dataUrl, usedThumbnail) = withContext(Dispatchers.IO) {
-                val fromFile = captureUri?.let { uri ->
+                // **先看文件**，不看 result.ok：有些 ROM 明明写了文件却仍返回"取消"
+                // （用户报过"显示没有拍照"，其实照片已经写进去了）
+                val fromFile = output?.let { uri ->
                     runCatching { ImagePreparer.toDataUrl(getApplication(), uri) }.getOrNull()
                 }
                 when {
@@ -237,18 +236,23 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     else -> null to false
                 }
             }
-            captureUri = null
 
             if (dataUrl == null) {
-                val reason = withContext(Dispatchers.IO) {
-                    captureUri?.let {
-                        runCatching { ImagePreparer.diagnose(getApplication(), it) }.getOrNull()
-                    }
-                } ?: "这台手机的相机没有把照片交给我们（既没写文件也没回缩略图）。" +
-                    "换用「从相册选」可以绕过它。"
-                showHint(reason)
+                if (!result.ok) {
+                    showHint("相机取消了，没有拿到照片。可以再试一次，或者用「从相册选」。")
+                } else {
+                    val reason = withContext(Dispatchers.IO) {
+                        output?.let {
+                            runCatching { ImagePreparer.diagnose(getApplication(), it) }.getOrNull()
+                        }
+                    } ?: "这台手机的相机没有把照片交给我们（既没写文件也没回缩略图）。" +
+                        "换用「从相册选」可以绕过它。"
+                    showHint(reason)
+                }
+                captureUri = null
                 return@launch
             }
+            captureUri = null
 
             if (usedThumbnail) {
                 // 缩略图很小，拍文档会糊——必须说清楚，否则用户以为是自己拍的问题

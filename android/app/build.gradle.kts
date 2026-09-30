@@ -14,10 +14,11 @@ android {
         applicationId = "com.xiaozhu.planner"
         minSdk = 26
         targetSdk = 35
-        versionCode = 20
-        // 0.5.4：点空白处收起文字工具条（粘贴/复制那个悬浮菜单原来会一直挂着）。
-        // 版本号规矩（用户要求）：**只涨最低位**，别再动不动跳 0.6 / 0.7。
-        versionName = "0.5.4"
+        versionCode = 21
+        // 0.5.5：拍照输出改走相册（MediaStore，厂商相机兼容性更好）；相机返回"取消"时
+        // 也先看文件（有些 ROM 写了文件仍返回取消）；相册选图改为先落本地再解码
+        // （云相册/HEIC/一次性流直接解会失败）；复制/朗读移到气泡下方靠右。
+        versionName = "0.5.5"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
