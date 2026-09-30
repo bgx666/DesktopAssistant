@@ -45,6 +45,13 @@ interface NodeDao {
     @Query("SELECT COUNT(*) FROM nodes WHERE characterId = :cid")
     suspend fun count(cid: String): Int
 
+    /** 导入旧数据时用：id 沿用导出里的编号，冲突就覆盖。 */
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertAllReplace(nodes: List<NodeEntity>)
+
+    @Query("DELETE FROM nodes WHERE characterId = :cid")
+    suspend fun clearAll(cid: String)
+
     @RawQuery
     suspend fun search(query: SupportSQLiteQuery): List<NodeEntity>
 }
@@ -54,6 +61,10 @@ interface MessageDao {
 
     @Insert
     suspend fun insert(message: MessageEntity): Long
+
+    /** 导入旧对话时按顺序批量插入（seq 自增，顺序即时间顺序）。 */
+    @Insert
+    suspend fun insertAll(messages: List<MessageEntity>)
 
     @Query("SELECT * FROM messages ORDER BY seq")
     suspend fun all(): List<MessageEntity>
@@ -225,6 +236,10 @@ interface CalendarDao {
     /** 全部（工具/议程不再需要，但日历页要看历史）。 */
     @Query("SELECT * FROM calendar_items ORDER BY date DESC, COALESCE(time, '00:00') DESC LIMIT :limit")
     suspend fun recent(limit: Int): List<CalendarItemEntity>
+
+    /** 导入旧数据时清空（重复系列靠 seriesId 串，id 不沿用）。 */
+    @Query("DELETE FROM calendar_items")
+    suspend fun clear()
 }
 
 /** 系列汇总（GROUP BY 的投影，Room 需要一个具名类型）。 */

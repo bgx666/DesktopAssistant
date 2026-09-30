@@ -34,6 +34,40 @@ powershell -File build.ps1 -Install     # 编译并安装到已连接的手机
 3. `powershell -File build.ps1 -Install`；或手动
    `adb install -r app\build\outputs\apk\debug\app-debug.apk`
 
+### 不用数据线：侧载
+
+1. 电脑上 `powershell -File build.ps1`，产物在
+   `app\build\outputs\apk\debug\app-debug.apk`（约 11 MB）
+2. 把这个文件传到手机（微信文件传输 / USB 拷 / 网盘都行）
+3. 手机上点开它安装；系统会拦一次「未知来源」，在弹窗里允许即可
+   （各 ROM 位置不同：设置 → 应用 → 特殊权限 → 安装未知应用）
+4. 覆盖安装**不会清数据**；`adb install -r` 同理。真要清干净用「清除数据」
+
+### 装完先做这四件事
+
+| 顺序 | 做什么 | 不做会怎样 |
+|---|---|---|
+| 1 | 设置页填 **API Key**（DeepSeek 或任意 OpenAI 兼容端点） | 发消息只会提示"还没配置" |
+| 2 | 允许 **通知权限**（首次启动会问） | 到点提醒静默消失——最坑的一种失败 |
+| 3 | 允许 **精确闹钟**（设置页有状态与跳转） | 提醒会晚几分钟（不精确闹钟兜底，不会丢） |
+| 4 | 想用 MiMo 音色就填 **MiMo API Key**（与上面的 key 不是一家） | 退回系统语音，能出声但音色不同 |
+
+麦克风权限按需申请（点「说」时）。语音识别用系统服务，部分机型要自己下离线包。
+
+### 把电脑上的记忆搬过来（一次性）
+
+```powershell
+# 在 PC 仓库根目录
+python scripts\export_to_android.py `
+    --memory-tree D:\xiaob\planner-release\data\memory_tree.db `
+    --calendar    D:\xiaob\planner-release\data\planner.db `
+    --out         D:\xiaob\planner-export.json
+```
+
+把 JSON 传进手机 → App 设置页「导入旧数据」→ 选它 → 看清两边各有多少 → 确认。
+第一次装 App 选「清空后导入」；已经在手机上聊过一阵子就选「追加」。
+`--no-details` 能大幅减小体积，但**叶子原文就没了**（只剩摘要），导入时会明确提醒这一点。
+
 ## 目录结构
 
 ```
@@ -69,8 +103,8 @@ android/
 | **P1 本地记忆** | **已完成**：Room 记忆树 + 压缩接线 + 记忆浏览页（分层 + 关键词检索）。检索用 `LIKE` 而非 FTS——SQLite 默认分词器把连续中文当一个词，FTS 反而搜不到 |
 | **P2 日历 + 提醒** | **已完成**：`calendar_items` 一套日程（唯一待办概念）+ 重复系列（生成实体行 + 滚动续期）+ AlarmManager 精确闹钟 → 通知 + 免打扰 + `[当前议程]` 注入 + 日历页 |
 | **P3 语音 + 搜索** | **已完成**：`web_search` / `fetch_web`（Bing RSS 解析）；朗读走 MiMo TTS（`/chat/completions`，与 PC 版同一把嗓子）+ 系统 TTS 兜底；语音输入用系统 `SpeechRecognizer`（零 key、多数机型可离线） |
-| P4 连电脑 + 迁移 | 未开始。PC 侧只做**极小工具服务**（B 方案：无 agent / 无记忆 / 不对话）；迁移用 `../scripts/export_to_android.py` |
-| **P5 打磨** | **进行中**：心跳真正落地（闹钟 → 前台服务跑一轮 → 通知）+ 通知/精确闹钟权限引导已完成；APK 打包与侧载说明待补 |
+| **P4 连电脑 + 迁移** | **迁移已完成**（设置页「导入旧数据」读 PC 导出的一次性 JSON，带预览与确认）；连电脑（B 方案：无 agent / 无记忆 / 不对话的极小工具服务）未开始 |
+| **P5 打磨** | **已完成**：心跳真正落地、通知/精确闹钟权限引导、打包与侧载说明、导入旧数据 |
 
 ### P2 的几个关键取舍（都是踩过或差点踩的坑）
 

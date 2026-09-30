@@ -4,6 +4,8 @@ import android.app.Application
 import android.content.Intent
 import android.os.Build
 import android.provider.Settings
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -11,6 +13,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
@@ -21,6 +24,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -30,6 +34,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.xiaozhu.planner.data.SettingsStore
 import com.xiaozhu.planner.reminder.ReminderNotifications
 
@@ -211,6 +216,107 @@ fun SettingsScreen(onBack: () -> Unit) {
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+
+            // ── 从电脑导入旧数据 ─────────────────────────────────
+            HorizontalDivider(modifier = Modifier.padding(vertical = 16.dp))
+            Text("导入旧数据", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "把电脑上那份记忆与日历搬到手机（一次性）。先在电脑上跑：" +
+                    "scripts/export_to_android.py → 把生成的 JSON 传进手机 → 这里选它。",
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(top = 4.dp, bottom = 8.dp),
+            )
+
+            val importVm: ImportViewModel = viewModel()
+            val importState by importVm.state.collectAsState()
+            val picker = rememberLauncherForActivityResult(
+                ActivityResultContracts.OpenDocument()
+            ) { uri ->
+                if (uri != null) {
+                    importVm.load { context.contentResolver.openInputStream(uri) }
+                }
+            }
+
+            Button(
+                onClick = { picker.launch(arrayOf("application/json", "application/gzip", "*/*")) },
+                enabled = !importState.busy,
+            ) { Text(if (importState.busy) "处理中…" else "选择导出文件") }
+
+            importState.error?.let {
+                Text(
+                    it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(top = 8.dp),
+                )
+            }
+            importState.message?.let {
+                Text(
+                    it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(top = 8.dp),
+                )
+            }
+
+            importState.preview?.let { p ->
+                Card(modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Text("导出文件里有", style = MaterialTheme.typography.titleSmall)
+                        Text(
+                            "记忆节点 ${p.nodes} 个（含原文 ${p.leavesWithDetails} 个）、" +
+                                "对话 ${p.bufferMessages} 条、日程 ${p.calendarItems} 项",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        p.exportedAt?.let {
+                            Text("导出时间：$it", style = MaterialTheme.typography.bodySmall)
+                        }
+                        p.source?.let {
+                            Text("来源：$it", style = MaterialTheme.typography.bodySmall)
+                        }
+                        if (p.warnings.isNotEmpty()) {
+                            Text(
+                                "导出时的提醒：" + p.warnings.take(3).joinToString("；"),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        }
+
+                        if (p.hasLocalData) {
+                            Text(
+                                "手机上已有：记忆节点 ${p.localNodes} 个、对话 ${p.localMessages} 条、" +
+                                    "日程 ${p.localCalendar} 项。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.padding(top = 6.dp),
+                            )
+                            Text(
+                                "「清空后导入」会先删掉这些再写入——第一次装 App 时选它；" +
+                                    "已经在手机上聊过一阵子的话，选「追加」更安全（可能有重复）。",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                            Row {
+                                Button(
+                                    onClick = { importVm.confirm(wipeFirst = true) },
+                                    enabled = !importState.busy,
+                                ) { Text("清空后导入") }
+                                TextButton(
+                                    onClick = { importVm.confirm(wipeFirst = false) },
+                                    enabled = !importState.busy,
+                                    modifier = Modifier.padding(start = 8.dp),
+                                ) { Text("追加") }
+                            }
+                        } else {
+                            Button(
+                                onClick = { importVm.confirm(wipeFirst = false) },
+                                enabled = !importState.busy,
+                                modifier = Modifier.padding(top = 6.dp),
+                            ) { Text("导入") }
+                        }
+                        TextButton(onClick = { importVm.dismiss() }) { Text("取消") }
+                    }
+                }
+            }
         }
     }
 }
