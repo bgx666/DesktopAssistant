@@ -35,6 +35,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.xiaozhu.planner.core.llm.EndpointUrl
 import com.xiaozhu.planner.data.SettingsStore
 import com.xiaozhu.planner.reminder.ReminderNotifications
 
@@ -51,6 +52,7 @@ fun SettingsScreen(onBack: () -> Unit) {
     var ttsEngine by remember { mutableStateOf(store.ttsEngine) }
     var ttsVoice by remember { mutableStateOf(store.ttsVoice) }
     var mimoApiKey by remember { mutableStateOf(store.mimoApiKey) }
+    var ocSession by remember { mutableStateOf(store.openCodeSession) }
     var saved by remember { mutableStateOf(false) }
 
     Scaffold(
@@ -105,6 +107,21 @@ fun SettingsScreen(onBack: () -> Unit) {
                 modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
             )
 
+            // opencode 网关额外要的会话头：平时不用管（自动生成一个并记住），
+            // 只有网关改了要求时才需要手填
+            if (baseUrl.contains("opencode.ai", ignoreCase = true)) {
+                OutlinedTextField(
+                    value = ocSession,
+                    onValueChange = { ocSession = it; saved = false },
+                    label = { Text("opencode session（一般不用改）") },
+                    singleLine = true,
+                    supportingText = {
+                        Text("这个网关要求 ${EndpointUrl.SESSION_HEADER} 头，已自动生成；清空会重新生成一个")
+                    },
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                )
+            }
+
             Button(
                 onClick = {
                     store.apiKey = apiKey
@@ -114,6 +131,7 @@ fun SettingsScreen(onBack: () -> Unit) {
                     store.ttsEngine = ttsEngine
                     store.ttsVoice = ttsVoice
                     store.mimoApiKey = mimoApiKey
+                    store.openCodeSession = ocSession
                     saved = true
                 },
                 modifier = Modifier.padding(top = 16.dp),
