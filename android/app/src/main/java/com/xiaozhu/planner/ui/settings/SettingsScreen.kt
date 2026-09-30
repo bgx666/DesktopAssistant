@@ -376,7 +376,7 @@ fun SettingsScreen(onBack: () -> Unit) {
     }
 }
 
-/** `小助 v0.1.0 · 本版安装于 09-30 11:09`。 */
+/** `小助 v0.2.0(2) · 本版安装于 09-30 11:19` —— 括号里是会递增的 versionCode。 */
 private fun installStamp(context: android.content.Context): String {
     val info = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
         context.packageManager.getPackageInfo(
@@ -389,7 +389,10 @@ private fun installStamp(context: android.content.Context): String {
     }
     val when_ = java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.getDefault())
         .format(java.util.Date(info.lastUpdateTime))
-    return "小助 v${info.versionName} · 本版安装于 $when_"
+    val code = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) info.longVersionCode else {
+        @Suppress("DEPRECATION") info.versionCode.toLong()
+    }
+    return "小助 v${info.versionName}($code) · 本版安装于 $when_"
 }
 
 /** 一行权限状态：绿＝已给，点了能跳去系统设置（多数权限只能在那儿改）。 */
