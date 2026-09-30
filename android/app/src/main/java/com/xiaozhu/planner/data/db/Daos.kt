@@ -52,6 +52,10 @@ interface NodeDao {
     @Query("DELETE FROM nodes WHERE characterId = :cid")
     suspend fun clearAll(cid: String)
 
+    /** 导出备份用：该角色的全部节点（含已合并停用的，那是树的结构）。 */
+    @Query("SELECT * FROM nodes WHERE characterId = :cid ORDER BY level, roundStart, id")
+    suspend fun allForExport(cid: String): List<NodeEntity>
+
     @RawQuery
     suspend fun search(query: SupportSQLiteQuery): List<NodeEntity>
 }

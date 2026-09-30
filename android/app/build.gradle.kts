@@ -14,10 +14,10 @@ android {
         applicationId = "com.xiaozhu.planner"
         minSdk = 26
         targetSdk = 35
-        versionCode = 9
-        // 0.3.3：包里带了旧数据但没导时**问一句**（之前是静默跳过，用户根本不知道）；
-        // 导入后作废引擎里的内存历史。
-        versionName = "0.3.3"
+        versionCode = 10
+        // 0.3.4：升级不丢数据的保障——迁移链校验 + 迁移保数据测试；
+        // 设置页可导出备份；破坏性导入前自动留一份。
+        versionName = "0.3.4"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 

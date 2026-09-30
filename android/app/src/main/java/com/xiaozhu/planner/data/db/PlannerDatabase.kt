@@ -61,6 +61,21 @@ abstract class PlannerDatabase : RoomDatabase() {
         private var instance: PlannerDatabase? = null
 
         /**
+         * 全部迁移，**按顺序排好**（声明在最后：数组引用上面的常量，
+         * Kotlin 的伴生对象按书写顺序初始化）。
+         *
+         * 加一条的规矩：改了实体（加字段/加表）就 `version + 1`，并在这里补一条
+         * `Migration(n, n+1)`——**绝不允许用 `fallbackToDestructiveMigration`**，
+         * 那会把用户的记忆树、对话、日历一起清掉。
+         *
+         * `PlannerDatabaseMigrationTest` 会机械校验"版本号与迁移链是否对得上"、
+         * 以及"迁移跑完之后老数据还在不在"，所以忘了写迁移会在单测阶段就红。
+         */
+        val MIGRATIONS: Array<Migration> = arrayOf(
+            MIGRATION_1_2,
+        )
+
+        /**
          * 单例：Room 实例自带连接池，重复 build 会开出多个连接池同时写同一个文件
          * （WAL 下不报错，但会浪费内存、并可能出现读到旧快照的错觉）。
          */
@@ -70,7 +85,7 @@ abstract class PlannerDatabase : RoomDatabase() {
                     context.applicationContext,
                     PlannerDatabase::class.java,
                     name,
-                ).addMigrations(MIGRATION_1_2).build().also { instance = it }
+                ).addMigrations(*MIGRATIONS).build().also { instance = it }
             }
     }
 }

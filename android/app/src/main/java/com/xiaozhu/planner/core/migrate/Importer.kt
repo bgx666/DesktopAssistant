@@ -3,6 +3,8 @@ package com.xiaozhu.planner.core.migrate
 import androidx.room.withTransaction
 import com.xiaozhu.planner.core.memory.MemoryStore
 import com.xiaozhu.planner.data.db.PlannerDatabase
+import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonObject
 
 /**
  * 把导出的数据写进本机库。
@@ -77,5 +79,118 @@ class Importer(private val db: PlannerDatabase) {
             calendar = mapped.calendar.size,
             warnings = mapped.skipped,
         )
+    }
+
+    /**
+     * 把当前库导出成同一个 JSON 格式（备份 / 换机 / 人工查看）。
+     *
+     * 与 PC 的导出脚本产出**同一套结构**，所以两边可以互相导：
+     * 手机上备份的文件，PC 或新手机都能直接读。
+     */
+    suspend fun export(): ExportPayload {
+        val nodes = db.nodes().allForExport(MemoryStore.DEFAULT_CHARACTER)
+        val messages = db.messages().all()
+        val calendar = db.calendar().rangeAll("0000-01-01", "9999-12-31")
+        val state = db.buffer().load(MemoryStore.DEFAULT_CHARACTER)
+
+        return ExportPayload(
+            format = ExportPayload.EXPECTED_FORMAT,
+            formatVersion = ExportPayload.SUPPORTED_VERSION,
+            exportedAt = java.time.ZonedDateTime.now(java.time.ZoneId.of("Asia/Shanghai"))
+                .format(java.time.format.DateTimeFormatter.ISO_OFFSET_DATE_TIME),
+            source = kotlinx.serialization.json.buildJsonObject {
+                put("memory_tree", "android:planner.db")
+                put("calendar", "android:planner.db")
+            },
+            counts = ExportCounts(
+                nodes = nodes.size,
+                nodesWithDetails = nodes.count { it.level == 0 && it.details != null },
+                bufferPresent = messages.isNotEmpty(),
+                calendarItems = calendar.size,
+            ),
+            nodes = nodes.map { it.toExportNode() },
+            buffer = ExportBuffer(
+                characterId = MemoryStore.DEFAULT_CHARACTER,
+                recentBuffer = messages.toExportBuffer(),
+                msgCounter = state?.msgCounter ?: 0,
+                round = state?.round ?: 0,
+                compressedTotal = state?.compressedTotal ?: 0,
+                lastActivityAt = state?.lastActivityAt?.let { it / 1000.0 },
+                nextHeartbeatAt = state?.nextHeartbeatAt?.let { it / 1000.0 },
+                heartbeatMinutes = state?.heartbeatMinutes,
+                heartbeatNote = state?.heartbeatNote,
+                lastPlayerMessageAt = state?.lastPlayerMessageAt?.let { it / 1000.0 },
+            ),
+            calendarItems = calendar.map { it.toExportItem() },
+            warnings = emptyList(),
+        )
+    }
+
+    private fun com.xiaozhu.planner.data.db.NodeEntity.toExportNode() = ExportNode(
+        characterId = characterId,
+        id = id,
+        level = level,
+        summary = summary,
+        parentId = parentId,
+        roundStart = roundStart,
+        roundEnd = roundEnd,
+        timeStart = timeStart,
+        timeEnd = timeEnd,
+        sourceRef = sourceRef,
+        details = details?.let { kotlinx.serialization.json.Json.parseToJsonElement(it) },
+        profile = profile?.let { kotlinx.serialization.json.Json.parseToJsonElement(it) },
+        meta = meta?.let { kotlinx.serialization.json.Json.parseToJsonElement(it) },
+        isActive = if (isActive) 1 else 0,
+        createdAt = createdAt / 1000,
+    )
+
+    private fun com.xiaozhu.planner.data.db.CalendarItemEntity.toExportItem() = ExportCalendarItem(
+        id = id,
+        date = date,
+        time = time,
+        kind = kind,
+        content = content,
+        detail = detail,
+        status = status,
+        remindedAt = remindedAt,
+        createdAt = null,
+        doneAt = doneAt?.let {
+            java.time.Instant.ofEpochMilli(it).atZone(java.time.ZoneId.of("Asia/Shanghai"))
+                .format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"))
+        },
+        seriesId = seriesId,
+        repeat = repeat,
+        repeatUntil = repeatUntil,
+    )
+
+    /** 消息还原成 PC 那套 `{type, data}` 形状（含 metadata.ts / node_id）。 */
+    private fun List<com.xiaozhu.planner.data.db.MessageEntity>.toExportBuffer():
+        kotlinx.serialization.json.JsonElement {
+        val arr = kotlinx.serialization.json.JsonArray(
+            map { m ->
+                val type = when (m.role) {
+                    "user" -> "human"
+                    "assistant" -> "ai"
+                    else -> m.role
+                }
+                kotlinx.serialization.json.buildJsonObject {
+                    put("type", type)
+                    putJsonObject("data") {
+                        put("content", m.content)
+                        put("type", type)
+                        val meta = kotlinx.serialization.json.buildJsonObject {
+                            // 原始时间戳要带上：没有它，对方新建的节点时间范围会全错
+                            put("ts", java.time.Instant.ofEpochMilli(m.tsMillis)
+                                .atZone(java.time.ZoneId.of("Asia/Shanghai"))
+                                .format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")))
+                            m.nodeId?.let { put("node_id", it) }
+                            m.nodeStart?.let { put("node_start", it) }
+                        }
+                        put("metadata", meta)
+                    }
+                }
+            }
+        )
+        return arr
     }
 }

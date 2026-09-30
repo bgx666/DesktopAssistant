@@ -342,6 +342,19 @@ fun SettingsScreen(
                 enabled = !importState.busy,
             ) { Text(if (importState.busy) "处理中…" else "选择导出文件") }
 
+            // 备份：导出的格式与 PC 的导出脚本一致，两边能互相导
+            val exporter = rememberLauncherForActivityResult(
+                ActivityResultContracts.CreateDocument("application/json")
+            ) { uri -> if (uri != null) importVm.exportTo(uri) }
+            TextButton(
+                onClick = {
+                    val stamp = java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd")
+                        .format(java.time.LocalDate.now())
+                    exporter.launch("planner-backup-$stamp.json")
+                },
+                enabled = !importState.busy,
+            ) { Text("导出备份（记忆 + 对话 + 日历）") }
+
             // 随包带了旧数据时（"给自己装机"的构建）：一键导入，不用传文件
             if (remember { importVm.hasBundledSeed() }) {
                 Text(
