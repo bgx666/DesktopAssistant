@@ -35,6 +35,15 @@ object EndpointUrl {
     const val SESSION_HEADER = "x-opencode-session"
 
     /**
+     * 客户端自报的 User-Agent。
+     *
+     * opencode 的 Go 网关**明确要求**客户端用自己的名字（`my-coding-agent/1.0` 这种），
+     * 而不是通用的库名——默认的 `okhttp/4.12.0` 正属于它点名的那类。
+     * 它们靠这个做流量监控（识别滥用），所以这不算可选的美化。
+     */
+    fun userAgent(versionName: String): String = "xiaozhu-android/$versionName"
+
+    /**
      * 该端点需要的附加请求头。
      *
      * opencode 的 zen 网关没有 session 头会直接 400（`MissingSessionID`）；

@@ -14,13 +14,14 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import java.util.concurrent.TimeUnit
 
 /**
- * 直连 OpenAI 兼容端点（默认 DeepSeek / opencode 网关）。
+ * 直连 OpenAI 兼容端点（默认 opencode 网关 / DeepSeek）。
  *
  * - [stream]：对话用，SSE 流式 + tool calls；取消即断开连接
  * - [complete]：压缩摘要用，一次性返回正文（不进对话上下文）
  *
  * [baseUrl] 带不带 `/chat/completions` 都行（见 [EndpointUrl]）；
- * [extraHeaders] 放服务商额外要求的头（如 opencode 的 session）。
+ * [extraHeaders] 放服务商额外要求的头（如 opencode 的 session）；
+ * [userAgent] 必须自报家门（网关会拒绝通用库名，见 [EndpointUrl.userAgent]）。
  */
 class OpenAiClient(
     private val baseUrl: String,
@@ -28,7 +29,15 @@ class OpenAiClient(
     private val model: String,
     private val client: OkHttpClient = defaultClient(),
     private val extraHeaders: Map<String, String> = emptyMap(),
+    private val userAgent: String = EndpointUrl.userAgent("dev"),
 ) : LlmStreamer, LlmCompleter {
+
+    /** 这个客户端会发哪些头（设置页的「测试连接」用它把实际情况摆出来）。 */
+    fun sentHeaders(): List<String> =
+        listOf("Authorization", "Accept", USER_AGENT_HEADER) + extraHeaders.keys
+
+    /** 实际会 POST 的地址（诊断用）。 */
+    fun endpoint(): String = EndpointUrl.chatCompletions(baseUrl)
 
     override fun stream(
         messages: List<ChatMessage>,
@@ -93,6 +102,7 @@ class OpenAiClient(
             .url(EndpointUrl.chatCompletions(baseUrl))
             .addHeader("Authorization", "Bearer $apiKey")
             .addHeader("Accept", if (stream) "text/event-stream" else "application/json")
+            .addHeader(USER_AGENT_HEADER, userAgent)
         extraHeaders.forEach { (name, value) -> builder.addHeader(name, value) }
         return builder.post(body.toRequestBody(JSON_MEDIA)).build()
     }
@@ -111,6 +121,9 @@ class OpenAiClient(
 
     companion object {
         private val JSON_MEDIA = "application/json; charset=utf-8".toMediaType()
+
+        /** OkHttp 默认也会发 User-Agent，但我们显式覆盖它（见 [EndpointUrl.userAgent]）。 */
+        const val USER_AGENT_HEADER = "User-Agent"
 
         fun defaultClient(): OkHttpClient = OkHttpClient.Builder()
             .connectTimeout(30, TimeUnit.SECONDS)

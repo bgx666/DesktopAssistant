@@ -38,6 +38,9 @@ android {
     }
     buildFeatures {
         compose = true
+        // 需要 BuildConfig.VERSION_NAME：自报 User-Agent 要用它
+        // （opencode 的网关明确拒绝通用库名，见 core/llm/EndpointUrl.kt）
+        buildConfig = true
     }
     packaging {
         resources.excludes += setOf("/META-INF/{AL2.0,LGPL2.1}")

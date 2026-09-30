@@ -113,6 +113,7 @@ class ConversationEngine private constructor(private val app: Application) {
         apiKey = settings.apiKey,
         model = settings.model,
         extraHeaders = EndpointUrl.extraHeaders(settings.baseUrl, settings.openCodeSession),
+        userAgent = EndpointUrl.userAgent(com.xiaozhu.planner.BuildConfig.VERSION_NAME),
     )
 
     /**

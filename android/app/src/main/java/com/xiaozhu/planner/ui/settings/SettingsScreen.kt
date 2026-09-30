@@ -137,6 +137,31 @@ fun SettingsScreen(onBack: () -> Unit) {
                 modifier = Modifier.padding(top = 16.dp),
             ) { Text("保存") }
 
+            // ── 测试连接 ────────────────────────────────────────
+            val checkVm: ConnectionCheckViewModel = viewModel()
+            val checkState by checkVm.state.collectAsState()
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TextButton(
+                    onClick = { checkVm.run() },
+                    enabled = !checkState.running,
+                    modifier = Modifier.padding(start = 8.dp),
+                ) { Text(if (checkState.running) "测试中…" else "测试连接") }
+                Text(
+                    "先保存再测（用的是已保存的值）",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            checkState.detail?.let { detail ->
+                Text(
+                    detail,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (checkState.ok == true) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+            }
+
             if (saved) {
                 Text(
                     "已保存。",
@@ -341,8 +366,30 @@ fun SettingsScreen(onBack: () -> Unit) {
                     }
                 }
             }
+
+            // ── 页脚：这一版是什么时候装的 ──────────────────────
+            // 排查"你装的是哪一版"时，这一行比什么都省事
+            HorizontalDivider(modifier = Modifier.padding(vertical = 16.dp))
+            Text(installStamp(context), style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
+}
+
+/** `小助 v0.1.0 · 本版安装于 09-30 11:09`。 */
+private fun installStamp(context: android.content.Context): String {
+    val info = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        context.packageManager.getPackageInfo(
+            context.packageName,
+            android.content.pm.PackageManager.PackageInfoFlags.of(0),
+        )
+    } else {
+        @Suppress("DEPRECATION")
+        context.packageManager.getPackageInfo(context.packageName, 0)
+    }
+    val when_ = java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.getDefault())
+        .format(java.util.Date(info.lastUpdateTime))
+    return "小助 v${info.versionName} · 本版安装于 $when_"
 }
 
 /** 一行权限状态：绿＝已给，点了能跳去系统设置（多数权限只能在那儿改）。 */

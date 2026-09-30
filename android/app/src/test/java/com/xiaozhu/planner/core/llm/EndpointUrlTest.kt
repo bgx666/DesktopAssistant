@@ -77,6 +77,16 @@ class EndpointUrlTest {
         assertEquals(emptyMap<String, String>(),
             EndpointUrl.extraHeaders("https://opencode.ai/zen/go/v1", null))
     }
+
+    @Test
+    fun `User-Agent 是自己的名字，不是通用库名`() {
+        val ua = EndpointUrl.userAgent("0.1.0")
+        assertEquals("xiaozhu-android/0.1.0", ua)
+        // opencode 文档点名不要通用 SDK / HTTP 库名
+        listOf("okhttp", "java", "curl", "python", "axios").forEach {
+            assertFalse("UA 不该像通用库：$ua", ua.lowercase().contains(it))
+        }
+    }
 }
 
 /** 直接看 `buildRequest` 造出来的东西——不联网就能钉住"URL 与头拼得对不对"。 */
@@ -112,6 +122,31 @@ class OpenAiClientRequestTest {
             EndpointUrl.extraHeaders("https://opencode.ai/zen/go/v1", "sess-9"),
         )
         assertEquals("sess-9", req.header("x-opencode-session"))
+    }
+
+    @Test
+    fun `会自报 User-Agent，而不是默认的 okhttp`() {
+        val req = OpenAiClient(
+            "https://opencode.ai/zen/go/v1", "k", "m",
+            userAgent = EndpointUrl.userAgent("0.1.0"),
+        ).buildRequest(messages, tools = null, stream = true)
+        assertEquals("xiaozhu-android/0.1.0", req.header("User-Agent"))
+    }
+
+    @Test
+    fun `诊断用的头清单与实际发出的头一致`() {
+        val client = OpenAiClient(
+            "https://opencode.ai/zen/go/v1", "k", "m",
+            extraHeaders = EndpointUrl.extraHeaders("https://opencode.ai/zen/go/v1", "s"),
+            userAgent = EndpointUrl.userAgent("0.1.0"),
+        )
+        val req = client.buildRequest(messages, tools = null, stream = true)
+        // 设置页的「测试连接」就是拿这个清单告诉用户"到底发了什么"，
+        // 对不上就会把人带沟里
+        client.sentHeaders().forEach { name ->
+            assertTrue("$name 声称会发但实际没发", req.header(name) != null)
+        }
+        assertEquals("https://opencode.ai/zen/go/v1/chat/completions", client.endpoint())
     }
 
     @Test
