@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -22,6 +23,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -37,25 +39,47 @@ import androidx.compose.ui.unit.dp
 fun ChatScreen(
     vm: ChatViewModel,
     onOpenSettings: () -> Unit,
+    onOpenMemory: () -> Unit,
 ) {
     val state by vm.state.collectAsState()
     var draft by remember { mutableStateOf("") }
+    val listState = rememberLazyListState()
+
+    // 新消息（含流式增量的最后一条）始终滚到底，否则用户看不见正在写的内容
+    LaunchedEffect(state.messages.size, state.messages.lastOrNull()?.text) {
+        if (state.messages.isNotEmpty()) {
+            listState.scrollToItem(state.messages.lastIndex)
+        }
+    }
 
     Scaffold(
         topBar = {
             TopAppBar(
                 title = { Text("小助") },
-                actions = { TextButton(onClick = onOpenSettings) { Text("设置") } },
+                actions = {
+                    TextButton(onClick = onOpenMemory) { Text("记忆") }
+                    TextButton(onClick = onOpenSettings) { Text("设置") }
+                },
             )
         }
     ) { pad ->
         Column(modifier = Modifier.fillMaxSize().padding(pad)) {
             LazyColumn(
+                state = listState,
                 modifier = Modifier.weight(1f).fillMaxWidth(),
                 contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 items(state.messages, key = { it.id }) { msg -> MessageRow(msg) }
+            }
+
+            state.memoryNotice?.let { notice ->
+                Text(
+                    notice,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                )
             }
 
             state.hint?.let { hint ->

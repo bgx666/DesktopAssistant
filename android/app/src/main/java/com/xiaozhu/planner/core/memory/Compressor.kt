@@ -89,7 +89,7 @@ class Compressor(
         val timeRange = ts(batch.first().tsMillis) to ts(batch.last().tsMillis)
 
         val details = LeafDetails(
-            messages = batch.map { it.toChatMessage() },
+            messages = batch.map { MessageMapping.toChatMessage(it) },
             futureNotes = out.futureNotes,
         )
         val nodeId = store.addLeaf(
@@ -177,10 +177,3 @@ class Compressor(
         Instant.ofEpochMilli(millis).atZone(zone).format(tsFormat)
 }
 
-/** MessageEntity → 协议层消息（存进叶子原文时用）。 */
-fun MessageEntity.toChatMessage(): ChatMessage = ChatMessage(
-    role = role,
-    content = content,
-    toolCallId = toolCallId,
-    name = name,
-)

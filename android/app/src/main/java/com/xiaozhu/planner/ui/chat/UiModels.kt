@@ -20,4 +20,14 @@ data class ChatUiState(
     val streaming: Boolean = false,
     val configured: Boolean = false,
     val hint: String? = null,
+    /** 一行小提示：例如"已把 40 条对话压成一个记忆节点"。 */
+    val memoryNotice: String? = null,
+)
+
+/** 记忆浏览页的概览数据。 */
+data class MemoryStats(
+    val totalNodes: Int,
+    val levels: List<Pair<Int, Int>>,
+    val rootId: String?,
+    val rawMessages: Int,
 )

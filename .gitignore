@@ -1,4 +1,6 @@
-data/
+# 只忽略仓库根的运行数据目录；写成 `data/` 会连安卓的
+# app/src/main/java/com/xiaozhu/planner/data/（Room 实体/DAO）一起吞掉
+/data/
 __pycache__/
 *.pyc
 *.egg-info/
