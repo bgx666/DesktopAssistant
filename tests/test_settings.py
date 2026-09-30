@@ -65,17 +65,47 @@ def test_session_update_settings(data_root):
 
 def test_tts_settings_applied_on_startup(data_root, monkeypatch):
     """重启场景：settings.json 里的 tts 配置（开关/音色）启动即生效——
-    曾 bug：只在保存时生效，重启后回到默认（语音莫名开启、音色丢失）。"""
+    曾 bug：只在保存时生效，重启后回到默认（语音莫名开启、音色丢失）。
+
+    显式把引擎钉成 local：音色名是**分引擎**的（zf_003 是本地 Kokoro 的音色），
+    不钉的话，环境里 `PLANNER_TTS_ENGINE=mimo`（共享 .env 里给 release 配的）
+    会让断言变成"在 MiMo 上应用一个 Kokoro 音色"——那不是这个测试要问的事。
+    """
     import json
     from planner.session import PlannerSession
     p = settings_mod.settings_path(data_root)
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps({"tts_enabled": False, "tts_voice": "zf_003"}),
+    p.write_text(json.dumps({"tts_enabled": False, "tts_voice": "zf_003",
+                             "tts_engine": "local"}),
+                 encoding="utf-8")
+    monkeypatch.delenv("PLANNER_TTS_ENGINE", raising=False)
+    s = PlannerSession(data_root, mock=True)
+    try:
+        assert s.tts.engine == "local"
+        assert s.tts._enabled is False, "启动应应用 tts_enabled=false"
+        assert s.tts.voice == "zf_003", "启动应应用 tts_voice"
+    finally:
+        s.close()
+
+
+def test_tts_voice_from_another_engine_is_not_applied(data_root, monkeypatch):
+    """分引擎的音色名不许串台：MiMo 上不该应用一个 Kokoro 音色。
+
+    这是 `_create_tts` 里 `voice in {v["id"] for v in tts.list_voices()}`
+    那道守卫的用途——没有它，切换引擎后旧音色会被塞进去，
+    合成时要么报错、要么退回默认而用户以为设置没生效。
+    """
+    import json
+    from planner.session import PlannerSession
+    p = settings_mod.settings_path(data_root)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps({"tts_engine": "mimo", "tts_voice": "zf_003"}),
                  encoding="utf-8")
     s = PlannerSession(data_root, mock=True)
     try:
-        assert s.tts._enabled is False, "启动应应用 tts_enabled=false"
-        assert s.tts.voice == "zf_003", "启动应应用 tts_voice"
+        assert s.tts.engine == "mimo"
+        assert s.tts.voice != "zf_003", "别的引擎的音色名不该被应用"
+        assert s.tts.voice in {v["id"] for v in s.tts.list_voices()}
     finally:
         s.close()
 

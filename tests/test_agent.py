@@ -267,17 +267,28 @@ def test_buffer_persists_across_restart(data_root):
         s2.close()
 
 
+def _agenda_day(offset: int = 0) -> str:
+    """议程快照只覆盖「今天 + 未来 7 天」，所以日期必须相对今天算。
+
+    写死 2026-09-13 这类绝对日期的话，过了那天测试就会红——而且红得
+    毫无信息量（"开会"不在文本里），查半天才发现是日期过期。
+    """
+    from datetime import datetime, timedelta, timezone
+    today = datetime.now(timezone(timedelta(hours=8))).date()
+    return (today + timedelta(days=offset)).isoformat()
+
+
 def test_agenda_snapshot_injection(data_root):
     """议程快照（数据源＝日历）：有内容才注入；指纹未变不重复注入。"""
     s = PlannerSession(data_root, mock=True)
     try:
-        s.db.add_calendar_item("2026-09-13", "开会", "14:00")
+        s.db.add_calendar_item(_agenda_day(0), "开会", "14:00")
         text = s._agenda_snapshot_text()
         assert text is not None and "[当前议程]" in text and "开会" in text
         # 指纹未变 → 不再注入
         assert s._agenda_snapshot_text() is None
         # 议程变化 → 重新注入
-        s.db.add_calendar_item("2026-09-14", "看牙医", "09:00")
+        s.db.add_calendar_item(_agenda_day(1), "看牙医", "09:00")
         text2 = s._agenda_snapshot_text()
         assert text2 is not None and "看牙医" in text2
     finally:
@@ -288,7 +299,7 @@ def test_agenda_snapshot_folds_repeating_series(data_root):
     """重复项在快照里折叠成一行——否则"每天吃药"会把未来 7 天全占满。"""
     s = PlannerSession(data_root, mock=True)
     try:
-        s.db.add_calendar_series("2026-09-13", "吃药", "daily", "08:00",
+        s.db.add_calendar_series(_agenda_day(0), "吃药", "daily", "08:00",
                                  horizon_days=6)
         text = s._agenda_snapshot_text()
         assert text is not None

@@ -258,17 +258,32 @@ def test_tts_say_endpoint(backend):
 
 
 def test_tts_voices_endpoint(backend, monkeypatch):
-    """/tts/voices：返回音色列表；/tts/say 校验非法音色。"""
+    """/tts/voices：返回音色列表（并把 ?engine= 透传下去）；/tts/say 校验非法音色。"""
     import urllib.error
     from urllib.parse import quote
     session, base = backend
-    monkeypatch.setattr(session.tts, "list_voices", lambda: [
-        {"id": "zf_001", "label": "zf_001 · 女声"},
-        {"id": "zm_009", "label": "zm_009 · 男声"},
-    ])
+    seen_engines: list[str | None] = []
+
+    # 桩要接受 engine 关键字：端点会按 ?engine= 预览指定引擎的音色列表。
+    # 早先这个 lambda 不收参数，端点一调就 TypeError、连接被关，
+    # 报出来是 RemoteDisconnected（看着像网络问题，其实是桩过期了）。
+    def fake_list_voices(engine=None):
+        seen_engines.append(engine)
+        return [
+            {"id": "zf_001", "label": "zf_001 · 女声"},
+            {"id": "zm_009", "label": "zm_009 · 男声"},
+        ]
+
+    monkeypatch.setattr(session.tts, "list_voices", fake_list_voices)
     r = _get(base, "/tts/voices")
     assert r["ok"] is True
     assert [v["id"] for v in r["voices"]] == ["zf_001", "zm_009"]
+    assert seen_engines == [None]
+
+    r = _get(base, "/tts/voices?engine=mimo")
+    assert [v["id"] for v in r["voices"]] == ["zf_001", "zm_009"]
+    assert seen_engines[-1] == "mimo", "?engine= 要透传给 list_voices"
+
     with pytest.raises(urllib.error.HTTPError) as e:
         _get(base, "/tts/say?text=" + quote("你好") + "&voice=bad_voice")
     assert e.value.code == 400

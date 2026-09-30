@@ -87,8 +87,8 @@ object PcImport {
             searchText = MemorySearch.searchableText(summary, profile, details?.messages.orEmpty()),
             createdAt = createdAt?.let { it * 1000 } ?: System.currentTimeMillis(),
         ).also {
-            if (level == 0 && details == null && summary.isNotBlank()) {
-                skipped += "节点 $id 没有原文（导出时用了 --no-details）"
+            if (level == 0 && summary.isNotBlank() && details?.messages.isNullOrEmpty()) {
+                skipped += "节点 $id 没有原文（导出时用了 --no-details，或这段确实没留下原文）"
             }
         }
     }
@@ -105,19 +105,36 @@ object PcImport {
         )
     }
 
-    /** PC 叶子的 `details` = `{messages: [...], future_notes: [...]}`（安卓同构）。 */
-    private fun JsonElement?.toLeafDetails(): LeafDetails? {
-        val obj = this as? JsonObject ?: return null
-        val raw = obj["messages"] as? JsonArray ?: return null
-        val msgs = raw.mapNotNull { element ->
-            val m = element as? JsonObject ?: return@mapNotNull null
-            val role = m["role"]?.jsonPrimitive?.contentOrNull ?: "user"
-            val content = m["content"]?.jsonPrimitive?.contentOrNull.orEmpty()
-            ChatMessage(role = normalizeRole(role), content = content)
-        }
-        val notes = (obj["future_notes"] as? JsonArray)
-            ?.mapNotNull { it.jsonPrimitive.contentOrNull }.orEmpty()
-        return LeafDetails(messages = msgs, futureNotes = notes)
+    /**
+     * PC 叶子的 `details` 有**两种形状**，两种都得认：
+     *
+     * - `{"messages": [...], "future_notes": [...]}`（有 future_notes 时）
+     * - 纯列表 `[...]`（没有 future_notes 时——**这是多数情况**）
+     *
+     * 只认前一种的话，大部分叶子的原文会被丢掉，用户看到的是
+     * "它记得有这么回事，但说不出细节"。而 `--no-details` 导出时是 `null`。
+     */
+    private fun JsonElement?.toLeafDetails(): LeafDetails? = when (this) {
+        is JsonArray -> LeafDetails(messages = toChatMessages())
+        is JsonObject -> LeafDetails(
+            messages = (this["messages"] as? JsonArray)?.toChatMessages().orEmpty(),
+            futureNotes = (this["future_notes"] as? JsonArray)
+                ?.mapNotNull { it.jsonPrimitive.contentOrNull }.orEmpty(),
+        )
+        else -> null
+    }
+
+    /**
+     * 叶子里的原文消息。同样是两种形状（PC 兼容新旧 `messages_to_dict`）：
+     * 旧版 `{"type":"human","content":"..."}`，新版 `{"type":"human","data":{...}}`。
+     */
+    private fun JsonArray.toChatMessages(): List<ChatMessage> = mapNotNull { element ->
+        val obj = element as? JsonObject ?: return@mapNotNull null
+        val type = obj["type"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+        val payload = obj["data"] as? JsonObject
+        val content = (payload?.get("content") ?: obj["content"])
+            ?.let { flattenContent(it) }.orEmpty()
+        ChatMessage(role = normalizeRole(type), content = content)
     }
 
     // ── 对话 buffer（LangChain messages_to_dict 的形状）────────
@@ -179,7 +196,13 @@ object PcImport {
         val name = obj["name"]?.jsonPrimitive?.contentOrNull ?: return null
         val id = obj["id"]?.jsonPrimitive?.contentOrNull
             ?: "call_${name}_${System.nanoTime()}"
-        val args = obj["args"]?.takeIf { it !is JsonNull }?.toString() ?: "{}"
+        // args 正常是对象，但模型偶尔直接给字符串（那时它已经是 JSON 文本了，
+        // 再 toString 会多包一层引号，下一轮请求就 400）
+        val args = when (val raw = obj["args"]) {
+            null, is JsonNull -> "{}"
+            is JsonPrimitive -> raw.contentOrNull?.takeIf { it.isNotBlank() } ?: "{}"
+            else -> raw.toString()
+        }
         return ToolCall(id = id, function = ToolCallFunction(name = name, arguments = args))
     }
 

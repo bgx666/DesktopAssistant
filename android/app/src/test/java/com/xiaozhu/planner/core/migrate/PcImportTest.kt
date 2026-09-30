@@ -61,12 +61,13 @@ class PcImportTest {
          "nodes":$nodes,"buffer":$buffer,"calendar_items":$calendar,"warnings":[]}
     """.trimIndent()
 
+    /** 贴近真实导出：`details` 是 `{messages, future_notes}`，消息是 LangChain 的 type/data 形状。 */
     private val oneNode = """
         [{"character_id":"assistant","id":"node0_001","level":0,"summary":"聊了投递进度",
           "parent_id":null,"round_start":0,"round_end":39,
           "time_start":"2026-09-28 09:00:00","time_end":"2026-09-28 09:40:00",
-          "details":{"messages":[{"role":"user","content":"投了中电"},
-                                  {"role":"assistant","content":"行，记下了"}],
+          "details":{"messages":[{"type":"human","content":"投了中电"},
+                                  {"type":"ai","data":{"content":"行，记下了"}}],
                      "future_notes":["后来改到周一投"]},
           "profile":{"preferences":["喜欢直接说"],"personality":[],"habits":["晚上复习"],"goals":["找工作"]},
           "meta":{"schema_version":2},"is_active":1,"created_at":1759020000}]
@@ -303,6 +304,42 @@ class PcImportTest {
             "要提醒用户这次导出没带原文（否则他会以为记忆丢了）",
             mapped.skipped.any { it.contains("没有原文") },
         )
+    }
+
+    @Test
+    fun `叶子 details 是纯列表时也要认出原文（PC 没 future_notes 时就是这个形状）`() = runBlocking {
+        val nodes = """
+            [{"id":"node0_007","level":0,"summary":"聊过找工作","details":[
+                {"type":"human","content":"投了中电"},
+                {"type":"ai","data":{"content":"行，记下了"}}]}]
+        """.trimIndent()
+        val mapped = PcImport.map(
+            ExportReader.read(json(nodes = nodes).toByteArray()),
+            MemoryStore.DEFAULT_CHARACTER,
+        )
+        val details = MemoryJson.decodeDetails(mapped.nodes.single().details)
+        assertEquals(2, details.messages.size)
+        // 新旧两种 messages_to_dict 形状都要转对角色
+        assertEquals(listOf("user", "assistant"), details.messages.map { it.role })
+        assertEquals("投了中电", details.messages[0].content)
+        assertEquals("行，记下了", details.messages[1].content)
+        assertTrue("有原文就不该报缺原文", mapped.skipped.isEmpty())
+    }
+
+    @Test
+    fun `叶子里的图片块被替换成占位文字后仍能读出`() = runBlocking {
+        // PC 压缩时会先把 image_url 块换成 {"type":"text","text":"（图片）"}
+        val nodes = """
+            [{"id":"node0_008","level":0,"summary":"发过图","details":[
+                {"type":"human","data":{"content":[{"type":"text","text":"看这个"},
+                                                  {"type":"text","text":"（图片）"}]}}]}]
+        """.trimIndent()
+        val mapped = PcImport.map(
+            ExportReader.read(json(nodes = nodes).toByteArray()),
+            MemoryStore.DEFAULT_CHARACTER,
+        )
+        val details = MemoryJson.decodeDetails(mapped.nodes.single().details)
+        assertEquals("看这个\n（图片）", details.messages.single().content)
     }
 
     @Test
