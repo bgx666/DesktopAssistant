@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  相机（24dp 网格）。自己画而不是引 material-icons-extended：
+  那是个几 MB 的依赖，为三个图标不值得（而且当前构建环境没网装新依赖）。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24"
+    android:tint="?android:attr/colorControlNormal">
+    <!-- 机身 -->
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M9,4 L15,4 L16.5,6 L20,6 A1.5,1.5 0 0 1 21.5,7.5 L21.5,18 A1.5,1.5 0 0 1 20,19.5 L4,19.5 A1.5,1.5 0 0 1 2.5,18 L2.5,7.5 A1.5,1.5 0 0 1 4,6 L7.5,6 Z" />
+    <!-- 镜头（挖空） -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M12,9.2 A4,4 0 1 0 12,17.2 A4,4 0 1 0 12,9.2 Z" />
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M12,10.6 A2.6,2.6 0 1 1 12,15.8 A2.6,2.6 0 1 1 12,10.6 Z" />
+</vector>

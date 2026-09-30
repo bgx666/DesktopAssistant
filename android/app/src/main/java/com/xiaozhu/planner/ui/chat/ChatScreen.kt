@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.annotation.DrawableRes
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -26,12 +27,14 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
@@ -58,10 +61,12 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import com.xiaozhu.planner.R
 import com.xiaozhu.planner.core.image.ImagePreparer
 import com.xiaozhu.planner.speech.VoiceInput
 import com.xiaozhu.planner.ui.theme.PlannerColors
@@ -91,6 +96,8 @@ fun ChatScreen(
     var draft by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
+    // 用于"权限被永久拒绝"的判断（shouldShowRequestPermissionRationale 只在 Activity 上）
+    val activity = LocalContext.current as? android.app.Activity
 
     // 撤销后把内容放回输入框（PC 版行为：改完重发，而不是直接丢掉）
     LaunchedEffect(state.restoreDraft) {
@@ -117,6 +124,10 @@ fun ChatScreen(
 
     // 相机权限：先申请再启动（部分 ROM 的相机 App 会检查调用方是否持有 CAMERA，
     // 没有就直接拒绝——这是"点了拍照没反应/拍完读不出来"的另一条路径）
+    //
+    // 被永久拒绝（勾了"不再询问"）时系统**不会再弹窗**，所以这里自己弹一个说明 + 去设置，
+    // 否则用户点了拍照什么都不发生，只能猜。
+    var showCameraRationale by remember { mutableStateOf(false) }
     val cameraPermission = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
@@ -126,8 +137,10 @@ fun ChatScreen(
                 cameraContract = contract
                 camera.launch(Unit)
             }
+        } else if (activity?.shouldShowRequestPermissionRationale(Manifest.permission.CAMERA) == false) {
+            showCameraRationale = true
         } else {
-            vm.showHint("没有相机权限，拍不了照。可以先用「从相册选」，或在系统设置里给相机权限。")
+            vm.showHint("没有相机权限，拍不了照。可以先用「从相册选」。")
         }
     }
 
@@ -140,9 +153,31 @@ fun ChatScreen(
         if (state.messages.isNotEmpty()) listState.scrollToItem(state.messages.lastIndex)
     }
 
+    // 相机权限被永久拒绝：系统不会再弹窗，所以自己说清楚 + 给一个去设置的入口
+    if (showCameraRationale) {
+        AlertDialog(
+            onDismissRequest = { showCameraRationale = false },
+            title = { Text("需要相机权限") },
+            text = {
+                Text(
+                    "拍照要用相机权限。之前选了「不再询问」，系统就不会再弹窗了——" +
+                        "可以在系统设置里手动打开，或者直接用「从相册选」。"
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showCameraRationale = false
+                    openAppSettings(context)
+                }) { Text("去设置") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showCameraRationale = false }) { Text("先不用") }
+            },
+        )
+    }
+
     Scaffold(
-        containerColor = PlannerColors.Background,
-        topBar = {
+        containerColor = PlannerColors.Background,        topBar = {
             TopAppBar(
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = PlannerColors.Background,
@@ -177,7 +212,7 @@ fun ChatScreen(
                 actions = {
                     // 图标 + 短标签：纯中文标签在窄屏会被截断
                     Box {
-                        IconAction("🗓", "日历", onOpenCalendar)
+                        IconAction(R.drawable.ic_calendar, "日历", onOpenCalendar)
                         // PC 版"日历"页签上的逾期角标
                         if (state.overdueCount > 0) {
                             Box(
@@ -197,8 +232,8 @@ fun ChatScreen(
                             }
                         }
                     }
-                    IconAction("🧠", "记忆", onOpenMemory)
-                    IconAction("⚙", "设置", onOpenSettings)
+                    IconAction(R.drawable.ic_memory, "记忆", onOpenMemory)
+                    IconAction(R.drawable.ic_settings, "设置", onOpenSettings)
                 },
             )
         }
@@ -270,6 +305,7 @@ fun ChatScreen(
                         }
                     },
                     onRemoveImage = { vm.removePendingImage(it) },
+                    onRemoveDocument = { vm.removePendingDocument() },
                     onPickDocument = {
                         // SAF：任何能提供文档的 App 都行（文件管理器、网盘、下载…），
                         // 不需要存储权限
@@ -491,6 +527,7 @@ private fun InputBar(
     onTakePhoto: () -> Unit,
     onPickDocument: () -> Unit,
     onRemoveImage: (Int) -> Unit,
+    onRemoveDocument: () -> Unit,
     onSend: () -> Unit,
     onStop: () -> Unit,
 ) {
@@ -513,7 +550,7 @@ private fun InputBar(
         modifier = Modifier.fillMaxWidth(),
     ) {
         Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)) {
-            // 已附加的文档（正文在发送时并进消息，这里只报个名字）
+            // 已附加的文档（正文在发送时并进消息，这里只报个名字 + 一个删除按钮）
             pendingDocName?.let {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
@@ -522,17 +559,35 @@ private fun InputBar(
                         .padding(bottom = 6.dp)
                         .clip(RoundedCornerShape(10.dp))
                         .background(PlannerColors.MemoryCard)
-                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                        .padding(start = 10.dp, end = 4.dp, top = 6.dp, bottom = 6.dp),
                 ) {
-                    Text("📄", style = MaterialTheme.typography.labelLarge)
+                    Icon(
+                        painter = painterResource(R.drawable.ic_doc),
+                        contentDescription = null,
+                        tint = PlannerColors.Primary,
+                        modifier = Modifier.size(16.dp),
+                    )
                     Text(
                         it,
                         style = MaterialTheme.typography.labelMedium,
                         color = PlannerColors.Primary,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.padding(start = 6.dp),
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(start = 6.dp),
                     )
+                    // 删掉附件（之前只能靠"发出去"或重开页面，用户报的就是这个）
+                    TextButton(
+                        onClick = onRemoveDocument,
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                    ) {
+                        Text(
+                            "移除",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = PlannerColors.TextSoft,
+                        )
+                    }
                 }
             }
             if (pendingImages.isNotEmpty()) {
@@ -624,21 +679,21 @@ private fun AttachSheet(
             modifier = Modifier.padding(start = 20.dp, bottom = 4.dp),
         )
         AttachRow(
-            glyph = "📷",
+            iconRes = R.drawable.ic_camera,
             tint = Color(0xFF5B7CFA),
             title = "拍张照",
             subtitle = "拍纸上的东西、白板、书页，它能直接看",
             onClick = onTakePhoto,
         )
         AttachRow(
-            glyph = "🖼",
+            iconRes = R.drawable.ic_image,
             tint = Color(0xFF39C5BB),
             title = "从相册选",
             subtitle = "选一张已有的图片",
             onClick = onPickImage,
         )
         AttachRow(
-            glyph = "📄",
+            iconRes = R.drawable.ic_doc,
             tint = Color(0xFFF2A03D),
             title = "本地文档",
             subtitle = "txt / md / docx 读正文，pdf 按页看",
@@ -650,7 +705,7 @@ private fun AttachSheet(
 
 @Composable
 private fun AttachRow(
-    glyph: String,
+    @DrawableRes iconRes: Int,
     tint: Color,
     title: String,
     subtitle: String,
@@ -670,7 +725,13 @@ private fun AttachRow(
                 .background(tint.copy(alpha = 0.12f)),
             contentAlignment = Alignment.Center,
         ) {
-            Text(glyph, style = MaterialTheme.typography.titleMedium)
+            // 自绘矢量图标（不用 emoji，也不引 material-icons-extended）
+            Icon(
+                painter = painterResource(iconRes),
+                contentDescription = null,
+                tint = tint,
+                modifier = Modifier.size(22.dp),
+            )
         }
         Column(modifier = Modifier.padding(start = 14.dp)) {
             Text(title, style = MaterialTheme.typography.bodyLarge)
@@ -680,6 +741,20 @@ private fun AttachRow(
                 color = PlannerColors.TextSoft,
             )
         }
+    }
+}
+
+/** 跳到本应用的系统设置页（权限被永久拒绝时唯一能改的地方）。 */
+private fun openAppSettings(context: android.content.Context) {
+    runCatching {
+        context.startActivity(
+            android.content.Intent(
+                android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                android.net.Uri.fromParts("package", context.packageName, null),
+            ).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+        )
+    }.onFailure {
+        android.widget.Toast.makeText(context, "打不开系统设置，请手动到「设置 → 应用 → 小助」里开权限", android.widget.Toast.LENGTH_LONG).show()
     }
 }
 
@@ -759,30 +834,41 @@ private fun copyToClipboard(context: android.content.Context, text: String) {
     }
 }
 
-/** 小图标按钮（复制 / 朗读共用）：22dp 圆形，点了有反馈。 */
+/** 小图标按钮（复制 / 朗读）：22dp 圆形，点了有反馈。 */
 @Composable
-private fun BubbleAction(glyph: String, description: String, onClick: () -> Unit) {
+private fun BubbleAction(glyph: String, onClick: () -> Unit) {
     Box(
         modifier = Modifier
-            .size(22.dp)
-            .clip(CircleShape)
-            .clickable(onClick = onClick),
+            .clip(RoundedCornerShape(6.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 4.dp, vertical = 1.dp),
         contentAlignment = Alignment.Center,
     ) {
-        Text(glyph, style = MaterialTheme.typography.labelMedium)
+        Text(
+            glyph,
+            style = MaterialTheme.typography.labelMedium,
+            color = PlannerColors.TextSoft,
+        )
     }
 }
 
 /** 顶栏图标按钮：图标在上、小字在下，宽度固定，不会被挤到截断。 */
 @Composable
-private fun IconAction(icon: String, label: String, onClick: () -> Unit) {
+private fun IconAction(@DrawableRes iconRes: Int, label: String, onClick: () -> Unit) {
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier
+            .clip(RoundedCornerShape(10.dp))
             .clickable(onClick = onClick)
-            .padding(horizontal = 6.dp, vertical = 4.dp),
+            .padding(horizontal = 8.dp, vertical = 4.dp),
     ) {
-        Text(icon, style = MaterialTheme.typography.titleMedium)
+        // 自绘矢量图标（原来用的是 emoji，观感太随意）
+        Icon(
+            painter = painterResource(iconRes),
+            contentDescription = label,
+            tint = PlannerColors.Text,
+            modifier = Modifier.size(22.dp),
+        )
         Text(
             label,
             style = MaterialTheme.typography.labelMedium,
@@ -850,21 +936,6 @@ private fun UserRow(msg: UiMessage, onUndo: () -> Unit) {
             // 图在气泡上方（自己的图看大一点，点开可放大）
             if (msg.images.isNotEmpty()) {
                 ImageStrip(msg.images, modifier = Modifier.padding(bottom = 4.dp))
-            }
-            // 长按气泡也能选中复制；这里再给一个"复制整条"的快捷入口
-            if (msg.text.isNotBlank()) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    BubbleAction(glyph = "📋", description = "复制这条") {
-                        copyToClipboard(context, msg.text)
-                    }
-                    Spacer(Modifier.width(4.dp))
-                    Text(
-                        "复制",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = PlannerColors.TextSoft,
-                        modifier = Modifier.clickable { copyToClipboard(context, msg.text) },
-                    )
-                }
             }
             if (msg.text.isNotBlank()) {
                 // 靠右 + **贴着文字宽度**
@@ -977,16 +1048,12 @@ private fun AssistantRow(msg: UiMessage, onSpeak: (String) -> Unit, plain: Boole
                     }
                 }
                 if (hasText && !msg.failed) {
-                    Spacer(Modifier.width(3.dp))
-                    Column {
-                        // 复制整条（手机上拖手柄选一段不如直接复制方便，两个都给）
-                        BubbleAction(glyph = "📋", description = "复制这条") {
-                            copyToClipboard(context, msg.text)
-                        }
-                        Spacer(Modifier.height(2.dp))
-                        BubbleAction(glyph = "🔊", description = "朗读这条") {
-                            onSpeak(msg.text)
-                        }
+                    Spacer(Modifier.width(4.dp))
+                    // 只用文字，不放 emoji（用户明确要求）：
+                    // 复制整条 + 朗读这条，竖排贴在气泡右下
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        BubbleAction("复制") { copyToClipboard(context, msg.text) }
+                        BubbleAction("朗读") { onSpeak(msg.text) }
                     }
                 }
             }

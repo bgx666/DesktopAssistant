@@ -305,6 +305,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** 移除已附加但还没发送的文档（用户报过：之前加了就没法删）。 */
+    fun removePendingDocument() {
+        _state.update { it.copy(pendingText = null, pendingDocName = null) }
+    }
+
     /**
      * 选一个本地文档当附件。
      *

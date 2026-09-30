@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  设置（24dp 网格）：三条滑杆。
+  比齿轮好画也更清楚——齿轮的齿是十几个小梯形，手写路径容易参差不齐。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24"
+    android:tint="?android:attr/colorControlNormal">
+    <!-- 三条轨道 -->
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M3,5.2 L21,5.2 L21,6.8 L3,6.8 Z" />
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M3,11.2 L21,11.2 L21,12.8 L3,12.8 Z" />
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M3,17.2 L21,17.2 L21,18.8 L3,18.8 Z" />
+    <!-- 三个滑块 -->
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M8,3 A3,3 0 1 1 8,9 A3,3 0 1 1 8,3 Z" />
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M15,9 A3,3 0 1 1 15,15 A3,3 0 1 1 15,9 Z" />
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M10,15 A3,3 0 1 1 10,21 A3,3 0 1 1 10,15 Z" />
+</vector>

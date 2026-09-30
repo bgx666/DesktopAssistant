@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 文档（24dp 网格）：带折角的纸 + 三条文字线 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24"
+    android:tint="?android:attr/colorControlNormal">
+    <!-- 纸与折角 -->
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M6,2.5 L14,2.5 L19.5,8 L19.5,21.5 L6,21.5 A1.5,1.5 0 0 1 4.5,20 L4.5,4 A1.5,1.5 0 0 1 6,2.5 Z M13.5,4.6 L13.5,8.5 L17.4,8.5 Z" />
+    <!-- 文字线（挖空） -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M7.5,11.5 L16.5,11.5 L16.5,13 L7.5,13 Z" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M7.5,14.5 L16.5,14.5 L16.5,16 L7.5,16 Z" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M7.5,17.5 L13,17.5 L13,19 L7.5,19 Z" />
+</vector>

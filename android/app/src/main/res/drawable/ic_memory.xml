@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  记忆（24dp 网格）：三层堆叠。
+  选"堆叠"而不是"大脑"：记忆树就是一层层摘要往上并，堆叠这个形状更贴它的实际含义，
+  而且纯几何形状画得准（大脑的曲线手写路径容易画歪）。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24"
+    android:tint="?android:attr/colorControlNormal">
+    <!-- 顶层 -->
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M12,2.5 L21.5,7 L12,11.5 L2.5,7 Z" />
+    <!-- 中层 -->
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M4.6,10.2 L12,13.8 L19.4,10.2 L21.5,11.2 L12,15.8 L2.5,11.2 Z" />
+    <!-- 底层 -->
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M4.6,14.4 L12,18 L19.4,14.4 L21.5,15.4 L12,20 L2.5,15.4 Z" />
+</vector>

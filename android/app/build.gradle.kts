@@ -14,10 +14,10 @@ android {
         applicationId = "com.xiaozhu.planner"
         minSdk = 26
         targetSdk = 35
-        versionCode = 18
-        // 0.5.2：拍照改用自定义契约 CapturePhoto —— 既授写权限给相机，又收下相机回传的
-        // 缩略图（部分 ROM 忽略 EXTRA_OUTPUT 只回缩略图，那种情况下原来只能报"读不出来"）。
-        versionName = "0.5.2"
+        versionCode = 19
+        // 0.5.3：启动图标换成小助那个球（含自适应图标）；按钮去 emoji 改文字/自绘图标；
+        // 用户消息不再有复制按钮；已附加的文档可以移除；相机权限被永久拒绝时给说明与去设置。
+        versionName = "0.5.3"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
