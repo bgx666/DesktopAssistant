@@ -27,56 +27,50 @@ class HistoryMergeTest {
     )
 
     @Test
-    fun `回读结果里已经有了就不重复追加（这次的 bug）`() {
-        val built = listOf(user(1, "在吗"), assistant(2, "在。说吧，什么事？"))
-        val tail = assistant(99, "在。说吧，什么事？")
+    fun `落盘成功就不接内存那份（这次的多段拼接 bug）`() {
+        // 一轮里模型调了两次：内存里那条是两个输出拼在一起的，
+        // 跟库里任何单条都不相等——按文本比对会误判成"库里没有"，于是又接一遍
+        val built = listOf(
+            user(1, "论文，我会努力的"),
+            assistant(2, "行，那就不喊口号了。今天只推一件事……"),
+            assistant(3, "傍晚我再来问一句。"),
+        )
+        val tail = assistant(99, "行，那就不喊口号了。今天只推一件事……傍晚我再来问一句。")
 
-        val merged = HistoryMerge.merge(built, tail)
+        // 这一轮有新原文落库（40 → 42）→ 落盘成功 → 丢掉内存那份
+        val merged = HistoryMerge.merge(built, tail, rawBefore = 40, rawAfter = 42)
 
-        assertEquals("不该出现两条一样的回答", 2, merged.size)
-        assertEquals(1, merged.count { it.kind == UiMessageKind.Assistant })
+        assertEquals("拼接版不该再出现一次", 3, merged.size)
     }
 
     @Test
-    fun `落盘失败（回读结果里没有）时仍然接上`() {
+    fun `没有新原文落库时才接上（落盘真失败）`() {
         val built = listOf(user(1, "在吗"))
         val tail = assistant(99, "在。说吧，什么事？")
 
-        val merged = HistoryMerge.merge(built, tail)
+        val merged = HistoryMerge.merge(built, tail, rawBefore = 40, rawAfter = 40)
 
         assertEquals("落盘失败也不能让用户觉得它没回", 2, merged.size)
-        assertTrue(merged.last().text.contains("在。"))
+    }
+
+    @Test
+    fun `不传 rawBefore 时保守保留（兼容旧调用）`() {
+        val built = listOf(user(1, "在吗"))
+        val tail = assistant(99, "在。")
+        assertEquals(2, HistoryMerge.merge(built, tail, rawBefore = null, rawAfter = 40).size)
     }
 
     @Test
     fun `没有尾巴时原样返回`() {
         val built = listOf(user(1, "在吗"))
-        assertEquals(built, HistoryMerge.merge(built, null))
+        assertEquals(built, HistoryMerge.merge(built, null, rawBefore = 1, rawAfter = 2))
     }
 
     @Test
-    fun `空白差异不算重复判定失败`() {
-        val built = listOf(assistant(2, "  好  "))
-        val tail = assistant(99, "好")
-        assertEquals("两端空白不该让它变成两条", 1, HistoryMerge.merge(built, tail).size)
-    }
-
-    @Test
-    fun `同样的文本出现在更早的位置也算已存在`() {
-        // 用户可能反复问同一句、它反复答同一句；只要回读结果里有就不该再追加
-        val built = listOf(
-            user(1, "在吗"), assistant(2, "在。"), user(3, "在吗"), assistant(4, "在。"),
-        )
-        val tail = assistant(99, "在。")
-        assertEquals(4, HistoryMerge.merge(built, tail).size)
-    }
-
-    @Test
-    fun `空文本的尾巴不会被当成重复而丢掉`() {
+    fun `空文本的尾巴在落盘失败时也会接上`() {
         val built = listOf(user(1, "在吗"))
         val tail = assistant(99, "")
-        // 空文本无从比对，保守起见接上（界面上显示"（这轮没有输出）"之类）
-        assertEquals(2, HistoryMerge.merge(built, tail).size)
+        assertEquals(2, HistoryMerge.merge(built, tail, rawBefore = 40, rawAfter = 40).size)
     }
 
     // ── 新消息的原文序号（撤销靠它定位）──────────────────────

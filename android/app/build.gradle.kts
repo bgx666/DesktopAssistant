@@ -14,10 +14,10 @@ android {
         applicationId = "com.xiaozhu.planner"
         minSdk = 26
         targetSdk = 35
-        versionCode = 10
-        // 0.3.4：升级不丢数据的保障——迁移链校验 + 迁移保数据测试；
-        // 设置页可导出备份；破坏性导入前自动留一份。
-        versionName = "0.3.4"
+        versionCode = 11
+        // 0.3.5：一轮里多次模型输出各自成一个气泡（与库里/PC 版一致）；
+        // 回读后是否保留内存那份气泡改为按"有没有新原文落库"判断，不再按文本比对。
+        versionName = "0.3.5"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 

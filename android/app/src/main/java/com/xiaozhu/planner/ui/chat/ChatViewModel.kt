@@ -54,6 +54,20 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private var running: Job? = null
     private var nextId = 1L
 
+    /**
+     * 正在接收流式文字的那个气泡。
+     *
+     * 一轮里模型可能被调用多次（调工具前后各一次），**每次输出是独立的一条消息**
+     * ——库里就是这么存的，PC 版也是这么显示的。所以工具一出现就把当前气泡"封口"，
+     * 后面的文字另起一个气泡；否则界面上的"拼接版"与回读后的"分开版"对不上，
+     * 用户会看到同一段话出现两次。
+     */
+    private var currentAssistantId = 0L
+    private var segmentClosed = false
+
+    /** 这一轮开始前库里的原文条数（判断落盘成没成，不看文本）。 */
+    private var rawCountBeforeRound: Int? = null
+
     private val _state = MutableStateFlow(ChatUiState())
     val state: StateFlow<ChatUiState> = _state.asStateFlow()
 
@@ -260,6 +274,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
         val userId = nextId++
         val assistantId = nextId++
+        currentAssistantId = assistantId
+        segmentClosed = false
         _state.update {
             // 给新消息算上原文序号：否则"刚发完那几秒"撤销按钮是消失的
             val newRawIndex = rawIndexOfNewMessage(it.messages, it.historyLoaded)
@@ -281,17 +297,21 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
 
         running = viewModelScope.launch {
+            rawCountBeforeRound = withContext(Dispatchers.IO) {
+                runCatching { engine.store.rawCount() }.getOrNull()
+            }
             val restored = runCatching { engine.ensureLoaded() }.getOrDefault(false)
             if (restored) refreshMemoryStats()
             try {
-                engine.runRound(message) { event -> onEvent(assistantId, event) }
+                engine.runRound(message) { event -> onEvent(event) }
             } catch (e: Exception) {
-                patch(assistantId) { it.copy(text = it.text + "\n（中断：${e.message}）", failed = true) }
+                patch(currentAssistantId) { it.copy(text = it.text + "\n（中断：${e.message}）", failed = true) }
             } finally {
                 _state.update { it.copy(streaming = false) }
             }
-            // 落盘后再回读一次：新消息要带上 rawIndex，否则它不可撤销
-            reloadFromStore(keepTail = assistantId)
+            // 落盘后再回读一次：新消息要带上 rawIndex（撤销要用），
+            // 并按"有没有新原文落库"决定内存里那份气泡的去留
+            reloadFromStore(keepTail = currentAssistantId, rawBefore = rawCountBeforeRound)
         }
     }
 
@@ -300,9 +320,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     /**
      * 从库里重建界面列表：**记忆卡片在前、原文在后**（与 buffer 的顺序一致）。
      *
-     * @param keepTail 正在流式输出的那条临时消息（回读时不要把它抹掉）
+     * @param keepTail 正在流式输出的那条临时消息（回读时按"有没有落盘"决定去留）
+     * @param rawBefore 这一轮开始前库里有多少条原文（null = 不判断，直接保留 tail）
+     * @return 回读后库里的原文条数
      */
-    suspend fun reloadFromStore(keepTail: Long? = null) {
+    suspend fun reloadFromStore(keepTail: Long? = null, rawBefore: Int? = null): Int {
         val snapshot = withContext(Dispatchers.IO) {
             val nodes = engine.store.nodeMessages()
             val raw = engine.store.rawMessages()
@@ -343,8 +365,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 current.messages.lastOrNull { it.id == id && it.kind == UiMessageKind.Assistant }
             }
             current.copy(
-                // 只在回读结果里没有它时才接上（否则同一条回复会出现两次）
-                messages = HistoryMerge.merge(built, tail),
+                // 判据是"这一轮有没有新原文落进库"，不是文本比对（见 HistoryMerge 的注释）
+                messages = HistoryMerge.merge(built, tail, rawBefore, raw.size),
                 memory = stats,
                 historyLoaded = true,
                 // token 估算与 PC 版一致：字符数 × 1.2（估算只会偏保守）
@@ -352,6 +374,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             )
         }
         refreshLiveStatus()
+        return raw.size
     }
 
     /** PC 版 `context_stats()`：`tokens = int(chars * 1.2)`。 */
@@ -468,35 +491,62 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     // ── 事件 → UI ───────────────────────────────────────────
 
-    private fun onEvent(assistantId: Long, event: AgentEvent) {
+    private fun onEvent(event: AgentEvent) {
         when (event) {
-            is AgentEvent.TextDelta -> patch(assistantId) { it.copy(text = it.text + event.text) }
+            is AgentEvent.TextDelta -> {
+                // 上一次工具调用之后又出文字 = 模型被调用了新的一次 → 另起一个气泡
+                // （库里就是分开存的两条消息，界面对齐它才不会出现"同一段话两遍"）
+                if (segmentClosed) {
+                    val fresh = nextId++
+                    currentAssistantId = fresh
+                    segmentClosed = false
+                    _state.update {
+                        it.copy(messages = it.messages + UiMessage(id = fresh, kind = UiMessageKind.Assistant))
+                    }
+                }
+                patch(currentAssistantId) { it.copy(text = it.text + event.text) }
+            }
 
             is AgentEvent.ToolStarted -> {
                 // continue_speaking 只是个停顿，PC 版两处都屏蔽它的卡片
                 if (event.name in MessageTools.HIDDEN) return
-                patch(assistantId) {
+                patch(currentAssistantId) {
                     it.copy(tools = it.tools + UiTool(name = event.name, args = event.args, live = true))
                 }
+                // 封口：后面再出文字就是新的一次模型调用
+                segmentClosed = true
             }
 
             is AgentEvent.ToolFinished -> {
                 if (event.name in MessageTools.HIDDEN) return
-                patch(assistantId) { msg ->
-                    val tools = msg.tools.toMutableList()
-                    val idx = tools.indexOfLast { it.name == event.name && it.result == null }
-                    if (idx >= 0) tools[idx] = tools[idx].copy(result = event.result, live = false)
-                    msg.copy(tools = tools)
+                // 工具属于"发起它的那个气泡"，所以要往前找（可能已经不是当前气泡了）
+                _state.update { s ->
+                    val idx = s.messages.indexOfLast { msg ->
+                        msg.tools.any { it.name == event.name && it.result == null }
+                    }
+                    if (idx < 0) s
+                    else s.copy(
+                        messages = s.messages.mapIndexed { i, msg ->
+                            if (i != idx) msg
+                            else msg.copy(
+                                tools = msg.tools.map { t ->
+                                    if (t.name == event.name && t.result == null) {
+                                        t.copy(result = event.result, live = false)
+                                    } else t
+                                }
+                            )
+                        }
+                    )
                 }
             }
 
-            is AgentEvent.Done -> patch(assistantId) {
+            is AgentEvent.Done -> patch(currentAssistantId) {
                 val final = it.text.ifBlank { "（这轮没有输出）" }
                 speaker.speak(final)
                 it.copy(text = final, time = nowHHmm())
             }
 
-            is AgentEvent.Error -> patch(assistantId) {
+            is AgentEvent.Error -> patch(currentAssistantId) {
                 it.copy(text = (it.text + "\n出错了：" + event.message).trim(), failed = true)
             }
         }

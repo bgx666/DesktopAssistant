@@ -109,23 +109,28 @@ data class MemoryStats(
 )
 
 /**
- * 回读历史时怎么处理"刚生成完、还在内存里的那一条"。
+ * 回读历史时怎么处理"刚生成完、还在内存里的那些气泡"。
  *
- * 踩过的坑：一轮结束后无条件把内存里的回复接在回读结果后面，
- * 而它**已经落盘了**——于是同一条回复在界面上出现两次
- * （用户只问了一句，却收到两个一模一样的回答）。
+ * 踩过两次坑，第二次比第一次隐蔽：
+ * 1. 无条件把内存里的回复接在回读结果后面——而它**已经落盘了** → 同一条回复出现两次
+ * 2. 改成"按文本比对"之后，**一轮里模型调了两次**的情况又漏了：内存里那条是两个
+ *    模型输出**拼在一起**的（"…今天真的开个头。傍晚我再来问一句。"），跟库里任何
+ *    单条都不相等 → 判定"库里没有" → 又接了一遍（用户看到一模一样的回复两遍）
  *
- * 所以只在回读结果里**确实没有**它时才接上（那种情况意味着落盘失败，
- * 不接就会让用户觉得"它没回我"）。
+ * 所以判据换成**不看文本、只看事实**：这一轮有没有新原文落进库。
+ * 落进去了（`rawAfter > rawBefore`）就说明落盘成功，内存那份纯属多余，丢掉；
+ * 没落进去才是落盘失败，那时才把它接上（否则用户会觉得"它没回我"）。
  */
 internal object HistoryMerge {
 
-    fun merge(built: List<UiMessage>, tail: UiMessage?): List<UiMessage> {
+    fun merge(
+        built: List<UiMessage>,
+        tail: UiMessage?,
+        rawBefore: Int?,
+        rawAfter: Int,
+    ): List<UiMessage> {
         if (tail == null) return built
-        val text = tail.text.trim()
-        val alreadyThere = text.isNotEmpty() && built.any {
-            it.kind == UiMessageKind.Assistant && it.text.trim() == text
-        }
-        return if (alreadyThere) built else built + tail
+        val persisted = rawBefore != null && rawAfter > rawBefore
+        return if (persisted) built else built + tail
     }
 }
