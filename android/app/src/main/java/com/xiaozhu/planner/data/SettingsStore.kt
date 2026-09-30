@@ -41,11 +41,54 @@ class SettingsStore(context: Context) {
 
     val configured: Boolean get() = apiKey.isNotBlank()
 
+    // ── 语音（TTS）────────────────────────────────────────
+    // MiMo 是**独立的服务与密钥**（`api.xiaomimimo.com`），不能拿 LLM 的 key 去顶——
+    // 两个供应商的 key 互不通用，混用只会得到 401。
+
+    /** 自动朗读小助的回复。默认开：prompt 里已经写明"回复是会被朗读的"。 */
+    var ttsEnabled: Boolean
+        get() = prefs.getBoolean(KEY_TTS_ENABLED, true)
+        set(v) = prefs.edit().putBoolean(KEY_TTS_ENABLED, v).apply()
+
+    /** [TTS_ENGINE_MIMO] 优先、失败退回系统 TTS；[TTS_ENGINE_SYSTEM] 只用系统 TTS。 */
+    var ttsEngine: String
+        get() = prefs.getString(KEY_TTS_ENGINE, TTS_ENGINE_MIMO).orEmpty().ifBlank { TTS_ENGINE_MIMO }
+        set(v) = prefs.edit().putString(KEY_TTS_ENGINE, v.trim().ifBlank { TTS_ENGINE_MIMO }).apply()
+
+    var ttsVoice: String
+        get() = prefs.getString(KEY_TTS_VOICE, MIMO_DEFAULT_VOICE).orEmpty().ifBlank { MIMO_DEFAULT_VOICE }
+        set(v) = prefs.edit().putString(KEY_TTS_VOICE, v.trim().ifBlank { MIMO_DEFAULT_VOICE }).apply()
+
+    var mimoApiKey: String
+        get() = prefs.getString(KEY_MIMO_KEY, "").orEmpty()
+        set(v) = prefs.edit().putString(KEY_MIMO_KEY, v.trim()).apply()
+
+    var mimoBaseUrl: String
+        get() = prefs.getString(KEY_MIMO_BASE, MIMO_DEFAULT_BASE).orEmpty().ifBlank { MIMO_DEFAULT_BASE }
+        set(v) = prefs.edit().putString(KEY_MIMO_BASE, v.trim().ifBlank { MIMO_DEFAULT_BASE }).apply()
+
+    var mimoModel: String
+        get() = prefs.getString(KEY_MIMO_MODEL, MIMO_DEFAULT_MODEL).orEmpty().ifBlank { MIMO_DEFAULT_MODEL }
+        set(v) = prefs.edit().putString(KEY_MIMO_MODEL, v.trim().ifBlank { MIMO_DEFAULT_MODEL }).apply()
+
     companion object {
         const val DEFAULT_BASE = "https://api.deepseek.com/v1"
         const val DEFAULT_MODEL = "deepseek-v4-flash-vision-exp"
+
+        const val TTS_ENGINE_MIMO = "mimo"
+        const val TTS_ENGINE_SYSTEM = "system"
+        const val MIMO_DEFAULT_BASE = "https://api.xiaomimimo.com/v1"
+        const val MIMO_DEFAULT_MODEL = "mimo-v2.5-tts"
+        const val MIMO_DEFAULT_VOICE = "mimo_default"
+
         private const val KEY_API = "llm_api_key"
         private const val KEY_BASE = "llm_base_url"
         private const val KEY_MODEL = "llm_model"
+        private const val KEY_TTS_ENABLED = "tts_enabled"
+        private const val KEY_TTS_ENGINE = "tts_engine"
+        private const val KEY_TTS_VOICE = "tts_voice"
+        private const val KEY_MIMO_KEY = "mimo_api_key"
+        private const val KEY_MIMO_BASE = "mimo_base_url"
+        private const val KEY_MIMO_MODEL = "mimo_model"
     }
 }

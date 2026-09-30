@@ -1,5 +1,9 @@
 package com.xiaozhu.planner.ui.chat
 
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -23,6 +27,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -31,8 +36,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
+import com.xiaozhu.planner.speech.VoiceInput
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -45,6 +53,26 @@ fun ChatScreen(
     val state by vm.state.collectAsState()
     var draft by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
+
+    // ── 语音输入 ────────────────────────────────────────────
+    val context = LocalContext.current
+    var listening by remember { mutableStateOf(false) }
+    val voice = remember {
+        VoiceInput(
+            context = context,
+            onPartial = { draft = it },
+            onFinal = { draft = it },
+            onError = { vm.showHint(it) },
+            onStateChange = { listening = it },
+        )
+    }
+    DisposableEffect(Unit) { onDispose { voice.destroy() } }
+
+    val micPermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) voice.start() else vm.showHint("没有麦克风权限，语音输入用不了；打字也一样。")
+    }
 
     // 新消息（含流式增量的最后一条）始终滚到底，否则用户看不见正在写的内容
     LaunchedEffect(state.messages.size, state.messages.lastOrNull()?.text) {
@@ -72,7 +100,7 @@ fun ChatScreen(
                 contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                items(state.messages, key = { it.id }) { msg -> MessageRow(msg) }
+                items(state.messages, key = { it.id }) { msg -> MessageRow(msg, onSpeak = vm::speak) }
             }
 
             state.memoryNotice?.let { notice ->
@@ -97,17 +125,31 @@ fun ChatScreen(
                 modifier = Modifier.fillMaxWidth().padding(8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                TextButton(onClick = {
+                    if (listening) {
+                        voice.stop()
+                    } else if (ContextCompat.checkSelfPermission(
+                            context, Manifest.permission.RECORD_AUDIO
+                        ) == PackageManager.PERMISSION_GRANTED
+                    ) {
+                        voice.start()
+                    } else {
+                        micPermission.launch(Manifest.permission.RECORD_AUDIO)
+                    }
+                }) { Text(if (listening) "停" else "说") }
+
                 OutlinedTextField(
                     value = draft,
                     onValueChange = { draft = it },
                     modifier = Modifier.weight(1f),
-                    placeholder = { Text("说点什么…") },
+                    placeholder = { Text(if (listening) "在听…" else "说点什么…") },
                     maxLines = 4,
                 )
                 if (state.streaming) {
-                    Button(onClick = { vm.stop() }, modifier = Modifier.padding(start = 8.dp)) {
-                        Text("停")
-                    }
+                    Button(
+                        onClick = { vm.stop() },
+                        modifier = Modifier.padding(start = 8.dp),
+                    ) { Text("停") }
                 } else {
                     Button(
                         onClick = { vm.send(draft); draft = "" },
@@ -120,7 +162,7 @@ fun ChatScreen(
 }
 
 @Composable
-private fun MessageRow(msg: UiMessage) {
+private fun MessageRow(msg: UiMessage, onSpeak: (String) -> Unit) {
     // 系统触发的一条（到点提醒）：居中、浅色、别伪装成用户说的话
     if (msg.fromSystem) {
         Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
@@ -158,6 +200,14 @@ private fun MessageRow(msg: UiMessage) {
                 }
             }
             msg.tools.forEach { tool -> ToolCard(tool) }
+
+            // 朗读：自动朗读开着时也会读，但"再听一遍"是独立需求（比如刚才没听清）
+            if (!msg.fromUser && msg.text.isNotBlank() && !msg.failed) {
+                TextButton(
+                    onClick = { onSpeak(msg.text) },
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 4.dp, vertical = 0.dp),
+                ) { Text("朗读", style = MaterialTheme.typography.labelMedium) }
+            }
         }
     }
 }

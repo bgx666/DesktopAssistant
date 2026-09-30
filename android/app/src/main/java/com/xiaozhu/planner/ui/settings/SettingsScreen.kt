@@ -16,6 +16,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -41,6 +42,10 @@ fun SettingsScreen(onBack: () -> Unit) {
     var apiKey by remember { mutableStateOf(store.apiKey) }
     var baseUrl by remember { mutableStateOf(store.baseUrl) }
     var model by remember { mutableStateOf(store.model) }
+    var ttsEnabled by remember { mutableStateOf(store.ttsEnabled) }
+    var ttsEngine by remember { mutableStateOf(store.ttsEngine) }
+    var ttsVoice by remember { mutableStateOf(store.ttsVoice) }
+    var mimoApiKey by remember { mutableStateOf(store.mimoApiKey) }
     var saved by remember { mutableStateOf(false) }
 
     Scaffold(
@@ -94,6 +99,10 @@ fun SettingsScreen(onBack: () -> Unit) {
                     store.apiKey = apiKey
                     store.baseUrl = baseUrl
                     store.model = model
+                    store.ttsEnabled = ttsEnabled
+                    store.ttsEngine = ttsEngine
+                    store.ttsVoice = ttsVoice
+                    store.mimoApiKey = mimoApiKey
                     saved = true
                 },
                 modifier = Modifier.padding(top = 16.dp),
@@ -107,6 +116,58 @@ fun SettingsScreen(onBack: () -> Unit) {
                     modifier = Modifier.padding(top = 8.dp),
                 )
             }
+
+            // ── 语音 ────────────────────────────────────────────
+            HorizontalDivider(modifier = Modifier.padding(vertical = 16.dp))
+            Text("语音", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "回复会被朗读。默认走小米 MiMo（与电脑版同一把嗓子），" +
+                    "没配密钥或请求失败时退回系统语音——有声音总比没有好。",
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(top = 4.dp, bottom = 8.dp),
+            )
+
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("自动朗读回复", modifier = Modifier.weight(1f))
+                Switch(checked = ttsEnabled, onCheckedChange = { ttsEnabled = it; saved = false })
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("只用系统语音", modifier = Modifier.weight(1f))
+                Switch(
+                    checked = ttsEngine == SettingsStore.TTS_ENGINE_SYSTEM,
+                    onCheckedChange = {
+                        ttsEngine = if (it) SettingsStore.TTS_ENGINE_SYSTEM else SettingsStore.TTS_ENGINE_MIMO
+                        saved = false
+                    },
+                )
+            }
+
+            OutlinedTextField(
+                value = mimoApiKey,
+                onValueChange = { mimoApiKey = it; saved = false },
+                label = { Text("MiMo API Key（可留空）") },
+                visualTransformation = PasswordVisualTransformation(),
+                singleLine = true,
+                supportingText = { Text("与上面 LLM 的 key 不是同一个供应商，不能混用") },
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+            )
+            OutlinedTextField(
+                value = ttsVoice,
+                onValueChange = { ttsVoice = it; saved = false },
+                label = { Text("音色") },
+                singleLine = true,
+                supportingText = {
+                    Text("如 ${SettingsStore.MIMO_DEFAULT_VOICE} / 冰糖 / 茉莉 / 苏打 / 白桦")
+                },
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+            )
+
+            Text(
+                "语音输入用系统识别（零密钥、多数机型可离线）。识别不准就打字，不影响用。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 8.dp),
+            )
 
             // ── 提醒权限 ────────────────────────────────────────
             HorizontalDivider(modifier = Modifier.padding(vertical = 16.dp))

@@ -9,6 +9,13 @@
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <!-- 重启/时间被改后要重排闹钟（AlarmManager 不持久化） -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- 语音输入（系统 SpeechRecognizer）。只录音，识别在本机/系统服务里做 -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+    <!-- 语音识别是可选能力：没装语音服务的设备（部分平板/模拟器）也不该被市场过滤掉 -->
+    <uses-feature
+        android:name="android.hardware.microphone"
+        android:required="false" />
 
     <application
         android:allowBackup="false"

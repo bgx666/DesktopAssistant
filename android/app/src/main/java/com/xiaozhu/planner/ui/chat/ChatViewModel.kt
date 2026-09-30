@@ -19,6 +19,7 @@ import com.xiaozhu.planner.core.memory.Compressor
 import com.xiaozhu.planner.core.memory.MemoryHit
 import com.xiaozhu.planner.core.memory.MemoryStore
 import com.xiaozhu.planner.core.memory.NodeInfo
+import com.xiaozhu.planner.core.speech.Speaker
 import com.xiaozhu.planner.core.tools.AddScheduleTool
 import com.xiaozhu.planner.core.tools.CancelScheduleTool
 import com.xiaozhu.planner.core.tools.ContinueSpeakingTool
@@ -37,6 +38,7 @@ import com.xiaozhu.planner.data.db.NodeEntity
 import com.xiaozhu.planner.data.db.PlannerDatabase
 import com.xiaozhu.planner.reminder.ReminderEvents
 import com.xiaozhu.planner.reminder.ReminderScheduler
+import com.xiaozhu.planner.speech.AppSpeaker
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -68,6 +70,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     /** `continue_speaking` 的说话节奏（跨轮沿用，跟 PC 版的 session 状态对齐）。 */
     private val pacing = SpeechPacing()
+
+    /** 朗读：MiMo 优先、系统 TTS 兜底（见 AppSpeaker）。 */
+    private val speaker: Speaker = AppSpeaker(app, settings)
 
     private val registry = ToolRegistry(
         listOf(
@@ -111,13 +116,25 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         _state.update { it.copy(configured = settings.configured, hint = null) }
     }
 
+    /** 给 UI 层显示一行提示（语音识别失败等）。 */
+    fun showHint(text: String) {
+        _state.update { it.copy(hint = text) }
+    }
+
     // ── 对话 ────────────────────────────────────────────────
 
     fun send(text: String) {
         val body = text.trim()
         if (body.isEmpty()) return
+        // 用户开口就闭嘴：听着长回复想插话时，最烦的是"它还在念"
+        speaker.stop()
         submit(ChatMessage.user(body), fromUser = true, display = body)
     }
+
+    /** 手动朗读某条回复（自动朗读关掉时用）。 */
+    fun speak(text: String) = speaker.speak(text)
+
+    fun stopSpeaking() = speaker.stop()
 
     fun stop() {
         running?.cancel()
@@ -323,7 +340,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             }
 
             is AgentEvent.Done -> patch(assistantId) {
-                it.copy(text = it.text.ifBlank { "（这轮没有输出）" })
+                val final = it.text.ifBlank { "（这轮没有输出）" }
+                // 朗读在事件处理里发起：此时文本已经完整，且不阻塞 UI 线程
+                speaker.speak(final)
+                it.copy(text = final)
             }
 
             is AgentEvent.Error -> patch(assistantId) {

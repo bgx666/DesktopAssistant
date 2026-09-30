@@ -53,8 +53,10 @@ android/
         core/memory/      # 分层摘要记忆树（Room）+ 压缩 + buffer 修复
         core/calendar/    # 日历语义层：日期工具 / 重复系列 / 议程快照 / 免打扰
         core/tools/       # 11 个常驻工具（网页、记忆、日历、心跳、分段说话、免打扰）
+        core/speech/      # 朗读文本清洗 + MiMo TTS 客户端 + 返回体解析（纯逻辑，可单测）
         data/             # Room（记忆 + 日历）、加密设置、免打扰与心跳状态
         reminder/         # AlarmManager 精确闹钟 → 通知；开机/改时间重排 + 补提醒
+        speech/           # 平台侧：AppSpeaker（MiMo→系统 TTS 兜底）/ VoiceInput（系统识别）
         ui/               # chat / calendar / memory / settings 四个 Compose 页面
       res/                # strings（应用名 小助）/ themes / 通知图标
 ```
@@ -66,7 +68,7 @@ android/
 | **P0 骨架 + 聊天** | **已完成**：流式对话 + 工具调用卡片 + 设置页（加密存 key）|
 | **P1 本地记忆** | **已完成**：Room 记忆树 + 压缩接线 + 记忆浏览页（分层 + 关键词检索）。检索用 `LIKE` 而非 FTS——SQLite 默认分词器把连续中文当一个词，FTS 反而搜不到 |
 | **P2 日历 + 提醒** | **已完成**：`calendar_items` 一套日程（唯一待办概念）+ 重复系列（生成实体行 + 滚动续期）+ AlarmManager 精确闹钟 → 通知 + 免打扰 + `[当前议程]` 注入 + 日历页 |
-| P3 语音 + 搜索 | 部分完成：`web_search` / `fetch_web` 已可用；TTS 复用 MiMo（OpenAI 兼容）、**ASR 选型待定**（系统 SpeechRecognizer 零 key vs 云端）未做 |
+| **P3 语音 + 搜索** | **已完成**：`web_search` / `fetch_web`（Bing RSS 解析）；朗读走 MiMo TTS（`/chat/completions`，与 PC 版同一把嗓子）+ 系统 TTS 兜底；语音输入用系统 `SpeechRecognizer`（零 key、多数机型可离线） |
 | P4 连电脑 + 迁移 | 未开始。PC 侧只做**极小工具服务**（B 方案：无 agent / 无记忆 / 不对话）；迁移用 `../scripts/export_to_android.py` |
 | P5 打磨 | 未开始。前台服务保活、心跳真正落地、打包与侧载说明 |
 
@@ -77,6 +79,12 @@ android/
 - **免打扰期间不投递也不标记**，而是把闹钟顺延到窗口结束——否则 22:30 的提醒会被静默丢掉，用户永远不知道有这回事。
 - **议程快照每轮重建**（今天 + 未来 7 天，重复项折叠成一行），这样模型不必先调一次 `list_schedule` 才敢说话。
 - `scripts/check_android_prompt.py` 现在会**交叉校验 prompt 与真实注册表**：prompt 承诺了却没注册、注册了却没在 prompt 里说，都会红。
+
+### P3 的两个取舍
+
+- **朗读优先 MiMo、失败退回系统 TTS**：MiMo 保证和电脑版是同一把嗓子；系统 TTS 保证"没配密钥 / 断网 / 请求失败"时也不至于哑巴。读之前会清洗文本（链接留文字、括号内容不读、emoji 不读、markdown 符号去掉）——`（笑）` 被念成"括号笑括号"是最典型的翻车。
+- **语音输入用系统 `SpeechRecognizer`，不接云 ASR**：零 key、零成本、不用把用户说的话再发给第三方；代价是识别质量随 ROM 差异大。所以它只是**输入的一种方式**，键盘永远在。
+- **用户一发消息就停止朗读**：手机上听着长回复想插话时，最烦的是"它还在念"。
 
 ## 相关文档
 
