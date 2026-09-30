@@ -14,11 +14,12 @@ android {
         applicationId = "com.xiaozhu.planner"
         minSdk = 26
         targetSdk = 35
-        versionCode = 3
-        // 0.2.1：session 头改成无条件发（不再按域名判断），报错会翻译成"下一步该干什么"。
+        versionCode = 4
+        // 0.2.2：空 messages 在客户端拦下；报错带上"本次请求发了什么"；
+        // 认得出网关那句只有模型名的 400。
         // 之前一直是 0.1.0，导致几次构建之间**版本号区分不了**——排查"你装的是哪一版"
         // 只能看设置页页脚的安装时间。以后每次可安装的改动都递增 versionCode。
-        versionName = "0.2.1"
+        versionName = "0.2.2"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 

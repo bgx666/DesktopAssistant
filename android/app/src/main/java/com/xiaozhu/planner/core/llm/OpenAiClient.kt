@@ -43,12 +43,18 @@ class OpenAiClient(
         messages: List<ChatMessage>,
         tools: List<ToolSpec>,
     ): Flow<LlmEvent> = flow {
+        // 空 messages 会被网关回一句 `{"model":"..."}` 的 400——那句报错完全看不出病因。
+        // 在这里拦下，换成人能看懂的一句话（真实踩过：排查了很久才发现是"没发消息"）。
+        if (messages.isEmpty()) {
+            emit(LlmEvent.Failed("这一轮没有可发送的消息（内部状态为空），已拦下未发请求。"))
+            return@flow
+        }
         val request = buildRequest(messages, tools.ifEmpty { null }, stream = true)
         val call = client.newCall(request)
         try {
             call.execute().use { response ->
                 if (!response.isSuccessful) {
-                    emit(LlmEvent.Failed(describeFailure(response)))
+                    emit(LlmEvent.Failed(describeFailure(response, describeRequest(messages, tools.size, true))))
                     return@flow
                 }
                 val source = response.body?.source()
@@ -71,10 +77,13 @@ class OpenAiClient(
     }.flowOn(Dispatchers.IO)
 
     override suspend fun complete(messages: List<ChatMessage>): String = withContext(Dispatchers.IO) {
+        require(messages.isNotEmpty()) { "这一轮没有可发送的消息（内部状态为空），已拦下未发请求。" }
         val request = buildRequest(messages, null, stream = false)
         client.newCall(request).execute().use { response ->
             if (!response.isSuccessful) {
-                throw IllegalStateException(describeFailure(response))
+                throw IllegalStateException(
+                    describeFailure(response, describeRequest(messages, 0, false))
+                )
             }
             val text = response.body?.string().orEmpty()
             val parsed = PlannerJson.decodeFromString(ChatResponse.serializer(), text)
@@ -82,13 +91,36 @@ class OpenAiClient(
         }
     }
 
-    /** 报错要能直接指导下一步（见 [EndpointUrl.hintFor]）。 */
-    private fun describeFailure(response: okhttp3.Response): String {
+    /**
+     * 报错要能直接指导下一步（见 [EndpointUrl.hintFor]），并且带上**这次发了什么**。
+     *
+     * 为什么要把请求形态也写进去：网关的报错经常完全看不出病因
+     * （`messages` 为空时只回一句 `{"model":"..."}`），没有这一行就只能靠猜。
+     */
+    private fun describeFailure(response: okhttp3.Response, requestInfo: String): String {
         val body = errorBody(response)
         val head = "HTTP ${response.code} ${response.message}".trim()
         val hint = EndpointUrl.hintFor(response.code, body)
-        return listOfNotNull(head, hint?.let { "→ $it" }, body.take(300).takeIf { it.isNotBlank() })
-            .joinToString("\n")
+        return listOfNotNull(
+            head,
+            "本次请求：$requestInfo",
+            hint?.let { "→ $it" },
+            body.take(300).takeIf { it.isNotBlank() },
+        ).joinToString("\n")
+    }
+
+    /** 请求形态摘要（消息条数、工具数、正文大小），用于报错与诊断。 */
+    private fun describeRequest(messages: List<ChatMessage>, toolCount: Int, stream: Boolean): String {
+        val bytes = PlannerJson.encodeToString(
+            ChatRequest.serializer(),
+            ChatRequest(model = model, messages = messages, stream = stream),
+        ).length
+        return buildString {
+            append("messages=").append(messages.size)
+            if (toolCount > 0) append("、tools=").append(toolCount)
+            append("、约 ").append(bytes).append(" 字节")
+            if (stream) append("、stream=true")
+        }
     }
 
     /** 内部可见是为了能单测"URL 与请求头拼得对不对"——这次的 404 就是拼错了。 */

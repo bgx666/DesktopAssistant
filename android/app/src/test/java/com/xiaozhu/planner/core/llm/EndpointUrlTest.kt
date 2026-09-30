@@ -4,6 +4,8 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.runBlocking
 
 /**
  * 端点 URL 与请求头。**这里的每一条都对应一次真实的 404/400**：
@@ -94,6 +96,34 @@ class EndpointUrlTest {
         assertTrue(EndpointUrl.hintFor(503, "bad gateway")!!.contains("服务端"))
         // 没见过的错误不要硬编一段话
         assertEquals(null, EndpointUrl.hintFor(400, "something else"))
+    }
+
+    @Test
+    fun `认得出「网关说没有 messages」那种只有模型名的报错`() {
+        // 实测：messages 为空 / 为 null / 类型不对，网关都只回这一句
+        listOf(
+            """{"model":"deepseek-v4.1-flash"}""",
+            """{ "model" : "deepseek-v4.1-flash" }""",
+        ).forEach { body ->
+            val hint = EndpointUrl.hintFor(400, body)
+            assertTrue("应认出：$body", hint != null && hint.contains("messages"))
+        }
+        // 别的 400（有正经错误说明的）不该被这条抢走
+        assertEquals(null, EndpointUrl.hintFor(400, """{"error":{"message":"bad temperature"}}"""))
+    }
+
+    @Test
+    fun `空消息列表在客户端就被拦下，不会发出去`() = runBlocking {
+        val client = OpenAiClient("https://opencode.ai/zen/go/v1", "k", "m")
+        val failed = client.stream(emptyList(), emptyList())
+            .toList()
+            .filterIsInstance<LlmEvent.Failed>()
+            .firstOrNull()
+        assertTrue("空 messages 必须被本地拦下", failed != null)
+        assertTrue(failed!!.message.contains("没有可发送的消息"))
+
+        val error = runCatching { client.complete(emptyList()) }.exceptionOrNull()
+        assertTrue("complete 同样要拦", error != null && error.message!!.contains("没有可发送的消息"))
     }
 
     @Test

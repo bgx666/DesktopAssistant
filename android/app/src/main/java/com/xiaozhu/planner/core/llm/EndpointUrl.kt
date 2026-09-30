@@ -70,6 +70,11 @@ object EndpointUrl {
             "网关要求 $SESSION_HEADER 头。去设置页点「测试连接」，那里会显示实际发出的头" +
                 "和 session 值；如果 session 是空的，把那个框清空再保存会自动生成一个。"
 
+        // 网关对"没有 messages"的回复只有一句 {"model":"..."}，完全看不出病因
+        status == 400 && body.trim().matches(Regex("""\{\s*"model"\s*:\s*"[^"]*"\s*}""")) ->
+            "网关说这次请求里没有可用的 messages（它只回了模型名）。" +
+                "多半是请求体不完整或消息列表为空；设置页「测试连接」里的「本次请求」会显示实际条数。"
+
         status == 404 && body.contains("<html", ignoreCase = true) ->
             "返回的是一张网页而不是接口响应 —— Base URL 多半写错了。" +
                 "填到 /v1 为止即可（带 /chat/completions 也行，会自动去掉重复的一段）。"
