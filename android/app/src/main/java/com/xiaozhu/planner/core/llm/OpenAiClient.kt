@@ -126,7 +126,12 @@ class OpenAiClient(
     private fun describeRequest(messages: List<ChatMessage>, toolCount: Int, stream: Boolean): String {
         val bytes = PlannerJson.encodeToString(
             ChatRequest.serializer(),
-            ChatRequest(model = model, messages = messages.map { it.toWire() }, stream = stream),
+            ChatRequest(
+                model = model,
+                messages = messages.map { it.toWire() },
+                stream = stream,
+                reasoningEffort = ReasoningEffort.forModel(model),
+            ),
         ).length
         return buildString {
             append("messages=").append(messages.size)
@@ -150,6 +155,7 @@ class OpenAiClient(
                 tools = tools,
                 stream = stream,
                 streamOptions = if (stream) StreamOptions() else null,
+                reasoningEffort = ReasoningEffort.forModel(model),
             ),
         )
         val builder = Request.Builder()
@@ -226,6 +232,11 @@ internal data class ChatRequest(
     val tools: List<ToolSpec>? = null,
     val stream: Boolean = true,
     @SerialName("stream_options") val streamOptions: StreamOptions? = null,
+    /**
+     * 推理档位。DeepSeek V4 家族默认是 `high`，我们降到 `low`（与 PC 同一意图，
+     * 实测更快更省）。非 DeepSeek 模型为 null → 字段不发出。
+     */
+    @SerialName("reasoning_effort") val reasoningEffort: String? = null,
 )
 
 /**

@@ -14,11 +14,10 @@ android {
         applicationId = "com.xiaozhu.planner"
         minSdk = 26
         targetSdk = 35
-        versionCode = 13
-        // 0.4.1：本地文档附件（txt/docx 读正文、pdf 渲染成图、读不了的直说）；
-        // 只调工具不说话的空气泡不再显示；输入框提示不再撑高；标题栏只留 token；
-        // 记忆压缩四个参数进设置页。
-        versionName = "0.4.1"
+        versionCode = 14
+        // 0.4.2：DeepSeek V4 家族降推理档到 low（实测更快更省）；只发 reasoning_effort，
+        // 不发 thinking（实测没收益反而推理更多）。
+        versionName = "0.4.2"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
