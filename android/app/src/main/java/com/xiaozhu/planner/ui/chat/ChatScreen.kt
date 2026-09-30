@@ -719,6 +719,49 @@ private fun newPhotoUri(context: android.content.Context): android.net.Uri {
     )
 }
 
+/**
+ * 让气泡里的文字**可以长按选中**，选完用系统菜单复制。
+ *
+ * 对应 PC 版的"选中后右键复制"（PC 只对 `.bubble` / `code` / `.tool-pre` 开了
+ * `user-select: text`，其余地方禁止选择——这里是同一套范围）。
+ *
+ * `SelectionContainer` 会给出原生选择手柄，所以"选多少"由用户拖手柄决定，
+ * 系统菜单里也有全选；比自己实现一套选区靠谱得多。
+ */
+@Composable
+private fun Selectable(content: @Composable () -> Unit) {
+    androidx.compose.foundation.text.selection.SelectionContainer {
+        content()
+    }
+}
+
+/** 复制到剪贴板并弹一句"已复制"（与 PC 版那个 1.2 秒的提示同义）。 */
+private fun copyToClipboard(context: android.content.Context, text: String) {
+    if (text.isBlank()) return
+    runCatching {
+        val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+            as android.content.ClipboardManager
+        clipboard.setPrimaryClip(android.content.ClipData.newPlainText("小助", text))
+        android.widget.Toast.makeText(context, "已复制", android.widget.Toast.LENGTH_SHORT).show()
+    }.onFailure {
+        android.widget.Toast.makeText(context, "复制失败", android.widget.Toast.LENGTH_SHORT).show()
+    }
+}
+
+/** 小图标按钮（复制 / 朗读共用）：22dp 圆形，点了有反馈。 */
+@Composable
+private fun BubbleAction(glyph: String, description: String, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .size(22.dp)
+            .clip(CircleShape)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(glyph, style = MaterialTheme.typography.labelMedium)
+    }
+}
+
 /** 顶栏图标按钮：图标在上、小字在下，宽度固定，不会被挤到截断。 */
 @Composable
 private fun IconAction(icon: String, label: String, onClick: () -> Unit) {
@@ -777,6 +820,7 @@ private fun MessageRow(
 @Composable
 private fun UserRow(msg: UiMessage, onUndo: () -> Unit) {
     var confirming by remember { mutableStateOf(false) }
+    val context = LocalContext.current
 
     // 两段确认（PC 版同款）：第一次点变成"确认撤销？"，3 秒内再点才执行，
     // 超时自动回退——不回退的话按钮会永久停在"确认撤销？"
@@ -796,6 +840,21 @@ private fun UserRow(msg: UiMessage, onUndo: () -> Unit) {
             if (msg.images.isNotEmpty()) {
                 ImageStrip(msg.images, modifier = Modifier.padding(bottom = 4.dp))
             }
+            // 长按气泡也能选中复制；这里再给一个"复制整条"的快捷入口
+            if (msg.text.isNotBlank()) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    BubbleAction(glyph = "📋", description = "复制这条") {
+                        copyToClipboard(context, msg.text)
+                    }
+                    Spacer(Modifier.width(4.dp))
+                    Text(
+                        "复制",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = PlannerColors.TextSoft,
+                        modifier = Modifier.clickable { copyToClipboard(context, msg.text) },
+                    )
+                }
+            }
             if (msg.text.isNotBlank()) {
                 // 靠右 + **贴着文字宽度**
                 //
@@ -814,12 +873,15 @@ private fun UserRow(msg: UiMessage, onUndo: () -> Unit) {
                             .background(PlannerColors.UserBubble)
                             .padding(horizontal = 13.dp, vertical = 9.dp),
                     ) {
-                        // 用户消息**不渲染 markdown**（PC 版是 textContent 原样）
-                        Text(
-                            msg.text,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = Color.White,
-                        )
+                        // 可长按选中复制（PC 版同款：只对气泡正文开选择）
+                        Selectable {
+                            // 用户消息**不渲染 markdown**（PC 版是 textContent 原样）
+                            Text(
+                                msg.text,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = Color.White,
+                            )
+                        }
                     }
                 }
             }
@@ -857,6 +919,7 @@ private fun UserRow(msg: UiMessage, onUndo: () -> Unit) {
 /** 小助消息：头像 + 浅色气泡 + 工具卡片 + 朗读（PC 版气泡右侧一个圆形喇叭）。 */
 @Composable
 private fun AssistantRow(msg: UiMessage, onSpeak: (String) -> Unit, plain: Boolean, streaming: Boolean) {
+    val context = LocalContext.current
     // 只调了工具、没有说话：**不画空气泡**，只留工具卡片（PC 版就是这样）。
     // 之前会留一个"…"或空白气泡，看起来像它说了句空话。
     val hasText = msg.text.isNotBlank()
@@ -887,27 +950,32 @@ private fun AssistantRow(msg: UiMessage, onSpeak: (String) -> Unit, plain: Boole
                             style = MaterialTheme.typography.bodyMedium,
                             color = PlannerColors.TextSoft,
                         )
-                        plain || msg.failed -> Text(
-                            msg.text,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = if (msg.failed) PlannerColors.Danger else PlannerColors.Text,
-                        )
-                        else -> Text(
-                            markdownText(msg.text),
-                            style = MaterialTheme.typography.bodyMedium,
-                        )
+                        plain || msg.failed -> Selectable {
+                            Text(
+                                msg.text,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = if (msg.failed) PlannerColors.Danger else PlannerColors.Text,
+                            )
+                        }
+                        else -> Selectable {
+                            Text(
+                                markdownText(msg.text),
+                                style = MaterialTheme.typography.bodyMedium,
+                            )
+                        }
                     }
                 }
                 if (hasText && !msg.failed) {
                     Spacer(Modifier.width(3.dp))
-                    Box(
-                        modifier = Modifier
-                            .size(22.dp)
-                            .clip(CircleShape)
-                            .clickable { onSpeak(msg.text) },
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Text("🔊", style = MaterialTheme.typography.labelMedium)
+                    Column {
+                        // 复制整条（手机上拖手柄选一段不如直接复制方便，两个都给）
+                        BubbleAction(glyph = "📋", description = "复制这条") {
+                            copyToClipboard(context, msg.text)
+                        }
+                        Spacer(Modifier.height(2.dp))
+                        BubbleAction(glyph = "🔊", description = "朗读这条") {
+                            onSpeak(msg.text)
+                        }
                     }
                 }
             }
@@ -936,14 +1004,15 @@ private fun MemoryCard(msg: UiMessage) {
                 .border(1.dp, PlannerColors.MemoryBorder, RoundedCornerShape(10.dp))
                 .padding(10.dp),
         ) {
-            Text(
-                markdownText(msg.text, baseColor = PlannerColors.TextSoft),
-                style = MaterialTheme.typography.bodySmall,
-            )
+            Selectable {
+                Text(
+                    markdownText(msg.text, baseColor = PlannerColors.TextSoft),
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
         }
     }
 }
-
 @Composable
 private fun ToolCard(tool: UiTool) {
     // PC 版：运行中显示「正在执行 X」+ 转圈；完成显示 ✓ + 名字；
@@ -970,22 +1039,26 @@ private fun ToolCard(tool: UiTool) {
                 color = if (running) PlannerColors.Primary else PlannerColors.Ok,
             )
             if (expanded && tool.args.isNotBlank()) {
+                Selectable {
+                    Text(
+                        tool.args,
+                        style = MaterialTheme.typography.bodySmall,
+                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                        color = PlannerColors.TextSoft,
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
+                }
+            }
+            Selectable {
                 Text(
-                    tool.args,
+                    tool.result ?: "…",
                     style = MaterialTheme.typography.bodySmall,
-                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
                     color = PlannerColors.TextSoft,
+                    maxLines = if (expanded) 40 else 2,
+                    overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.padding(top = 4.dp),
                 )
             }
-            Text(
-                tool.result ?: "…",
-                style = MaterialTheme.typography.bodySmall,
-                color = PlannerColors.TextSoft,
-                maxLines = if (expanded) 40 else 2,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(top = 4.dp),
-            )
         }
     }
 }

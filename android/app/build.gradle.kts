@@ -14,10 +14,10 @@ android {
         applicationId = "com.xiaozhu.planner"
         minSdk = 26
         targetSdk = 35
-        versionCode = 16
-        // 0.5.0：修拍照读不出来（TakePicture 没给相机写权限）+ 相机权限申请；
-        // 去掉麦克风按钮（改用输入法语音）；输入区与附件入口整体重做（底部弹层）。
-        versionName = "0.5.0"
+        versionCode = 17
+        // 0.5.1：气泡文字可长按选中复制（SelectionContainer，与 PC 的 user-select
+        // 同一套范围），并给每条消息加了「复制整条」。
+        versionName = "0.5.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
