@@ -67,6 +67,17 @@ class ConversationEngine private constructor(private val app: Application) {
     /** 下次醒来时留的备注（标题栏倒计时要带上它，与 PC 版一致）。 */
     fun heartbeatNote(): String = PrefsHeartbeatStore(app).current()?.second.orEmpty()
 
+    /**
+     * 丢掉内存里的对话历史，下次用到时从库里重建。
+     *
+     * 库被整体换掉之后（导入旧数据、清空重来）必须调它——
+     * 否则引擎还抱着旧上下文，下一轮会把已经不存在的内容再发给模型。
+     */
+    suspend fun forgetHistory() = roundMutex.withLock {
+        history.clear()
+        loaded = false
+    }
+
     /** `continue_speaking` 的说话节奏（跨轮沿用，跟 PC 版的 session 状态对齐）。 */
     val pacing = SpeechPacing()
 

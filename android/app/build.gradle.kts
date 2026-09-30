@@ -14,12 +14,10 @@ android {
         applicationId = "com.xiaozhu.planner"
         minSdk = 26
         targetSdk = 35
-        versionCode = 8
-        // 0.3.2：端点切到 DeepSeek 官方（deepseek-flash）并**自动迁移**旧默认值；
-        // 设置页可以直接看到当前用的是哪个端点、也能一键恢复默认。
-        // 教训：0.3.1 期间我连着重打了七八个包却没递增 versionCode，
-        // 结果"你装的是哪一版"连我自己都分不清——以后每次重打都必须递增。
-        versionName = "0.3.2"
+        versionCode = 9
+        // 0.3.3：包里带了旧数据但没导时**问一句**（之前是静默跳过，用户根本不知道）；
+        // 导入后作废引擎里的内存历史。
+        versionName = "0.3.3"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 

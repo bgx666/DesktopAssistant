@@ -71,6 +71,20 @@ data class ChatUiState(
     val heartbeatLabel: String? = null,
     /** 逾期未完成的数量（PC 版"日历"页签上的角标）。 */
     val overdueCount: Int = 0,
+    /**
+     * 包里带了旧数据但还没导（库非空，自动路径跳过了）→ 界面问一句。
+     *
+     * 静默跳过是错的：用户根本不知道包里带着旧数据、也不知道自己错过了什么。
+     */
+    val seedPrompt: SeedPrompt? = null,
+)
+
+/** "包里带了电脑上的旧数据，要导入吗"那张卡片的内容。 */
+data class SeedPrompt(
+    val nodes: Int,
+    val calendar: Int,
+    val currentNodes: Int,
+    val currentMessages: Int,
 )
 
 /**

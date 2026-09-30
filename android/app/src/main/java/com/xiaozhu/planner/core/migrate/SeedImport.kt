@@ -87,4 +87,37 @@ object SeedImport {
     /** 这个构建里有没有随包的旧数据（设置页据此决定要不要显示"强制导入"）。 */
     fun hasSeedAsset(context: Context): Boolean =
         runCatching { context.assets.open(ASSET_PATH).use { true } }.getOrDefault(false)
+
+    /**
+     * 包里带了旧数据、但**没导进去**（库非空所以自动路径跳过了）。
+     *
+     * 为什么要问而不是静默跳过：跳过是对的（不能覆盖用户已聊的内容），
+     * 但**一声不响**就糟了——用户根本不知道包里还带着旧数据、也不知道自己错过了什么。
+     * 界面拿到 true 就该给一张卡片问一句。
+     */
+    suspend fun isPending(
+        context: Context,
+        db: PlannerDatabase,
+        characterId: String = com.xiaozhu.planner.core.memory.MemoryStore.DEFAULT_CHARACTER,
+    ): Boolean {
+        val prefs = context.getSharedPreferences("planner_state", Context.MODE_PRIVATE)
+        if (prefs.getBoolean(KEY_DONE, false)) return false
+        if (!hasSeedAsset(context)) return false
+        val hasData = db.nodes().count(characterId) > 0 ||
+            db.messages().rawCount() > 0 ||
+            db.calendar().rangeAll("0000-01-01", "9999-12-31").isNotEmpty()
+        return hasData
+    }
+
+    /** 用户说"先不用"：记标记，别每次都问。 */
+    fun dismiss(context: Context) {
+        context.getSharedPreferences("planner_state", Context.MODE_PRIVATE)
+            .edit().putBoolean(KEY_DONE, true).apply()
+    }
+
+    /** 随包数据的规模（卡片上告诉用户"包里有什么"，而不是让他猜）。 */
+    fun peekCounts(context: Context): Triple<Int, Int, Int>? = runCatching {
+        val payload = context.assets.open(ASSET_PATH).use { ExportReader.read(it) }
+        Triple(payload.nodes.size, payload.calendarItems.size, 0)
+    }.getOrNull()
 }

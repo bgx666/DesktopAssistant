@@ -104,6 +104,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                             "对话 ${seeded.messages} 条、日程 ${seeded.calendar} 项"
                     )
                 }
+            } else {
+                // 库非空 → 自动路径跳过了。**不能一声不响**：问一句
+                refreshSeedPrompt()
             }
             reloadFromStore()
         }
@@ -127,6 +130,61 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     fun showHint(text: String) {
         _state.update { it.copy(hint = text) }
+    }
+
+    // ── 随包旧数据（装完自动导入；库非空时问一句，不静默跳过）──────
+
+    private suspend fun refreshSeedPrompt() {
+        val app = getApplication<Application>()
+        val pending = withContext(Dispatchers.IO) {
+            runCatching { SeedImport.isPending(app, engine.db) }.getOrDefault(false)
+        }
+        if (!pending) {
+            _state.update { it.copy(seedPrompt = null) }
+            return
+        }
+        val counts = withContext(Dispatchers.IO) { SeedImport.peekCounts(app) }
+        val stats = withContext(Dispatchers.IO) { memoryStatsInternal() }
+        _state.update {
+            it.copy(
+                seedPrompt = SeedPrompt(
+                    nodes = counts?.first ?: 0,
+                    calendar = counts?.second ?: 0,
+                    currentNodes = stats.totalNodes,
+                    currentMessages = stats.rawMessages,
+                )
+            )
+        }
+    }
+
+    /** 用户点「导入并替换」：清掉手机上的，换成包里的旧数据。 */
+    fun importSeedNow() {
+        viewModelScope.launch {
+            _state.update { it.copy(seedPrompt = null, memoryNotice = "正在导入…") }
+            val outcome = withContext(Dispatchers.IO) {
+                runCatching {
+                    SeedImport.importIfNeeded(getApplication(), engine.db, force = true)
+                }.getOrNull()
+            }
+            val text = when (outcome) {
+                is SeedImport.Outcome.Imported ->
+                    "已导入电脑上的记忆：节点 ${outcome.nodes} 个、" +
+                        "对话 ${outcome.messages} 条、日程 ${outcome.calendar} 项"
+                SeedImport.Outcome.Skipped -> "包里没有可导入的旧数据。"
+                is SeedImport.Outcome.Failed -> "导入失败：${outcome.reason}（手机上原有的没动）"
+                null -> "导入失败（读不出包里的数据）。"
+            }
+            // 换了库 → 引擎里那份内存历史必须作废重建，否则下一轮还带着旧上下文
+            runCatching { engine.forgetHistory() }
+            _state.update { it.copy(memoryNotice = text) }
+            reloadFromStore()
+        }
+    }
+
+    /** 用户点「先不用」：记标记，别每次都问。 */
+    fun dismissSeedPrompt() {
+        SeedImport.dismiss(getApplication())
+        _state.update { it.copy(seedPrompt = null) }
     }
 
     /** 输入框已经把恢复内容取走了，清掉这个一次性标记。 */

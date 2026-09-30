@@ -59,8 +59,7 @@ import com.xiaozhu.planner.ui.theme.PlannerColors
 import kotlinx.coroutines.launch
 
 /**
- * 聊天页。视觉与交互都对着 PC 版来：
- *
+ * 聊天页。视觉与交互都对着 PC 版来： *
  * - 小助的头像 = PC 版那个青绿渐变球（`.avatar`，CSS 画的那个）
  * - 用户气泡：135° 蓝色渐变、白字、右下角小圆角（`.bubble.user`）
  * - 小助气泡：浅色玻璃感、左下角小圆角（`.bubble.assistant`）
@@ -191,6 +190,16 @@ fun ChatScreen(
                     } else if (state.messages.isEmpty()) {
                         item { EmptyState(onOpenImport) }
                     }
+                    // 包里带了旧数据但没导（库非空被自动跳过）→ 问一句，别让用户蒙在鼓里
+                    state.seedPrompt?.let { prompt ->
+                        item {
+                            SeedPromptCard(
+                                prompt = prompt,
+                                onImport = { vm.importSeedNow() },
+                                onDismiss = { vm.dismissSeedPrompt() },
+                            )
+                        }
+                    }
                     items(state.messages, key = { it.id }) { msg ->
                         MessageRow(
                             msg = msg,
@@ -269,8 +278,7 @@ private fun statusLine(state: ChatUiState): String = buildString {
 }
 
 @Composable
-private fun EmptyState(onOpenImport: () -> Unit) {
-    Column(
+private fun EmptyState(onOpenImport: () -> Unit) {    Column(
         modifier = Modifier.fillMaxWidth().padding(top = 24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
@@ -288,6 +296,42 @@ private fun EmptyState(onOpenImport: () -> Unit) {
         )
         Spacer(Modifier.height(10.dp))
         Button(onClick = onOpenImport) { Text("导入电脑上的记忆") }
+    }
+}
+
+/** 输入区。PC 版发送按钮有三态：发送 / 停止（红）/ 录音（红，长按说话时）。
+ * 安卓这边语音是独立的麦克风按钮（没有"长按发送键"这个手势），
+ * 所以保留两态 + 录音态的高亮。
+ */
+@Composable
+private fun SeedPromptCard(
+    prompt: SeedPrompt,
+    onImport: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = PlannerColors.MemoryCard),
+        border = androidx.compose.foundation.BorderStroke(1.dp, PlannerColors.MemoryBorder),
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Text("这个安装包里带了电脑上的旧数据", style = MaterialTheme.typography.titleSmall)
+            Text(
+                "包里：记忆节点 ${prompt.nodes} 个、日程 ${prompt.calendar} 项。\n" +
+                    "手机上现在：记忆节点 ${prompt.currentNodes} 个、对话 ${prompt.currentMessages} 条。\n" +
+                    "导入会**先清空手机上这些**，再换成包里的（第一次装机选它）。",
+                style = MaterialTheme.typography.bodySmall,
+                color = PlannerColors.TextSoft,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+            Row(modifier = Modifier.padding(top = 6.dp)) {
+                Button(onClick = onImport) { Text("导入并替换") }
+                TextButton(
+                    onClick = onDismiss,
+                    modifier = Modifier.padding(start = 8.dp),
+                ) { Text("先不用") }
+            }
+        }
     }
 }
 
