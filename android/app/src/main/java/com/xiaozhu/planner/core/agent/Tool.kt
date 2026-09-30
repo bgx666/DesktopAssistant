@@ -25,5 +25,21 @@ fun JsonObject.str(key: String): String? =
 fun JsonObject.int(key: String, default: Int): Int =
     (this[key] as? JsonPrimitive)?.content?.trim()?.toIntOrNull() ?: default
 
+fun JsonObject.long(key: String, default: Long): Long =
+    (this[key] as? JsonPrimitive)?.content?.trim()?.toLongOrNull() ?: default
+
 fun JsonObject.double(key: String): Double? =
     (this[key] as? JsonPrimitive)?.content?.trim()?.toDoubleOrNull()
+
+/**
+ * 布尔参数。模型经常把 true 写成 `"true"` / `"是"` 甚至 `1`，
+ * `jsonPrimitive.boolean` 遇到这些会直接抛异常——这里全部吃掉，落到默认值。
+ */
+fun JsonObject.bool(key: String, default: Boolean = false): Boolean {
+    val raw = (this[key] as? JsonPrimitive)?.content?.trim()?.lowercase() ?: return default
+    return when (raw) {
+        "true", "1", "yes", "y", "是" -> true
+        "false", "0", "no", "n", "否", "" -> false
+        else -> default
+    }
+}

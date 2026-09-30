@@ -7,6 +7,8 @@ data class UiMessage(
     val text: String = "",
     val tools: List<UiTool> = emptyList(),
     val failed: Boolean = false,
+    /** 系统触发的一条（到点提醒等）——居中显示，不要伪装成用户说的话。 */
+    val fromSystem: Boolean = false,
 )
 
 data class UiTool(

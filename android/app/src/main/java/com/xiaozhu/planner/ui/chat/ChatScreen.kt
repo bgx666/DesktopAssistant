@@ -40,6 +40,7 @@ fun ChatScreen(
     vm: ChatViewModel,
     onOpenSettings: () -> Unit,
     onOpenMemory: () -> Unit,
+    onOpenCalendar: () -> Unit,
 ) {
     val state by vm.state.collectAsState()
     var draft by remember { mutableStateOf("") }
@@ -58,6 +59,7 @@ fun ChatScreen(
                 title = { Text("小助") },
                 actions = {
                     TextButton(onClick = onOpenMemory) { Text("记忆") }
+                    TextButton(onClick = onOpenCalendar) { Text("日历") }
                     TextButton(onClick = onOpenSettings) { Text("设置") }
                 },
             )
@@ -119,6 +121,21 @@ fun ChatScreen(
 
 @Composable
 private fun MessageRow(msg: UiMessage) {
+    // 系统触发的一条（到点提醒）：居中、浅色、别伪装成用户说的话
+    if (msg.fromSystem) {
+        Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+            Text(
+                "⏰ " + msg.text,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier
+                    .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(10.dp))
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
+            )
+        }
+        return
+    }
+
     val bubbleColor = if (msg.fromUser) {
         MaterialTheme.colorScheme.primaryContainer
     } else if (msg.failed) {

@@ -50,6 +50,80 @@ PC_ONLY_BANNED = [
 
 ALLOWED = set(LOCAL_TOOLS) | set(REMOTE_TOOLS)
 
+# 注册表交叉校验用：从 Kotlin 源码里读出**真正注册了的**工具名
+ANDROID_SRC = REPO_ROOT / "android" / "app" / "src" / "main" / "java" / "com" / "xiaozhu" / "planner"
+CHAT_VM = ANDROID_SRC / "ui" / "chat" / "ChatViewModel.kt"
+TOOLS_DIR = ANDROID_SRC / "core" / "tools"
+
+
+def _registered_tool_names() -> set[str]:
+    """ChatViewModel 里 ToolRegistry(listOf(...)) 的每个类 → 它声明的 name。
+
+    做法是笨但可靠的文本解析：先按括号配对取出注册块，再到 core/tools/*.kt 里
+    逐类找 `override val name = "..."`。这样"prompt 说有、代码里没有"和
+    "代码里有、prompt 没说"都能被抓出来。
+
+    为什么不用正则一把梭：`class X(private val f: () -> Unit)` 这种嵌套括号会让
+    `[^)]*` 提前收尾，之前就是这么漏掉 DndTool 的。
+    """
+    if not CHAT_VM.exists():
+        return set()
+    vm = CHAT_VM.read_text(encoding="utf-8")
+    block = _balanced_block(vm, "ToolRegistry(", "listOf(")
+    if block is None:
+        return set()
+    classes = set(re.findall(r"\b([A-Z]\w*Tool)\(", block))
+
+    declared: dict[str, str] = {}
+    for path in TOOLS_DIR.glob("*.kt"):
+        text = path.read_text(encoding="utf-8")
+        for cls, name in _classes_declaring_tool_name(text):
+            declared[cls] = name
+
+    return {declared[c] for c in classes if c in declared}
+
+
+def _balanced_block(text: str, outer: str, inner: str) -> str | None:
+    """取出 `outer(inner( ... ))` 里 inner 的实参文本（按括号配对，不怕嵌套）。"""
+    i = text.find(outer)
+    if i < 0:
+        return None
+    start = text.find(inner, i)
+    if start < 0:
+        return None
+    start += len(inner) - 1          # 指向 inner 的左括号
+    depth = 0
+    for pos in range(start, len(text)):
+        ch = text[pos]
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return text[start + 1:pos]
+    return None
+
+
+def _classes_declaring_tool_name(text: str) -> list[tuple[str, str]]:
+    """一个 .kt 文件里所有 `class Xxx ... : Tool` 及其 `override val name`。
+
+    判据是「`: Tool` 出现在 `override val name` 之前」——不按第一个 `{` 切头部，
+    因为构造参数里就可能有 lambda（`private val now: () -> ZonedDateTime = { ... }`），
+    按 `{` 切会把 `: Tool` 一起切掉（HeartbeatTool / DndTool 都栽在这上面）。
+    """
+    out: list[tuple[str, str]] = []
+    matches = list(re.finditer(r"\bclass\s+(\w+)", text))
+    for idx, m in enumerate(matches):
+        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(text)
+        body = text[m.start():end]
+        name = re.search(r"override\s+val\s+name\s*=\s*\"([^\"]+)\"", body)
+        if not name:
+            continue
+        if not re.search(r":\s*Tool\b", body[:name.start()]):
+            continue
+        out.append((m.group(1), name.group(1)))
+    return out
+
 
 def main() -> int:
     if not PROMPT_PATH.exists():
@@ -65,6 +139,12 @@ def main() -> int:
     unknown = sorted(tool_like - ALLOWED)
     missing_local = sorted(set(LOCAL_TOOLS) - backticked)
     banned_hits = sorted(kw for kw in PC_ONLY_BANNED if kw.lower() in text.lower())
+
+    registered = _registered_tool_names()
+    # prompt 承诺的常驻工具必须真的注册了（否则模型会去调一个不存在的工具）
+    not_registered = sorted(set(LOCAL_TOOLS) - registered) if registered else []
+    # 注册了却没在 prompt 里说：模型不知道能用，等于白做
+    unannounced = sorted(registered - ALLOWED) if registered else []
 
     ok = True
 
@@ -86,16 +166,33 @@ def main() -> int:
         for kw in banned_hits:
             print(f"        - {kw}")
 
+    if not registered:
+        ok = False
+        print(f"[FAIL] 没能从 {CHAT_VM.relative_to(REPO_ROOT)} 读出注册的工具（解析失败？）")
+    else:
+        if not_registered:
+            ok = False
+            print("[FAIL] prompt 承诺了常驻可用、但代码里没注册的工具：")
+            for name in not_registered:
+                print(f"        - {name}")
+        if unannounced:
+            ok = False
+            print("[FAIL] 代码里注册了、但 prompt 没提的工具：")
+            for name in unannounced:
+                print(f"        - {name}")
+
     if ok:
         print(
             f"[OK] prompt 工具名一致：常驻 {len(LOCAL_TOOLS)} 个、连电脑 {len(REMOTE_TOOLS)} 个，"
-            f"无多余、无遗漏、无 PC 残留（{PROMPT_PATH.relative_to(REPO_ROOT)}）"
+            f"注册表实测 {len(registered)} 个，无多余、无遗漏、无 PC 残留"
+            f"（{PROMPT_PATH.relative_to(REPO_ROOT)}）"
         )
         return 0
 
     print()
     print(f"     prompt：{PROMPT_PATH.relative_to(REPO_ROOT)}")
     print(f"     工具允许清单：{', '.join(sorted(ALLOWED))}")
+    print(f"     注册表实测：{', '.join(sorted(registered)) or '（没读出来）'}")
     return 1
 
 

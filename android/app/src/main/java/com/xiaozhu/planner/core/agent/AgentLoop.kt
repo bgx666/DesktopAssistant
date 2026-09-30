@@ -27,6 +27,8 @@ class AgentLoop(
     private val llm: LlmStreamer,
     private val registry: ToolRegistry,
     private val maxRounds: Int = 10,
+    /** `continue_speaking` 的节奏依据：进入工具调用前，把这一段说了多少字记下来。 */
+    private val pacing: SpeechPacing = SpeechPacing(),
 ) {
 
     fun run(history: MutableList<ChatMessage>): Flow<AgentEvent> = flow {
@@ -60,6 +62,8 @@ class AgentLoop(
 
             // 先落下 assistant（带 tool_calls），再逐个补 tool 结果 —— 顺序不能反
             history += ChatMessage.assistantToolCalls(calls, text.toString())
+            // continue_speaking 按"上一段有多少字"决定停多久，所以进工具前先记下来
+            pacing.lastSegmentChars = text.length
             for (call in calls) {
                 emit(AgentEvent.ToolStarted(call.function.name, call.function.arguments))
                 val result = registry.execute(call)

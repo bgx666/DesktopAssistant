@@ -9,8 +9,8 @@
 | | |
 |---|---|
 | 来源 | `src/planner/prompts/system.md`（PC 版，68 行，对应提交 `10c46fb`） |
-| 本文件 | `android/app/src/main/assets/prompts/system.md`（55 行） |
-| 校验 | `python scripts/check_android_prompt.py` —— 工具名多了 / 少了 / 残留 PC 内容都会报错 |
+| 本文件 | `android/app/src/main/assets/prompts/system.md`（83 行） |
+| 校验 | `python scripts/check_android_prompt.py` —— 工具名多了 / 少了 / 残留 PC 内容 / **与真实注册表不一致**都会报错 |
 
 ## 为什么不能整体复制
 
@@ -23,19 +23,21 @@ PC 版里写着「你可以用 `list_dir` / `read_file` 读用户电脑上的文
 | PC 工具 | 安卓 | 备注 |
 |---|---|---|
 | `heartbeat` | **A 常驻** | 同语义；安卓上受 Doze / 被强停影响，属**尽力而为** |
-| `continue_speaking` | **A 常驻** | 分段说话，可被打断 |
-| `set_do_not_disturb` | **A 常驻** | 默认 22:00–08:00 |
+| `continue_speaking` | **A 常驻** | 分段说话，可被打断；暂停公式与 PC 版一致（2 秒 + 每 10 字 1 秒，上限 10 秒） |
+| `set_do_not_disturb` | **A 常驻** | 默认 22:00–08:00；免打扰期间到点提醒**顺延**而不是丢弃 |
 | `list_schedule` | **A 常驻** | Room + 日历页 |
 | `add_schedule` | **A 常驻** | 带 `time` 的到点由 **AlarmManager 推通知**（PC 版是后端自己触发） |
 | `update_schedule` | **A 常驻** | 含 `status="done"` |
 | `cancel_schedule` | **A 常驻** | 支持整系列 |
 | `explore_memory_tree` | **A 常驻** | 按时间范围逐层下钻到叶子看原文 |
-| —（PC 没有） | **A 常驻 `search_memory`** | **新增**：全文检索（FTS）。补 PC 版"只记得内容、不记得时间就找不着"的短板 |
+| —（PC 没有） | **A 常驻 `search_memory`** | **新增**：全文检索。补 PC 版"只记得内容、不记得时间就找不着"的短板（实现是 `LIKE`，不是 FTS，见下） |
 | `web_search` | **A 常驻** | 离线也能用（Bing RSS 解析移植） |
 | `fetch_web` | **A 常驻** | 抓正文 + 页面链接 |
 | `list_dir` | **B 连电脑** | 列电脑上的目录 |
 | `read_file` | **B 连电脑** | 读电脑上的文件（只读） |
 | `capture_screen` | **B 连电脑** | 截电脑屏幕 + OCR；安卓自身截屏需 MediaProjection + 每次授权，P5 再议 |
+
+**A 类 11 个已全部实现**（`ui/chat/ChatViewModel.kt` 的注册表），校验脚本会核对这张表与代码是否一致。
 
 ## 与 PC 版的逐条差异
 
@@ -69,8 +71,12 @@ PC 版的 `src/planner/prompts/system.md` 仍会继续演进。同步时先看�
 python scripts/check_android_prompt.py
 ```
 
-它检查三件事：① prompt 里出现的工具名是否都在允许清单内；② 11 个常驻工具是否都被提到；
-③ 是否残留 PC 专有内容。任一条不满足即非零退出（可直接接进 CI / 提交前检查）。
+它检查四件事：① prompt 里出现的工具名是否都在允许清单内；② 11 个常驻工具是否都被提到；
+③ 是否残留 PC 专有内容；④ **prompt 承诺的常驻工具是否真的注册在 `ChatViewModel` 里**、
+反过来注册了的是否都在 prompt 里说了。任一条不满足即非零退出（可直接接进 CI / 提交前检查）。
+
+④ 是后加的：③ 之前只管文本，出现过"prompt 说 `continue_speaking` 永远可用、代码里却没这个工具"
+这种自相矛盾——模型会去调它，然后拿到"工具不存在"。现在这类不一致会在提交前就红。
 
 ## 待定（先按现状写，定了再回来改）
 
@@ -80,3 +86,5 @@ python scripts/check_android_prompt.py
   会从 B 类变成 A 类，届时要同时改本文件的分类与 `scripts/check_android_prompt.py` 的清单。
 - **图片输入**：PC 版支持拖图（vision）。安卓侧的对应能力（分享图片给小助）在 P5 选做，
   届时 prompt 需要补一段"收到图片时怎么处理"。
+- **检索实现是 `LIKE` 不是 FTS**：上表写"全文检索"指能力，不是指 SQLite FTS——默认分词器会把
+  连续中文当成一个词，FTS 反而搜不到"那个餐厅叫什么"。实现见 `core/memory/MemorySearch.kt`。

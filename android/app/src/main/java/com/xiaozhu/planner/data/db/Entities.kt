@@ -60,3 +60,40 @@ data class BufferStateEntity(
     val heartbeatNote: String = "",
     val lastPlayerMessageAt: Long = 0,
 )
+
+/**
+ * 日历项（`calendar_items`）——**唯一的待办概念**（字段沿用 PC 版 `store/calendar_db.py`）。
+ *
+ * 日期是 `yyyy-MM-dd` 字符串、时刻是 `HH:mm` 或 NULL（NULL = 全天）。用字符串而不是
+ * epoch 是为了跟 PC 版对齐（将来导入导出直接对得上）；同格式下字典序即时间序。
+ */
+@Entity(
+    tableName = "calendar_items",
+    indices = [Index("date", "time"), Index("seriesId"), Index("status", "remindedAt")],
+)
+data class CalendarItemEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val date: String,                       // yyyy-MM-dd（UTC+8 本地日）
+    val time: String? = null,               // HH:mm；NULL = 全天
+    val kind: String = KIND_EVENT,          // event 日程 / task 当天任务
+    val content: String,
+    val detail: String = "",
+    val status: String = STATUS_TODO,       // todo / done / cancelled
+    val remindedAt: String? = null,         // 到点提醒过的时刻（防重复提醒）
+    val createdAt: Long = System.currentTimeMillis(),
+    val doneAt: Long? = null,
+    val seriesId: String? = null,           // 重复系列标识（NULL = 一次性）
+    val repeat: String? = null,             // daily / weekly / weekdays
+    val repeatUntil: String? = null,        // 该系列已生成到的最后日期（滚动续期用）
+) {
+    companion object {
+        const val KIND_EVENT = "event"
+        const val KIND_TASK = "task"
+        const val STATUS_TODO = "todo"
+        const val STATUS_DONE = "done"
+        const val STATUS_CANCELLED = "cancelled"
+        val KINDS = listOf(KIND_EVENT, KIND_TASK)
+        val STATUSES = listOf(STATUS_TODO, STATUS_DONE, STATUS_CANCELLED)
+        val REPEAT_RULES = listOf("daily", "weekly", "weekdays")
+    }
+}
