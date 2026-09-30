@@ -261,7 +261,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 current.messages.lastOrNull { it.id == id && it.kind == UiMessageKind.Assistant }
             }
             current.copy(
-                messages = if (tail != null) built + tail else built,
+                // 只在回读结果里没有它时才接上（否则同一条回复会出现两次）
+                messages = HistoryMerge.merge(built, tail),
                 memory = stats,
                 historyLoaded = true,
                 // token 估算与 PC 版一致：字符数 × 1.2（估算只会偏保守）

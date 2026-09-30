@@ -80,3 +80,25 @@ data class MemoryStats(
     val rootId: String?,
     val rawMessages: Int,
 )
+
+/**
+ * 回读历史时怎么处理"刚生成完、还在内存里的那一条"。
+ *
+ * 踩过的坑：一轮结束后无条件把内存里的回复接在回读结果后面，
+ * 而它**已经落盘了**——于是同一条回复在界面上出现两次
+ * （用户只问了一句，却收到两个一模一样的回答）。
+ *
+ * 所以只在回读结果里**确实没有**它时才接上（那种情况意味着落盘失败，
+ * 不接就会让用户觉得"它没回我"）。
+ */
+internal object HistoryMerge {
+
+    fun merge(built: List<UiMessage>, tail: UiMessage?): List<UiMessage> {
+        if (tail == null) return built
+        val text = tail.text.trim()
+        val alreadyThere = text.isNotEmpty() && built.any {
+            it.kind == UiMessageKind.Assistant && it.text.trim() == text
+        }
+        return if (alreadyThere) built else built + tail
+    }
+}
