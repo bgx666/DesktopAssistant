@@ -2,20 +2,25 @@ package com.xiaozhu.planner
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.xiaozhu.planner.ui.chat.ChatScreen
+import com.xiaozhu.planner.ui.chat.ChatViewModel
+import com.xiaozhu.planner.ui.settings.SettingsScreen
 
 /**
- * P0 骨架：只验证「工程能构建、App 能起、Compose 能渲染」。
- * 下一步才是流式对话（core/llm + core/agent）。
+ * P0 的壳：两个页面（聊天 / 设置）。没有上导航库——两页用一个状态切换就够，
+ * 少一个依赖少一处出错。
  */
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -24,17 +29,20 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+private enum class Screen { Chat, Settings }
+
 @Composable
 fun PlannerApp() {
     MaterialTheme {
         Surface(modifier = Modifier.fillMaxSize()) {
-            Column(modifier = Modifier.padding(24.dp)) {
-                Text("小助 · Android", style = MaterialTheme.typography.headlineSmall)
-                Text(
-                    "P0 骨架已跑通。接下来接入：流式对话、本地记忆树、日历提醒。",
-                    style = MaterialTheme.typography.bodyMedium,
-                    modifier = Modifier.padding(top = 12.dp)
-                )
+            val vm: ChatViewModel = viewModel()
+            var screen by remember { mutableStateOf(Screen.Chat) }
+
+            BackHandler(enabled = screen == Screen.Settings) { screen = Screen.Chat }
+
+            when (screen) {
+                Screen.Chat -> ChatScreen(vm = vm, onOpenSettings = { screen = Screen.Settings })
+                Screen.Settings -> SettingsScreen(onBack = { vm.refreshSettings(); screen = Screen.Chat })
             }
         }
     }
