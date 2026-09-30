@@ -36,6 +36,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.xiaozhu.planner.core.llm.ApiKeyCheck
 import com.xiaozhu.planner.core.llm.EndpointUrl
 import com.xiaozhu.planner.data.SettingsStore
 import com.xiaozhu.planner.reminder.ReminderNotifications
@@ -59,6 +60,7 @@ fun SettingsScreen(
     var ttsVoice by remember { mutableStateOf(store.ttsVoice) }
     var mimoApiKey by remember { mutableStateOf(store.mimoApiKey) }
     var ocSession by remember { mutableStateOf(store.openCodeSession) }
+    var showKey by remember { mutableStateOf(false) }
     var saved by remember { mutableStateOf(false) }
 
     Scaffold(
@@ -86,8 +88,22 @@ fun SettingsScreen(
                 value = apiKey,
                 onValueChange = { apiKey = it; saved = false },
                 label = { Text("API Key") },
-                visualTransformation = PasswordVisualTransformation(),
+                // 密码态看不到内容，粘贴带进中文/说明文字时完全没法自查 → 给个"显示"开关
+                visualTransformation = if (showKey) androidx.compose.ui.text.input.VisualTransformation.None
+                else PasswordVisualTransformation(),
+                trailingIcon = {
+                    TextButton(onClick = { showKey = !showKey }) {
+                        Text(if (showKey) "隐藏" else "显示", style = MaterialTheme.typography.labelMedium)
+                    }
+                },
                 singleLine = true,
+                isError = ApiKeyCheck.problem(apiKey) != null,
+                supportingText = {
+                    // 即时体检：密钥里有中文/空格/多余前缀时立刻说清楚
+                    ApiKeyCheck.problem(apiKey)?.let {
+                        Text(it, color = MaterialTheme.colorScheme.error)
+                    } ?: Text("只填密钥本身（前缀 Bearer 由程序加）")
+                },
                 modifier = Modifier.fillMaxWidth(),
             )
             OutlinedTextField(

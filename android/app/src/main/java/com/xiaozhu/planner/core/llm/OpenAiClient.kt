@@ -49,6 +49,12 @@ class OpenAiClient(
             emit(LlmEvent.Failed("这一轮没有可发送的消息（内部状态为空），已拦下未发请求。"))
             return@flow
         }
+        // 密钥有问题时**不要发请求**：HTTP 头只能放 ASCII，中文会让 OkHttp 抛
+        // `Unexpected char 0x4f60 at 7 in Authorization value` 这种天书
+        ApiKeyCheck.problem(apiKey)?.let { problem ->
+            emit(LlmEvent.Failed(problem))
+            return@flow
+        }
         val request = buildRequest(messages, tools.ifEmpty { null }, stream = true)
         val call = client.newCall(request)
         try {
@@ -78,6 +84,7 @@ class OpenAiClient(
 
     override suspend fun complete(messages: List<ChatMessage>): String = withContext(Dispatchers.IO) {
         require(messages.isNotEmpty()) { "这一轮没有可发送的消息（内部状态为空），已拦下未发请求。" }
+        ApiKeyCheck.problem(apiKey)?.let { throw IllegalStateException(it) }
         val request = buildRequest(messages, null, stream = false)
         client.newCall(request).execute().use { response ->
             if (!response.isSuccessful) {

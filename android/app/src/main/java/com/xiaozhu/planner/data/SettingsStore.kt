@@ -27,9 +27,12 @@ class SettingsStore(context: Context) {
         )
     }
 
+    /** 密钥：写入时统一清洗（去空白/引号/`Bearer ` 前缀/换行），避免把垃圾发进请求头。 */
     var apiKey: String
         get() = prefs.getString(KEY_API, "").orEmpty()
-        set(v) = prefs.edit().putString(KEY_API, v.trim()).apply()
+        set(v) = prefs.edit()
+            .putString(KEY_API, com.xiaozhu.planner.core.llm.ApiKeyCheck.sanitize(v))
+            .apply()
 
     var baseUrl: String
         get() = prefs.getString(KEY_BASE, DEFAULT_BASE).orEmpty().ifBlank { DEFAULT_BASE }
