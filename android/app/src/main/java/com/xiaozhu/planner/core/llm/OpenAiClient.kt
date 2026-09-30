@@ -4,6 +4,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import okhttp3.MediaType.Companion.toMediaType
@@ -13,44 +14,28 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import java.util.concurrent.TimeUnit
 
 /**
- * 直连 OpenAI 兼容端点（默认 DeepSeek）的流式客户端。
+ * 直连 OpenAI 兼容端点（默认 DeepSeek）。
  *
- * 只依赖 OkHttp，不用任何厂商 SDK——协议就是 `POST {base}/chat/completions` + SSE。
- * 取消：协程被取消时 [okhttp3.Call.cancel] 会被调用，不会留下挂着的连接。
+ * - [stream]：对话用，SSE 流式 + tool calls；取消即断开连接
+ * - [complete]：压缩摘要用，一次性返回正文（不进对话上下文）
  */
 class OpenAiClient(
     private val baseUrl: String,
     private val apiKey: String,
     private val model: String,
     private val client: OkHttpClient = defaultClient(),
-) : LlmStreamer {
+) : LlmStreamer, LlmCompleter {
 
     override fun stream(
         messages: List<ChatMessage>,
         tools: List<ToolSpec>,
     ): Flow<LlmEvent> = flow {
-        val url = baseUrl.trimEnd('/') + "/chat/completions"
-        val body = PlannerJson.encodeToString(
-            ChatRequest.serializer(),
-            ChatRequest(model = model, messages = messages, tools = tools.ifEmpty { null }),
-        )
-        val request = Request.Builder()
-            .url(url)
-            .addHeader("Authorization", "Bearer $apiKey")
-            .addHeader("Accept", "text/event-stream")
-            .post(body.toRequestBody(JSON_MEDIA))
-            .build()
-
+        val request = buildRequest(messages, tools.ifEmpty { null }, stream = true)
         val call = client.newCall(request)
         try {
             call.execute().use { response ->
                 if (!response.isSuccessful) {
-                    val detail = try {
-                        response.body?.string()?.take(500).orEmpty()
-                    } catch (_: Exception) {
-                        ""
-                    }
-                    emit(LlmEvent.Failed("HTTP ${response.code} ${response.message} $detail".trim()))
+                    emit(LlmEvent.Failed("HTTP ${response.code} ${response.message} ${errorBody(response)}".trim()))
                     return@flow
                 }
                 val source = response.body?.source()
@@ -71,6 +56,47 @@ class OpenAiClient(
             call.cancel()
         }
     }.flowOn(Dispatchers.IO)
+
+    override suspend fun complete(messages: List<ChatMessage>): String = withContext(Dispatchers.IO) {
+        val request = buildRequest(messages, null, stream = false)
+        client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) {
+                throw IllegalStateException("HTTP ${response.code} ${errorBody(response)}".trim())
+            }
+            val text = response.body?.string().orEmpty()
+            val parsed = PlannerJson.decodeFromString(ChatResponse.serializer(), text)
+            parsed.choices.firstOrNull()?.message?.content.orEmpty()
+        }
+    }
+
+    private fun buildRequest(
+        messages: List<ChatMessage>,
+        tools: List<ToolSpec>?,
+        stream: Boolean,
+    ): Request {
+        val body = PlannerJson.encodeToString(
+            ChatRequest.serializer(),
+            ChatRequest(
+                model = model,
+                messages = messages,
+                tools = tools,
+                stream = stream,
+                streamOptions = if (stream) StreamOptions() else null,
+            ),
+        )
+        return Request.Builder()
+            .url(baseUrl.trimEnd('/') + "/chat/completions")
+            .addHeader("Authorization", "Bearer $apiKey")
+            .addHeader("Accept", if (stream) "text/event-stream" else "application/json")
+            .post(body.toRequestBody(JSON_MEDIA))
+            .build()
+    }
+
+    private fun errorBody(response: okhttp3.Response): String = try {
+        response.body?.string()?.take(500).orEmpty()
+    } catch (_: Exception) {
+        ""
+    }
 
     private fun StreamDelta.toEvent(): LlmEvent = when (this) {
         is StreamDelta.Content -> LlmEvent.TextDelta(text)
@@ -96,7 +122,7 @@ internal data class ChatRequest(
     val messages: List<ChatMessage>,
     val tools: List<ToolSpec>? = null,
     val stream: Boolean = true,
-    @SerialName("stream_options") val streamOptions: StreamOptions = StreamOptions(),
+    @SerialName("stream_options") val streamOptions: StreamOptions? = null,
 )
 
 @Serializable

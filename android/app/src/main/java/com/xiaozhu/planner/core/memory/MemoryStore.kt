@@ -211,6 +211,10 @@ class MemoryStore(
 
     suspend fun nodeMessages(): List<MessageEntity> = db.messages().nodeMessages()
 
+    /** 这些节点在 buffer 里的消息（合并时要把子节点的消息换成父节点的）。 */
+    suspend fun messagesByNodeIds(nodeIds: List<String>): List<MessageEntity> =
+        if (nodeIds.isEmpty()) emptyList() else db.messages().byNodeIds(nodeIds)
+
     suspend fun deleteMessages(seqs: List<Long>) {
         if (seqs.isNotEmpty()) db.messages().deleteBySeq(seqs)
     }
