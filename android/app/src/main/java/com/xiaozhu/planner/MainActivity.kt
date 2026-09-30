@@ -26,6 +26,7 @@ import com.xiaozhu.planner.ui.calendar.CalendarScreen
 import com.xiaozhu.planner.ui.calendar.CalendarViewModel
 import com.xiaozhu.planner.ui.chat.ChatScreen
 import com.xiaozhu.planner.ui.chat.ChatViewModel
+import com.xiaozhu.planner.ui.images.ImageGalleryScreen
 import com.xiaozhu.planner.ui.memory.MemoryScreen
 import com.xiaozhu.planner.ui.settings.SettingsScreen
 import com.xiaozhu.planner.ui.theme.PlannerTheme
@@ -84,7 +85,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class Screen { Chat, Calendar, Memory, Settings }
+private enum class Screen { Chat, Calendar, Memory, Images, Settings }
 
 @Composable
 fun PlannerApp(
@@ -127,8 +128,13 @@ fun PlannerApp(
                     onBack = { vm.refreshSettings(); screen = Screen.Chat },
                 )
                 Screen.Memory -> MemoryScreen(vm = vm, onBack = { screen = Screen.Chat })
+                Screen.Images -> ImageGalleryScreen(
+                    vm = viewModel(),
+                    onBack = { screen = Screen.Settings },
+                )
                 Screen.Settings -> SettingsScreen(
                     onBack = { vm.refreshSettings(); screen = Screen.Chat },
+                    onOpenImages = { screen = Screen.Images },
                     incomingFile = incomingFile,
                     onFileConsumed = onFileConsumed,
                 )

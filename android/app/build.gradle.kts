@@ -1,4 +1,4 @@
-plugins {
+﻿plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
@@ -14,10 +14,9 @@ android {
         applicationId = "com.xiaozhu.planner"
         minSdk = 26
         targetSdk = 35
-        versionCode = 24
-        // 0.5.8：提示条移到对话区上方；压缩时把图片一起交给摘要模型
-        // （原来只喂文字，压缩后记忆里只剩"（图片）"，谁也不知道图里是什么）。
-        versionName = "0.5.8"
+        versionCode = 25
+        // 0.5.9：图片管理页（看/找/删/导出 zip）+ 设置页图片占用提示（超上限只提醒不自动删）。
+        versionName = "0.5.9"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 

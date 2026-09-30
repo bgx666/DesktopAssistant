@@ -31,6 +31,8 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -46,9 +48,12 @@ import com.xiaozhu.planner.ui.theme.PlannerColors
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SettingsScreen(    onBack: () -> Unit,
+fun SettingsScreen(
+    onBack: () -> Unit,
     incomingFile: android.net.Uri? = null,
     onFileConsumed: () -> Unit = {},
+    /** 打开图片管理页（图片占用超上限时的"去清理"也走这里）。 */
+    onOpenImages: () -> Unit = {},
 ) {
     val app = LocalContext.current.applicationContext as Application
     val store = remember { SettingsStore(app) }
@@ -399,6 +404,11 @@ fun SettingsScreen(    onBack: () -> Unit,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
 
+            // ── 图片（占用与清理）──────────────────────────────
+            HorizontalDivider(modifier = Modifier.padding(vertical = 16.dp))
+            Text("图片", style = MaterialTheme.typography.titleMedium)
+            ImageStorageRow(onOpenImages = onOpenImages)
+
             // ── 从电脑导入旧数据 ─────────────────────────────────
             HorizontalDivider(modifier = Modifier.padding(vertical = 16.dp))
             Text("导入旧数据", style = MaterialTheme.typography.titleMedium)
@@ -589,6 +599,44 @@ private fun PermissionRow(label: String, granted: Boolean, onOpen: () -> Unit) {
         Text(label, modifier = Modifier.weight(1f).padding(start = 8.dp))
         TextButton(onClick = onOpen, enabled = !granted) { Text("去设置") }
     }
+}
+
+/**
+ * 图片占用那一行 + 「去清理」。
+ *
+ * 到上限**只提示不自动删**（用户明确要求）：图片是用户的东西，删不删由他决定。
+ */
+@Composable
+private fun ImageStorageRow(onOpenImages: () -> Unit) {
+    var stats by remember { mutableStateOf(com.xiaozhu.planner.core.image.ImageStore.stats()) }
+    LaunchedEffect(Unit) {
+        stats = withContext(Dispatchers.IO) { com.xiaozhu.planner.core.image.ImageStore.stats() }
+    }
+    val (count, bytes) = stats
+    val cap = 500L * 1024 * 1024
+    val over = bytes > cap
+
+    Text(
+        "共 $count 张 · ${formatBytes(bytes)} / 建议上限 ${formatBytes(cap)}",
+        style = MaterialTheme.typography.bodyMedium,
+        color = if (over) PlannerColors.Danger else MaterialTheme.colorScheme.onSurface,
+        modifier = Modifier.padding(top = 4.dp),
+    )
+    Text(
+        "图片存在手机里（不是数据库），发过的图会一直留着，方便以后问起时它能找回来。" +
+            if (over) "**已经超过建议上限了**——去图片页筛出旧图，先导出再删。" else "",
+        style = MaterialTheme.typography.bodySmall,
+        modifier = Modifier.padding(top = 2.dp),
+    )
+    TextButton(onClick = onOpenImages, modifier = Modifier.padding(top = 4.dp)) {
+        Text(if (over) "去清理图片" else "查看图片")
+    }
+}
+
+private fun formatBytes(bytes: Long): String = when {
+    bytes >= 1024L * 1024 * 1024 -> "%.1f GB".format(bytes / 1024.0 / 1024 / 1024)
+    bytes >= 1024L * 1024 -> "%.0f MB".format(bytes / 1024.0 / 1024)
+    else -> "%.0f KB".format(bytes / 1024.0)
 }
 
 /** 数字输入框（压缩参数用）：数字小键盘 + 标签 + 范围提示。 */
