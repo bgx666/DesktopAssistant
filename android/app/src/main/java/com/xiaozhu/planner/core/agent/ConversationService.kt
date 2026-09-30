@@ -5,6 +5,7 @@ import com.xiaozhu.planner.core.memory.BufferRepair
 import com.xiaozhu.planner.core.memory.MemoryStore
 import com.xiaozhu.planner.core.memory.MessageMapping
 import com.xiaozhu.planner.data.db.BufferStateEntity
+import com.xiaozhu.planner.data.db.MessageEntity
 
 /**
  * 对话 buffer 的落盘与恢复（Room 是唯一事实源；内存里的历史只是它的一个视图）。
@@ -41,4 +42,27 @@ class ConversationService(
         store.loadBufferState() ?: BufferStateEntity(characterId = characterId)
 
     suspend fun saveState(state: BufferStateEntity) = store.saveBufferState(state.copy(characterId = characterId))
+
+    /** 撤销用：按 seq 顺序取全部**原文**（不含记忆节点消息）。 */
+    suspend fun rawMessagesForUndo(): List<MessageEntity> = store.rawMessages()
+
+    /** 撤销用：删掉这些原文。 */
+    suspend fun deleteMessages(seqs: List<Long>) = store.deleteMessages(seqs)
+
+    /**
+     * 撤回第 [rawIndex] 条**原文及其之后**的全部对话（PC 版 `/undo` 同义）。
+     *
+     * 只动原文，**不动记忆节点**——那些内容已经压进长期记忆树了，
+     * 删掉它等于删记忆，而不是"撤回刚说的一句话"。
+     *
+     * 返回是否真的删掉了东西（界面据此决定要不要把内容放回输入框）。
+     */
+    suspend fun truncateFrom(rawIndex: Int): Boolean {
+        val raw = store.rawMessages()
+        if (rawIndex !in raw.indices) return false
+        val doomed = raw.drop(rawIndex)
+        if (doomed.isEmpty()) return false
+        store.deleteMessages(doomed.map { it.seq })
+        return true
+    }
 }

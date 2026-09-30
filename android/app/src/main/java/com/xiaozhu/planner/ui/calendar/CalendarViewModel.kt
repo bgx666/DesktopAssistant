@@ -20,21 +20,36 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.time.LocalDate
+import java.time.YearMonth
 
 data class CalendarUiState(
-    val date: String = CalendarDates.todayText(),
-    val items: List<CalendarItemEntity> = emptyList(),
+    /** 正在看的月份。 */
+    val month: YearMonth = YearMonth.now(CalendarDates.ZONE),
+    /** 选中的那一天（默认今天）。 */
+    val selected: LocalDate = CalendarDates.today(),
+    /** 整月的日程（用于画点）；不含已取消。 */
+    val monthItems: List<CalendarItemEntity> = emptyList(),
     val series: List<SeriesRow> = emptyList(),
     val dnd: DndSettings = DndSettings(),
     val inDnd: Boolean = false,
     val status: String = "",
-)
+    val loading: Boolean = true,
+) {
+    /** 选中那天的日程。 */
+    val dayItems: List<CalendarItemEntity>
+        get() = monthItems.filter { it.date == selected.toString() }
+
+    /** 每天有几项（画点用）。 */
+    val countByDay: Map<String, Int>
+        get() = monthItems.groupingBy { it.date }.eachCount()
+}
 
 /**
- * 日历页：用户自己看/自己改日程（这是产品的前提——日程不是"模型的黑箱"，
- * 用户能直接在手机上加、改、勾完成，模型也读写同一份数据）。
+ * 日历页：**真正的月历**（用户明确要的），不是"一天一列表"。
  *
- * 与 ChatViewModel 共用同一个数据库单例，但各建一份轻量包装（Room 的 DAO 是单例的）。
+ * 与模型共用同一份 `calendar_items`：这边手加的，它 `list_schedule` 就能查到；
+ * 它加的，这边立刻看得见。月历的圆点表示"这天有安排"，点某天在下面看细节。
  */
 class CalendarViewModel(app: Application) : AndroidViewModel(app) {
 
@@ -52,40 +67,46 @@ class CalendarViewModel(app: Application) : AndroidViewModel(app) {
 
     fun reload() {
         viewModelScope.launch {
-            val date = _state.value.date
+            val month = _state.value.month
             withContext(Dispatchers.IO) {
-                val items = store.rangeAll(date, date)
+                val first = month.atDay(1).toString()
+                val last = month.atEndOfMonth().toString()
+                val items = store.range(first, last)
                 val series = store.seriesSummary()
                 val dnd = dndStore.load()
                 _state.update {
                     it.copy(
-                        items = items,
+                        monthItems = items,
                         series = series,
                         dnd = dnd,
                         inDnd = Dnd.inDnd(CalendarDates.now(), dnd),
+                        loading = false,
                     )
                 }
             }
         }
     }
 
-    fun shiftDay(days: Long) {
-        val next = CalendarDates.plusDays(_state.value.date, days) ?: return
-        _state.update { it.copy(date = next) }
+    fun shiftMonth(delta: Long) {
+        _state.update { it.copy(month = it.month.plusMonths(delta), loading = true) }
         reload()
     }
 
-    fun today() {
-        _state.update { it.copy(date = CalendarDates.todayText()) }
+    fun selectDate(date: LocalDate) {
+        _state.update { it.copy(selected = date) }
+    }
+
+    fun goToday() {
+        _state.update { it.copy(month = YearMonth.now(CalendarDates.ZONE), selected = CalendarDates.today()) }
         reload()
     }
 
-    /** 手加一条：时刻留空＝全天项（全天项不参与到点提醒）。 */
+    /** 手加一条到**选中的那天**；时刻留空＝全天项（不参与到点提醒）。 */
     fun add(content: String, time: String, detail: String = "") {
         val text = content.trim()
         if (text.isEmpty()) return
         viewModelScope.launch {
-            val date = _state.value.date
+            val date = _state.value.selected.toString()
             val t = time.trim().takeIf { it.isNotEmpty() }?.let { CalendarDates.normTime(it) }
             if (time.isNotBlank() && t == null) {
                 _state.update { it.copy(status = "时刻格式应为 HH:MM") }
@@ -128,11 +149,22 @@ class CalendarViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** 改期到选中那天（拖不动，就用"改到这天"按钮）。 */
+    fun moveToSelected(item: CalendarItemEntity) {
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                store.update(id = item.id, date = _state.value.selected.toString())
+                scheduler.sync()
+            }
+            _state.update { it.copy(status = "已把 #${item.id} 改到 ${_state.value.selected}") }
+            reload()
+        }
+    }
+
     fun setDnd(enabled: Boolean) {
         viewModelScope.launch {
             withContext(Dispatchers.IO) {
                 dndStore.save(DndSettings(enabled = enabled, untilEpochMillis = null))
-                // 关掉免打扰后，之前被顺延的提醒要重新排回原时刻附近
                 scheduler.sync()
             }
             reload()

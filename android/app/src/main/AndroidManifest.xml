@@ -35,6 +35,23 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- 在文件管理器/聊天软件里点开导出文件就能直接导入：
+                 比"进设置页 → 选文件"少好几步，也绕开了存储权限（SAF 给的 URI 直接可读） -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:mimeType="application/json" />
+                <data android:mimeType="application/gzip" />
+                <data android:mimeType="application/x-gzip" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="application/json" />
+                <data android:mimeType="application/gzip" />
+                <data android:mimeType="application/x-gzip" />
+            </intent-filter>
         </activity>
 
         <!-- 到点提醒（精确闹钟 → 通知） -->

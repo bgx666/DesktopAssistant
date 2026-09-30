@@ -24,6 +24,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -41,7 +42,11 @@ import com.xiaozhu.planner.reminder.ReminderNotifications
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SettingsScreen(onBack: () -> Unit) {
+fun SettingsScreen(
+    onBack: () -> Unit,
+    incomingFile: android.net.Uri? = null,
+    onFileConsumed: () -> Unit = {},
+) {
     val app = LocalContext.current.applicationContext as Application
     val store = remember { SettingsStore(app) }
 
@@ -283,6 +288,14 @@ fun SettingsScreen(onBack: () -> Unit) {
             ) { uri ->
                 if (uri != null) {
                     importVm.load { context.contentResolver.openInputStream(uri) }
+                }
+            }
+
+            // 从外面点开/分享进来的文件：进来就开始读，用户只要确认
+            LaunchedEffect(incomingFile) {
+                incomingFile?.let { uri ->
+                    importVm.load { context.contentResolver.openInputStream(uri) }
+                    onFileConsumed()
                 }
             }
 

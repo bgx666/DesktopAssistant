@@ -14,12 +14,12 @@ android {
         applicationId = "com.xiaozhu.planner"
         minSdk = 26
         targetSdk = 35
-        versionCode = 5
-        // 0.2.3：修掉 continue_speaking 的非法 schema（properties 写成了字符串，
-        // 网关因此拒掉整个请求、只回一句模型名）；新增工具 schema 体检与真实工具集的 live 检查。
+        versionCode = 6
+        // 0.3.0：界面按 PC 版对齐——聊天显示历史与记忆卡片、头像、撤销（两段确认）、
+        // 真正的月历、配色取自 PC 版前端；导入旧数据支持"点开文件直接导入"。
         // 之前一直是 0.1.0，导致几次构建之间**版本号区分不了**——排查"你装的是哪一版"
         // 只能看设置页页脚的安装时间。以后每次可安装的改动都递增 versionCode。
-        versionName = "0.2.3"
+        versionName = "0.3.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 

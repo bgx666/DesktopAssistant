@@ -10,8 +10,11 @@ import com.xiaozhu.planner.core.calendar.CalendarDates
 import com.xiaozhu.planner.core.llm.ChatMessage
 import com.xiaozhu.planner.core.memory.CompressionOutcome
 import com.xiaozhu.planner.core.memory.MemoryHit
+import com.xiaozhu.planner.core.memory.MemoryStore
 import com.xiaozhu.planner.core.memory.NodeInfo
+import com.xiaozhu.planner.core.memory.NodeRenderer
 import com.xiaozhu.planner.core.speech.Speaker
+import com.xiaozhu.planner.data.db.MessageEntity
 import com.xiaozhu.planner.data.db.NodeEntity
 import com.xiaozhu.planner.proactive.AppPresence
 import com.xiaozhu.planner.proactive.HeartbeatEvents
@@ -25,15 +28,20 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 
 /**
  * 聊天页的中枢：把 UI 事件翻译成引擎调用，把引擎事件画到界面上。
  *
- * 分工（重构后）：
- * - **"想一轮"在 [ConversationEngine]**（单例）——心跳/提醒在后台也要用它，所以它不能长在 UI 里
- * - 这里只管：上屏、朗读、提示、记忆浏览入口
- * - **Room 是 buffer 的唯一事实源**；引擎内存里的历史只是它的视图（压缩后重建）
- * - 压缩失败**绝不影响这一轮对话**（对话优先，记忆是渐进增强）
+ * 分工：
+ * - **"想一轮"在 [ConversationEngine]**（单例）——心跳/提醒在后台也要用它
+ * - 这里只管：**把已恢复的历史画出来**、上屏、朗读、撤销、记忆概览
+ * - **Room 是 buffer 的唯一事实源**；界面上的列表是它的一个视图
+ *
+ * 关于历史：早先这里只在发送时往后追加，于是"导入了 203 个记忆节点 + 64 条对话"
+ * 在界面上完全看不见——用户以为记忆没搬过来。现在启动就读库渲染。
  */
 class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
@@ -49,25 +57,21 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     val state: StateFlow<ChatUiState> = _state.asStateFlow()
 
     init {
-        // 冷启动就要知道"配没配 key"，否则用户第一次发消息才被告知没配置
         refreshSettings()
-        // 界面活着 → 心跳到点由这里说（后台时由 HeartbeatService 自己跑）
         AppPresence.uiAlive = true
-        // 提醒到点 / 心跳到点 → 让模型说一句。
-        // App 正开着才收得到这些事件；没开时后台服务会自己跑一轮并推通知。
         viewModelScope.launch {
             ReminderEvents.fired.collect { lines -> onReminderFired(lines) }
         }
         viewModelScope.launch {
             HeartbeatEvents.fired.collect { note -> onHeartbeatFired(note) }
         }
-        // 启动时收拾一次：续期重复系列 + 重排闹钟 + 把心跳闹钟补上
-        // （重启后 AlarmManager 是空的，而心跳时间存在 Prefs 里）
         viewModelScope.launch(Dispatchers.IO) {
             runCatching { engine.calendar.extendAllSeries() }
             runCatching { engine.scheduler.sync() }
             runCatching { engine.heartbeat.arm() }
         }
+        // 把库里的历史读出来画上（这是"记忆搬过来了"唯一看得见的地方）
+        viewModelScope.launch { reloadFromStore() }
     }
 
     override fun onCleared() {
@@ -79,9 +83,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         _state.update { it.copy(configured = engine.settings.configured, hint = null) }
     }
 
-    /** 给 UI 层显示一行提示（语音识别失败等）。 */
     fun showHint(text: String) {
         _state.update { it.copy(hint = text) }
+    }
+
+    /** 输入框已经把恢复内容取走了，清掉这个一次性标记。 */
+    fun consumeRestoreDraft() {
+        _state.update { it.copy(restoreDraft = null) }
     }
 
     // ── 对话 ────────────────────────────────────────────────
@@ -89,12 +97,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     fun send(text: String) {
         val body = text.trim()
         if (body.isEmpty()) return
-        // 用户开口就闭嘴：听着长回复想插话时，最烦的是"它还在念"
         speaker.stop()
-        submit(ChatMessage.user(body), fromUser = true, display = body)
+        submit(ChatMessage.user(body), UiMessageKind.User, body)
     }
 
-    /** 手动朗读某条回复（自动朗读关掉时用）。 */
     fun speak(text: String) = speaker.speak(text)
 
     fun stopSpeaking() = speaker.stop()
@@ -106,33 +112,46 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * 提醒到点时由系统触发的一轮（不是用户说的话）。
+     * 撤销：撤回这条**及其之后**的对话，内容放回输入框（与 PC 版 `/undo` 同义）。
      *
-     * 落盘的是一条 `（系统：…）` 开头的 user 消息——与 PC 版一致：模型被告知
-     * "这是时间提示，不是用户在说话"，但仍按对话历史记住它。
+     * 只对原文消息有效；记忆卡片（已压缩进记忆树的历史）不能被撤销——
+     * 那些内容已经变成长期记忆了，删掉它等于删记忆，不是"撤回一句话"。
      */
-    private fun onReminderFired(lines: List<String>) {
-        val text = ProactivePrompts.reminder(CalendarDates.now().format(HHMM), lines)
-        submit(ChatMessage.user(text), fromUser = false, display = lines.joinToString("\n"), fromSystem = true)
+    fun undo(messageId: Long) {
+        val target = _state.value.messages.firstOrNull { it.id == messageId } ?: return
+        val rawIndex = target.rawIndex
+        if (rawIndex == null) {
+            showHint("这条已经在长期记忆里了，撤不回；要改就用一句话跟它说清楚。")
+            return
+        }
+        viewModelScope.launch {
+            val removed = withContext(Dispatchers.IO) {
+                runCatching { engine.truncateFromRaw(rawIndex) }.getOrDefault(false)
+            }
+            if (!removed) {
+                showHint("撤销失败（没能改写历史），原文没动。")
+                return@launch
+            }
+            _state.update { it.copy(restoreDraft = target.text) }
+            reloadFromStore()
+        }
     }
 
-    /** 心跳到点：界面活着就在这里说，界面不在时由 HeartbeatService 推通知。 */
+    private fun onReminderFired(lines: List<String>) {
+        val text = ProactivePrompts.reminder(CalendarDates.now().format(HHMM), lines)
+        submit(ChatMessage.user(text), UiMessageKind.System, lines.joinToString("\n"))
+    }
+
     private fun onHeartbeatFired(note: String) {
         val text = ProactivePrompts.heartbeat(CalendarDates.now().format(HHMM), note)
         submit(
             ChatMessage.user(text),
-            fromUser = false,
-            display = note.ifBlank { "（我醒了一下）" },
-            fromSystem = true,
+            UiMessageKind.System,
+            note.ifBlank { "（我醒了一下）" },
         )
     }
 
-    private fun submit(
-        message: ChatMessage,
-        fromUser: Boolean,
-        display: String,
-        fromSystem: Boolean = false,
-    ) {
+    private fun submit(message: ChatMessage, kind: UiMessageKind, display: String) {
         if (_state.value.streaming) return
         if (!engine.settings.configured) {
             _state.update { it.copy(hint = "还没配置 API Key，先去设置页填一个。") }
@@ -144,46 +163,114 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         _state.update {
             it.copy(
                 messages = it.messages +
-                    UiMessage(id = userId, fromUser = fromUser, fromSystem = fromSystem, text = display) +
-                    UiMessage(id = assistantId, fromUser = false),
+                    UiMessage(id = userId, kind = kind, text = display, time = nowHHmm()) +
+                    UiMessage(id = assistantId, kind = UiMessageKind.Assistant),
                 streaming = true,
                 hint = null,
                 memoryNotice = null,
+                restoreDraft = null,
             )
         }
 
         running = viewModelScope.launch {
-            val firstRound = runCatching { engine.ensureLoaded() }.getOrDefault(false)
-            if (firstRound) {
-                _state.update {
-                    it.copy(memoryNotice = "已恢复上次的对话与记忆（原文 ${engine.store.rawCount()} 条）")
-                }
-            }
+            val restored = runCatching { engine.ensureLoaded() }.getOrDefault(false)
+            if (restored) refreshMemoryStats()
             try {
                 engine.runRound(message) { event -> onEvent(assistantId, event) }
             } catch (e: Exception) {
-                patch(assistantId) { it.copy(text = it.text + "\n（中断：${e.message}）") }
+                patch(assistantId) { it.copy(text = it.text + "\n（中断：${e.message}）", failed = true) }
             } finally {
                 _state.update { it.copy(streaming = false) }
             }
-            // 压缩是引擎内部做的（后台轮次也要压），结果回读一下说给用户听
             describeCompression(engine.lastCompression)?.let { notice ->
                 _state.update { it.copy(memoryNotice = "记忆更新：$notice") }
             }
+            // 落盘后再回读一次：新消息要带上 rawIndex，否则它不可撤销
+            reloadFromStore(keepTail = assistantId)
         }
+    }
+
+    // ── 历史 → 界面 ─────────────────────────────────────────
+
+    /**
+     * 从库里重建界面列表：**记忆卡片在前、原文在后**（与 buffer 的顺序一致）。
+     *
+     * @param keepTail 正在流式输出的那条临时消息（回读时不要把它抹掉）
+     */
+    suspend fun reloadFromStore(keepTail: Long? = null) {
+        val snapshot = withContext(Dispatchers.IO) {
+            val nodes = engine.store.nodeMessages()
+            val raw = engine.store.rawMessages()
+            val stats = memoryStatsInternal()
+            Triple(nodes, raw, stats)
+        }
+        val (nodes, raw, stats) = snapshot
+
+        val built = ArrayList<UiMessage>(nodes.size + raw.size)
+        nodes.forEach { row ->
+            built += memoryCard(row)
+        }
+        raw.forEachIndexed { index, row ->
+            built += rawBubble(row, index)
+        }
+
+        _state.update { current ->
+            val tail = keepTail?.let { id ->
+                current.messages.lastOrNull { it.id == id && it.kind == UiMessageKind.Assistant }
+            }
+            current.copy(
+                messages = if (tail != null) built + tail else built,
+                memory = stats,
+                historyLoaded = true,
+            )
+        }
+    }
+
+    private fun memoryCard(row: MessageEntity): UiMessage {
+        val nodeId = row.nodeId ?: "node?"
+        val level = nodeId.removePrefix("node").substringBefore('_').toIntOrNull() ?: 0
+        val title = if (level == 0) "一段对话已经收进长期记忆" else "更早的记忆已经上卷"
+        return UiMessage(
+            id = nextId++,
+            kind = UiMessageKind.Memory,
+            text = row.content,
+            memoryMeta = "$title · $nodeId",
+        )
+    }
+
+    private fun rawBubble(row: MessageEntity, index: Int): UiMessage {
+        val kind = when (row.role) {
+            "user" -> UiMessageKind.User
+            "assistant" -> UiMessageKind.Assistant
+            else -> UiMessageKind.System
+        }
+        return UiMessage(
+            id = nextId++,
+            kind = kind,
+            text = row.content,
+            time = hhmm(row.tsMillis),
+            rawIndex = index,
+            tools = MessageTools.parse(row.toolCalls, row.name),
+        )
     }
 
     // ── 记忆 ────────────────────────────────────────────────
 
-    suspend fun memoryStats(): MemoryStats = withContext(Dispatchers.IO) {
+    private suspend fun memoryStatsInternal(): MemoryStats {
         val store = engine.store
-        val levels = (0..4).map { it to store.levelCount(it) }.filter { it.second > 0 }
-        MemoryStats(
+        return MemoryStats(
             totalNodes = store.nodeCount(),
-            levels = levels,
+            levels = (0..4).map { it to store.levelCount(it) }.filter { it.second > 0 },
             rootId = store.rootId(),
             rawMessages = store.rawCount(),
         )
+    }
+
+    suspend fun memoryStats(): MemoryStats = withContext(Dispatchers.IO) { memoryStatsInternal() }
+
+    private suspend fun refreshMemoryStats() {
+        val stats = withContext(Dispatchers.IO) { memoryStatsInternal() }
+        _state.update { it.copy(memory = stats) }
     }
 
     suspend fun memoryNodesAt(level: Int): List<NodeEntity> = withContext(Dispatchers.IO) {
@@ -197,6 +284,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     suspend fun memorySearch(query: String): List<MemoryHit> = withContext(Dispatchers.IO) {
         engine.store.search(query, limit = 10)
     }
+
+    /** 给记忆页用的"展开成一段文字"（与 PC 版的展开格式一致）。 */
+    fun renderNode(info: NodeInfo): String = NodeRenderer.renderForTool(info)
 
     // ── 事件 → UI ───────────────────────────────────────────
 
@@ -217,9 +307,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
             is AgentEvent.Done -> patch(assistantId) {
                 val final = it.text.ifBlank { "（这轮没有输出）" }
-                // 朗读在事件处理里发起：此时文本已经完整，且不阻塞 UI 线程
                 speaker.speak(final)
-                it.copy(text = final)
+                it.copy(text = final, time = nowHHmm())
             }
 
             is AgentEvent.Error -> patch(assistantId) {
@@ -233,7 +322,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private companion object {
-        val HHMM: java.time.format.DateTimeFormatter = java.time.format.DateTimeFormatter.ofPattern("HH:mm")
+        val HHMM: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm")
+
+        fun nowHHmm(): String = CalendarDates.now().format(HHMM)
+
+        fun hhmm(millis: Long): String? =
+            if (millis <= 0) null
+            else Instant.ofEpochMilli(millis).atZone(ZoneId.of("Asia/Shanghai")).format(HHMM)
     }
 }
 
@@ -248,5 +343,31 @@ internal fun describeCompression(outcomes: List<CompressionOutcome>): String? {
             is CompressionOutcome.Failed -> "压缩失败（${outcome.reason}），原文保留"
             CompressionOutcome.Skipped -> ""
         }
+    }
+}
+
+/**
+ * 历史里的工具调用：原文只存了 `tool_calls` 的 JSON，这里还原成卡片要的信息。
+ *
+ * 历史消息的工具卡片是"只读回放"——结果早就在后面的 tool 消息里了，
+ * 所以这里只给名字与参数，不给结果（PC 版历史回放也是这样）。
+ */
+internal object MessageTools {
+
+    fun parse(toolCallsJson: String?, name: String?): List<UiTool> {
+        if (toolCallsJson.isNullOrBlank()) {
+            return if (name.isNullOrBlank()) emptyList()
+            else listOf(UiTool(name = name, args = "", result = null))
+        }
+        return runCatching {
+            com.xiaozhu.planner.core.llm.PlannerJson
+                .decodeFromString(
+                    kotlinx.serialization.builtins.ListSerializer(
+                        com.xiaozhu.planner.core.llm.ToolCall.serializer()
+                    ),
+                    toolCallsJson,
+                )
+                .map { UiTool(name = it.function.name, args = it.function.arguments, result = null) }
+        }.getOrDefault(emptyList())
     }
 }

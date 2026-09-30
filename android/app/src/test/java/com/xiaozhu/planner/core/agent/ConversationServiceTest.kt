@@ -41,6 +41,89 @@ class ConversationServiceTest {
 
     private fun call(id: String) = ToolCall(id = id, function = ToolCallFunction("web_search", "{}"))
 
+    // ── 撤销（PC 版 /undo 同义）──────────────────────────────
+
+    @Test
+    fun `撤销删掉该条及其之后的原文`() = runBlocking {
+        service.persist(
+            listOf(
+                ChatMessage.user("第一句"),
+                ChatMessage.assistant("回第一句"),
+                ChatMessage.user("第二句"),
+                ChatMessage.assistant("回第二句"),
+            ),
+            System.currentTimeMillis(),
+        )
+        assertEquals(4, store.rawCount())
+
+        assertTrue("撤销第 2 条（0 起）应删掉它和后面两条", service.truncateFrom(2))
+        assertEquals(2, store.rawCount())
+        assertEquals(
+            listOf("第一句", "回第一句"),
+            service.loadHistory().map { it.content },
+        )
+    }
+
+    @Test
+    fun `撤销第一条等于清空原文`() = runBlocking {
+        service.persist(listOf(ChatMessage.user("a"), ChatMessage.assistant("b")), 0L)
+        assertTrue(service.truncateFrom(0))
+        assertEquals(0, store.rawCount())
+        assertTrue(service.loadHistory().isEmpty())
+    }
+
+    @Test
+    fun `撤销不动记忆节点（那是长期记忆，不是刚说的一句话）`() = runBlocking {
+        // 模拟"压缩已经发生过"的状态：节点行 + buffer 里的 node 消息
+        // （addLeaf 只写节点行；node 消息是压缩器 appendMessage 进去的）
+        val nodeId = store.addLeaf(summary = "很久以前聊过的事", roundRange = 0 to 39)
+        store.appendMessage(
+            role = "assistant",
+            content = "[$nodeId] [摘要] 很久以前聊过的事",
+            nodeId = nodeId,
+            nodeStart = 0,
+        )
+        service.persist(listOf(ChatMessage.user("刚说的"), ChatMessage.assistant("刚回的")), 0L)
+        assertEquals(2, store.rawCount())
+
+        assertTrue(service.truncateFrom(0))
+
+        assertEquals("原文该清掉", 0, store.rawCount())
+        assertEquals("记忆节点必须留着", 1, store.nodeCount())
+        // 恢复出来的历史里，记忆节点那条还在（它会作为 node 消息进上下文）
+        val history = service.loadHistory()
+        assertEquals(1, history.size)
+        assertTrue(history.single().content!!.contains("很久以前聊过的事"))
+    }
+
+    @Test
+    fun `越界的下标什么都不做`() = runBlocking {
+        service.persist(listOf(ChatMessage.user("只有一条")), 0L)
+        assertTrue(!service.truncateFrom(5))
+        assertTrue(!service.truncateFrom(-1))
+        assertEquals(1, store.rawCount())
+    }
+
+    @Test
+    fun `撤销后工具调用配对仍然合法`() = runBlocking {
+        service.persist(
+            listOf(
+                ChatMessage.user("查一下"),
+                ChatMessage.assistantToolCalls(listOf(call("c1"))),
+                ChatMessage.tool("c1", "web_search", "结果"),
+                ChatMessage.assistant("查到了"),
+            ),
+            0L,
+        )
+        // 从 tool 结果那条开始撤 → 悬空的 assistant(tool_calls) 会被 BufferRepair 清掉
+        assertTrue(service.truncateFrom(2))
+        val history = service.loadHistory()
+        assertTrue(
+            "剩下的历史里不能有声明了 tool_calls 却没有结果的 assistant",
+            history.none { it.toolCalls?.isNotEmpty() == true },
+        )
+    }
+
     @Test
     fun `落盘后能原样恢复，且工具调用保持配对`() = runBlocking {
         service.persist(

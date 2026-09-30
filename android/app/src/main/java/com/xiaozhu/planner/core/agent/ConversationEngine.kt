@@ -149,6 +149,23 @@ class ConversationEngine private constructor(private val app: Application) {
         runCatching { scheduler.sync() }
     }
 
+    /**
+     * 撤销：把第 [rawIndex] 条**原始消息及其之后**的全部原文删掉（PC 版 `/undo` 同义）。
+     *
+     * 只动"原文"，**不动记忆节点**——那些内容已经压进长期记忆树了，
+     * 删掉它等于删记忆，而不是"撤回刚说的一句话"。
+     *
+     * 返回是否真的改了东西（界面据此决定要不要把内容放回输入框）。
+     */
+    suspend fun truncateFromRaw(rawIndex: Int): Boolean = roundMutex.withLock {
+        if (!conversation.truncateFrom(rawIndex)) return@withLock false
+        // 内存里的历史要跟着回退，否则下一轮会把已经删掉的内容再发一遍
+        history.clear()
+        loaded = false
+        ensureLoaded()
+        true
+    }
+
     /** system prompt 每轮重建：日期、议程、可用工具清单都要是最新的。 */
     suspend fun systemPromptText(): String {
         val today = CalendarDates.todayText()
