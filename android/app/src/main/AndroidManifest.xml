@@ -9,21 +9,25 @@
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <!-- 重启/时间被改后要重排闹钟（AlarmManager 不持久化） -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
-    <!-- 语音输入（系统 SpeechRecognizer）。只录音，识别在本机/系统服务里做 -->
-    <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <!-- 心跳到点时要跑一轮（联网调模型 + 可能调工具）。用前台服务是因为
          后台进程随时会被冻住/杀掉，跑到一半断掉还会留下半截 buffer。 -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 
-    <!-- 语音识别是可选能力：没装语音服务的设备（部分平板/模拟器）也不该被市场过滤掉 -->
-    <uses-feature
-        android:name="android.hardware.microphone"
-        android:required="false" />
+    <!--
+      相机：拍照用。ACTION_IMAGE_CAPTURE 本身不需要这个权限，但**声明了就必须持有**，
+      而部分 ROM 的相机 App 会检查调用方是否持有 CAMERA（没有就直接拒绝）。
+      所以这里是"声明 + 运行时申请"，与一般 App 的做法一致。
+    -->
+    <uses-permission android:name="android.permission.CAMERA" />
 
-    <!-- 拍照同理：走系统相机（ACTION_IMAGE_CAPTURE），没有摄像头的设备也能装。
-         注意**故意不声明 CAMERA 权限**——只声明的话系统会要求用户授权，
-         而这里根本用不到（照片是系统相机 App 拍的，我们只是收结果）。 -->
+    <!--
+      语音输入按钮已按用户要求移除（改用输入法自带的语音输入），所以这里
+      **不再声明 RECORD_AUDIO** —— 不用的敏感权限不该挂着。
+      speech/VoiceInput.kt 的代码保留着，将来想加回按钮时连同这条权限一起恢复即可。
+    -->
+
+    <!-- 拍照是可选能力：没有摄像头的设备（部分平板/模拟器）也不该被市场过滤掉 -->
     <uses-feature
         android:name="android.hardware.camera"
         android:required="false" />

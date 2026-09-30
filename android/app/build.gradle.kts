@@ -14,10 +14,10 @@ android {
         applicationId = "com.xiaozhu.planner"
         minSdk = 26
         targetSdk = 35
-        versionCode = 15
-        // 0.4.3：用户气泡贴文字宽度并右对齐（之前固定 86% 宽，右边拖一片蓝）；
-        // 状态栏/导航栏图标改深色（浅色底上白图标看不见）。
-        versionName = "0.4.3"
+        versionCode = 16
+        // 0.5.0：修拍照读不出来（TakePicture 没给相机写权限）+ 相机权限申请；
+        // 去掉麦克风按钮（改用输入法语音）；输入区与附件入口整体重做（底部弹层）。
+        versionName = "0.5.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 

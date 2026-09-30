@@ -33,8 +33,10 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -99,23 +101,6 @@ fun ChatScreen(
     }
 
     val context = LocalContext.current
-    var listening by remember { mutableStateOf(false) }
-    val voice = remember {
-        VoiceInput(
-            context = context,
-            onPartial = { draft = it },
-            onFinal = { draft = it },
-            onError = { vm.showHint(it) },
-            onStateChange = { listening = it },
-        )
-    }
-    DisposableEffect(Unit) { onDispose { voice.destroy() } }
-
-    val micPermission = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        if (granted) voice.start() else vm.showHint("没有麦克风权限，语音输入用不了；打字也一样。")
-    }
 
     // 相册：用系统照片选择器（不需要读存储权限）
     val gallery = rememberLauncherForActivityResult(
@@ -125,11 +110,21 @@ fun ChatScreen(
     // 拍照：拍完写进我们给的临时文件，从那里读全分辨率原图
     var photoUri by remember { mutableStateOf<android.net.Uri?>(null) }
     val camera = rememberLauncherForActivityResult(
-        ActivityResultContracts.TakePicture()
+        // 用自定义契约：必须把写权限授给相机 App，否则它写不进文件（见该类的注释）
+        TakePictureWithPermission()
     ) { ok ->
         val uri = photoUri
         photoUri = null
         if (ok && uri != null) vm.attachImage(uri) else if (!ok) vm.showHint("没有拍照。")
+    }
+
+    // 相机权限：先申请再启动（部分 ROM 的相机 App 会检查调用方是否持有 CAMERA，
+    // 没有就直接拒绝——这是"点了拍照没反应/拍完读不出来"的另一条路径）
+    val cameraPermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) launchCamera(context) { photoUri = it; camera.launch(it) }
+        else vm.showHint("没有相机权限，拍不了照。可以先用「从相册选」，或在系统设置里给相机权限。")
     }
 
     // 本地文档：SAF 打开（拿到的是可读 URI，不需要存储权限）
@@ -244,22 +239,9 @@ fun ChatScreen(
                 InputBar(
                     draft = draft,
                     onDraft = { draft = it },
-                    listening = listening,
                     streaming = state.streaming,
                     pendingImages = state.pendingImages,
                     pendingDocName = state.pendingDocName,
-                    onMic = {
-                        if (listening) {
-                            voice.stop()
-                        } else if (ContextCompat.checkSelfPermission(
-                                context, Manifest.permission.RECORD_AUDIO
-                            ) == PackageManager.PERMISSION_GRANTED
-                        ) {
-                            voice.start()
-                        } else {
-                            micPermission.launch(Manifest.permission.RECORD_AUDIO)
-                        }
-                    },
                     onPickImage = {
                         // 系统相册选择器（Android 13+ 是照片选择器，不需要读存储权限）
                         gallery.launch(
@@ -269,14 +251,14 @@ fun ChatScreen(
                         )
                     },
                     onTakePhoto = {
-                        // 用系统相机拍，输出到 FileProvider 给的临时文件——
-                        // 这样拿到的是**全分辨率**原图，而不是 TakePicturePreview 的小缩略图
-                        val uri = runCatching { newPhotoUri(context) }.getOrNull()
-                        if (uri == null) {
-                            vm.showHint("没法创建拍照用的临时文件。")
+                        // 先确认相机权限，再启动相机（见 cameraPermission 的注释）
+                        if (ContextCompat.checkSelfPermission(
+                                context, Manifest.permission.CAMERA
+                            ) == PackageManager.PERMISSION_GRANTED
+                        ) {
+                            launchCamera(context) { photoUri = it; camera.launch(it) }
                         } else {
-                            photoUri = uri
-                            camera.launch(uri)
+                            cameraPermission.launch(Manifest.permission.CAMERA)
                         }
                     },
                     onRemoveImage = { vm.removePendingImage(it) },
@@ -341,24 +323,30 @@ private fun statusLine(state: ChatUiState): String =
     if (state.contextTokens > 0) "上下文约 ${state.contextTokens} token" else "还没有上下文"
 
 @Composable
-private fun EmptyState(onOpenImport: () -> Unit) {    Column(
-        modifier = Modifier.fillMaxWidth().padding(top = 24.dp),
+private fun EmptyState(onOpenImport: () -> Unit) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 40.dp, start = 24.dp, end = 24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        AssistantAvatar(size = 48.dp)
-        Spacer(Modifier.height(10.dp))
-        Text("还没有对话", style = MaterialTheme.typography.titleSmall)
-        Spacer(Modifier.height(6.dp))
+        AssistantAvatar(size = 56.dp)
         Text(
-            "电脑上那份记忆与日历可以搬过来：\n" +
-                "在电脑上跑 scripts\\export_to_android.py，\n" +
-                "把生成的 JSON 传到手机、点它选「小助」即可。",
-            style = MaterialTheme.typography.bodySmall,
+            "我是小助",
+            style = MaterialTheme.typography.titleMedium,
+            modifier = Modifier.padding(top = 12.dp),
+        )
+        Text(
+            "安排日程、提醒你做事、记住你说过的话。\n直接说就行，比如「明天下午三点提醒我改论文」。",
+            style = MaterialTheme.typography.bodyMedium,
             color = PlannerColors.TextSoft,
             textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+            modifier = Modifier.padding(top = 8.dp),
         )
-        Spacer(Modifier.height(10.dp))
-        Button(onClick = onOpenImport) { Text("导入电脑上的记忆") }
+        TextButton(
+            onClick = onOpenImport,
+            modifier = Modifier.padding(top = 12.dp),
+        ) { Text("导入电脑上的记忆") }
     }
 }
 
@@ -477,19 +465,20 @@ private fun PendingImageStrip(images: List<String>, onRemove: (Int) -> Unit) {
 }
 
 /**
- * 输入区。PC 版发送按钮有三态：发送 / 停止（红）/ 录音（红，长按说话时）。
- * 安卓这边语音是独立的麦克风按钮（没有"长按发送键"这个手势），
- * 所以保留两态 + 录音态的高亮；发图是 ＋ 按钮（拍照 / 相册）。
+ * 输入区。
+ *
+ * 版式：整条输入区是一块圆角"托盘"（浅色卡片 + 细边），里面是输入框与按钮；
+ * ＋ 与发送都是**圆形**按钮，配色与气泡一致。
+ * 附件的三个入口用**底部弹层**（图标 + 标题 + 说明的三行），而不是系统默认的
+ * 那个下拉菜单——后者是 Android 4.x 的观感，跟这套界面不搭。
  */
 @Composable
 private fun InputBar(
     draft: String,
     onDraft: (String) -> Unit,
-    listening: Boolean,
     streaming: Boolean,
     pendingImages: List<String>,
     pendingDocName: String?,
-    onMic: () -> Unit,
     onPickImage: () -> Unit,
     onTakePhoto: () -> Unit,
     onPickDocument: () -> Unit,
@@ -497,103 +486,206 @@ private fun InputBar(
     onSend: () -> Unit,
     onStop: () -> Unit,
 ) {
-    var attachMenu by remember { mutableStateOf(false) }
+    var sheet by remember { mutableStateOf(false) }
+    val canSend = draft.isNotBlank() || pendingImages.isNotEmpty()
 
-    Column(modifier = Modifier.fillMaxWidth()) {
-        // 已附加的文档（正文在发送时并进消息，这里只报个名字）
-        pendingDocName?.let {
-            Text(
-                "已附加：$it",
-                style = MaterialTheme.typography.labelMedium,
-                color = PlannerColors.Primary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(bottom = 4.dp),
-            )
-        }
-        // 已选待发的图（发送后清空，与 PC 版"发完清除挂载"同义）
-        if (pendingImages.isNotEmpty()) {
-            PendingImageStrip(pendingImages, onRemove = onRemoveImage)
-        }
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.Bottom,
-        ) {
-            Box(
-                modifier = Modifier
-                    .padding(bottom = 4.dp)
-                    .size(42.dp)
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(if (listening) PlannerColors.Danger else PlannerColors.Surface)
-                    .border(1.dp, Color(0x28141E32), RoundedCornerShape(12.dp))
-                    .clickable(onClick = onMic),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text("🎤", style = MaterialTheme.typography.titleMedium)
-            }
+    if (sheet) {
+        AttachSheet(
+            onDismiss = { sheet = false },
+            onTakePhoto = { sheet = false; onTakePhoto() },
+            onPickImage = { sheet = false; onPickImage() },
+            onPickDocument = { sheet = false; onPickDocument() },
+        )
+    }
 
-            // 发图：拍照 / 从相册选（DeepSeek 的 deepseek-flash 支持图片输入）
-            Box(modifier = Modifier.padding(bottom = 4.dp)) {
-                Box(
+    Surface(
+        color = PlannerColors.Surface,
+        shape = RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp),
+        shadowElevation = 8.dp,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)) {
+            // 已附加的文档（正文在发送时并进消息，这里只报个名字）
+            pendingDocName?.let {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier
-                        .padding(start = 6.dp)
-                        .size(42.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(PlannerColors.Surface)
-                        .border(1.dp, Color(0x28141E32), RoundedCornerShape(12.dp))
-                        .clickable { attachMenu = true },
-                    contentAlignment = Alignment.Center,
+                        .fillMaxWidth()
+                        .padding(bottom = 6.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(PlannerColors.MemoryCard)
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
                 ) {
-                    Text("＋", style = MaterialTheme.typography.titleMedium)
-                }
-                DropdownMenu(expanded = attachMenu, onDismissRequest = { attachMenu = false }) {
-                    DropdownMenuItem(
-                        text = { Text("拍照") },
-                        onClick = { attachMenu = false; onTakePhoto() },
-                    )
-                    DropdownMenuItem(
-                        text = { Text("从相册选") },
-                        onClick = { attachMenu = false; onPickImage() },
-                    )
-                    DropdownMenuItem(
-                        text = { Text("本地文档（txt / docx / pdf…）") },
-                        onClick = { attachMenu = false; onPickDocument() },
+                    Text("📄", style = MaterialTheme.typography.labelLarge)
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = PlannerColors.Primary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(start = 6.dp),
                     )
                 }
             }
+            if (pendingImages.isNotEmpty()) {
+                PendingImageStrip(pendingImages, onRemove = onRemoveImage)
+            }
 
-            OutlinedTextField(
-                value = draft,
-                onValueChange = onDraft,
-                modifier = Modifier
-                    .weight(1f)
-                    .padding(horizontal = 8.dp)
-                    // 固定最小高度：提示文字长短不该影响输入框大小
-                    // （之前那句"告诉小助你要做什么…"会折成两行，把空输入框撑高）
-                    .heightIn(min = 52.dp),
-                placeholder = {
-                    Text(
-                        if (listening) "在听…" else "说点什么…",
-                        maxLines = 1,
-                        softWrap = false,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                },
-                maxLines = 4,
-                shape = RoundedCornerShape(12.dp),
-            )
-
-            Button(
-                onClick = if (streaming) onStop else onSend,
-                enabled = streaming || draft.isNotBlank() || pendingImages.isNotEmpty(),
-                modifier = Modifier.padding(bottom = 4.dp),
-                shape = RoundedCornerShape(12.dp),
-                colors = androidx.compose.material3.ButtonDefaults.buttonColors(
-                    // PC 版停止态是红渐变
-                    containerColor = if (streaming) PlannerColors.Danger else PlannerColors.Primary,
-                ),
-            ) { Text(if (streaming) "停止" else "发送") }
+            Row(verticalAlignment = Alignment.Bottom) {
+                // ＋：圆形、浅蓝底，和发送按钮同尺寸
+                CircleAction(
+                    glyph = "＋",
+                    background = PlannerColors.MemoryCard,
+                    tint = PlannerColors.Primary,
+                    onClick = { sheet = true },
+                )
+                OutlinedTextField(
+                    value = draft,
+                    onValueChange = onDraft,
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(horizontal = 8.dp)
+                        // 固定最小高度：提示文字长短不该影响输入框大小
+                        .heightIn(min = 48.dp),
+                    placeholder = {
+                        Text(
+                            "说点什么…",
+                            maxLines = 1,
+                            softWrap = false,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    },
+                    maxLines = 4,
+                    shape = RoundedCornerShape(14.dp),
+                )
+                CircleAction(
+                    glyph = if (streaming) "■" else "↑",
+                    background = if (streaming) PlannerColors.Danger
+                    else if (canSend) PlannerColors.Primary else Color(0xFFD8DEE9),
+                    tint = Color.White,
+                    enabled = streaming || canSend,
+                    onClick = { if (streaming) onStop() else onSend() },
+                )
+            }
         }
+    }
+}
+
+/** 圆形操作按钮（＋ / 发送 / 停止）：颜色表达状态，禁用时灰掉。 */
+@Composable
+private fun CircleAction(
+    glyph: String,
+    background: Color,
+    tint: Color,
+    enabled: Boolean = true,
+    onClick: () -> Unit,
+) {
+    Box(
+        modifier = Modifier
+            .padding(bottom = 4.dp)
+            .size(42.dp)
+            .clip(CircleShape)
+            .background(background)
+            .clickable(enabled = enabled, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            glyph,
+            style = MaterialTheme.typography.titleMedium,
+            color = tint,
+        )
+    }
+}
+
+/** 附件入口的底部弹层：三行，每行一个图标 + 标题 + 说明。 */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun AttachSheet(
+    onDismiss: () -> Unit,
+    onTakePhoto: () -> Unit,
+    onPickImage: () -> Unit,
+    onPickDocument: () -> Unit,
+) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        containerColor = PlannerColors.Surface,
+    ) {
+        Text(
+            "添加内容",
+            style = MaterialTheme.typography.titleMedium,
+            modifier = Modifier.padding(start = 20.dp, bottom = 4.dp),
+        )
+        AttachRow(
+            glyph = "📷",
+            tint = Color(0xFF5B7CFA),
+            title = "拍张照",
+            subtitle = "拍纸上的东西、白板、书页，它能直接看",
+            onClick = onTakePhoto,
+        )
+        AttachRow(
+            glyph = "🖼",
+            tint = Color(0xFF39C5BB),
+            title = "从相册选",
+            subtitle = "选一张已有的图片",
+            onClick = onPickImage,
+        )
+        AttachRow(
+            glyph = "📄",
+            tint = Color(0xFFF2A03D),
+            title = "本地文档",
+            subtitle = "txt / md / docx 读正文，pdf 按页看",
+            onClick = onPickDocument,
+        )
+        Spacer(Modifier.height(12.dp))
+    }
+}
+
+@Composable
+private fun AttachRow(
+    glyph: String,
+    tint: Color,
+    title: String,
+    subtitle: String,
+    onClick: () -> Unit,
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 20.dp, vertical = 10.dp),
+    ) {
+        Box(
+            modifier = Modifier
+                .size(40.dp)
+                .clip(CircleShape)
+                .background(tint.copy(alpha = 0.12f)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(glyph, style = MaterialTheme.typography.titleMedium)
+        }
+        Column(modifier = Modifier.padding(start = 14.dp)) {
+            Text(title, style = MaterialTheme.typography.bodyLarge)
+            Text(
+                subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = PlannerColors.TextSoft,
+            )
+        }
+    }
+}
+
+/**
+ * 启动相机：先建好临时文件 URI，再交给相机 App 写。
+ *
+ * 建不出 URI（FileProvider 配错、cache 满了）时给一句人话，而不是静默什么都不发生。
+ */
+private fun launchCamera(context: android.content.Context, onReady: (android.net.Uri) -> Unit) {
+    val uri = runCatching { newPhotoUri(context) }.getOrNull()
+    if (uri == null) {
+        android.widget.Toast.makeText(context, "没法创建拍照用的临时文件", android.widget.Toast.LENGTH_SHORT).show()
+    } else {
+        onReady(uri)
     }
 }
 

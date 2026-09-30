@@ -63,6 +63,33 @@ object ImagePreparer {
         "data:image/jpeg;base64," + Base64.encodeToString(bytes, Base64.NO_WRAP)
     }.getOrNull()
 
+    /**
+     * 读不出来时**到底为什么**——空文件、不是图片、还是打不开。
+     *
+     * 分开说很重要：拍照失败最常见的原因是"相机 App 没写权限 → 文件是空的"，
+     * 而这句话必须让用户（和我）一眼看出该修什么，而不是笼统的"读不出来"。
+     */
+    fun diagnose(context: Context, uri: Uri): String {
+        val size = runCatching {
+            context.contentResolver.openInputStream(uri)?.use { it.available().toLong() }
+        }.getOrNull()
+        val declared = runCatching {
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            context.contentResolver.openInputStream(uri)?.use {
+                BitmapFactory.decodeStream(it, null, bounds)
+            }
+            bounds.outWidth to bounds.outHeight
+        }.getOrNull()
+
+        return when {
+            size == null -> "打不开这张图（没有读取权限，或文件已经不在了）。"
+            size == 0L -> "照片是空的——相机 App 没能把画面写进来（写权限没授到）。"
+            declared == null || declared.first <= 0 ->
+                "这个文件不是能识别的图片格式。"
+            else -> "这张图读不出来（${size / 1024}KB）。"
+        }
+    }
+
     /** 先按 2 的幂降采样，省内存（4000px 的图直接解码会 OOM）。 */
     internal fun sampleSizeFor(width: Int, height: Int): Int {
         var sample = 1

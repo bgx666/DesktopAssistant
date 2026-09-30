@@ -224,7 +224,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 runCatching { ImagePreparer.toDataUrl(getApplication(), uri) }.getOrNull()
             }
             if (dataUrl == null) {
-                showHint("这张图读不出来（可能不是图片，或没有读取权限）。")
+                // 说清是哪种读不出来：空文件（相机没写成）、不是图片、还是打不开
+                val reason = withContext(Dispatchers.IO) {
+                    runCatching { ImagePreparer.diagnose(getApplication(), uri) }.getOrNull()
+                } ?: "这张图读不出来。"
+                showHint(reason)
                 return@launch
             }
             _state.update {
