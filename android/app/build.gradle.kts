@@ -14,9 +14,10 @@ android {
         applicationId = "com.xiaozhu.planner"
         minSdk = 26
         targetSdk = 35
-        versionCode = 23
-        // 0.5.7：图片可点击全屏查看（双指缩放、双击放大、捏小/点空白退出）。
-        versionName = "0.5.7"
+        versionCode = 24
+        // 0.5.8：提示条移到对话区上方；压缩时把图片一起交给摘要模型
+        // （原来只喂文字，压缩后记忆里只剩"（图片）"，谁也不知道图里是什么）。
+        versionName = "0.5.8"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 

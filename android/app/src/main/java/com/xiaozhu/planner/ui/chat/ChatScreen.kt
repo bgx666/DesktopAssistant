@@ -267,6 +267,11 @@ fun ChatScreen(
     ) { pad ->
         Box(modifier = Modifier.fillMaxSize().padding(pad)) {
             Column(modifier = Modifier.fillMaxSize()) {
+                // 提示条放在**对话区上方**（原来在输入框上方，会被当成输入框的一部分，
+                // 而且位置太靠下不容易注意到——用户要求挪上来）
+                state.memoryNotice?.let { BannerText(it, PlannerColors.Primary) }
+                state.hint?.let { BannerText(it, PlannerColors.Danger) }
+
                 LazyColumn(
                     state = listState,
                     modifier = Modifier.weight(1f).fillMaxWidth(),
@@ -299,9 +304,6 @@ fun ChatScreen(
                         )
                     }
                 }
-
-                state.memoryNotice?.let { BannerText(it, PlannerColors.Primary) }
-                state.hint?.let { BannerText(it, PlannerColors.Danger) }
 
                 InputBar(
                     draft = draft,
@@ -1199,7 +1201,7 @@ private fun BannerText(text: String, color: Color) {
         color = color,
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 2.dp),
+            .padding(horizontal = 12.dp, vertical = 6.dp),
     )
 }
 

@@ -92,7 +92,12 @@ class Compressor(
 
         val original = batch.joinToString("\n") { "${speaker(it)}: ${it.content}" }
         val futureText = future.joinToString("\n") { "${speaker(it)}: ${it.content}" }
-        val out = callCompress(futureText, CompressionPrompts.leaf(original))
+        // 这一段里出现过的图片，**要一起交给摘要模型**（见 callCompress 的注释）：
+        // 不交的话，压缩后记忆里只剩一个"（图片）"，谁也不知道图里是什么。
+        val images = batch.flatMap { row ->
+            runCatching { MessageMapping.imagesOf(row) }.getOrDefault(emptyList())
+        }.take(MAX_SUMMARY_IMAGES)
+        val out = callCompress(futureText, CompressionPrompts.leaf(original), images)
             ?: return CompressionOutcome.Failed("压缩调用失败或输出无法解析")
         if (out.summary.isBlank()) return CompressionOutcome.Failed("摘要为空，放弃本次压缩")
 
@@ -173,7 +178,21 @@ class Compressor(
 
     // ── 压缩请求 ────────────────────────────────────────────
 
-    private suspend fun callCompress(futureText: String, instruction: String): MemoryNodeOutput? {
+    /**
+     * 压缩请求。
+     *
+     * [images] 是这一段对话里出现过的图片：**必须一起发给摘要模型**。
+     * 图片本体不会进记忆树（base64 写进 details 会让节点膨胀几百倍），
+     * 但"图里是什么"要由模型写进摘要——否则压缩之后记忆里只剩一个"（图片）"占位，
+     * 之后再也答不出"你上次发的那张图里写了什么"。
+     *
+     * 图片数量封顶 [MAX_SUMMARY_IMAGES]：压缩是后台任务，一次塞十几张图又慢又贵。
+     */
+    private suspend fun callCompress(
+        futureText: String,
+        instruction: String,
+        images: List<String> = emptyList(),
+    ): MemoryNodeOutput? {
         val messages = buildList {
             add(ChatMessage.system(systemPrompt))
             if (futureText.isNotBlank()) {
@@ -183,7 +202,18 @@ class Compressor(
                     )
                 )
             }
-            add(ChatMessage.user(instruction))
+            add(
+                if (images.isEmpty()) {
+                    ChatMessage.user(instruction)
+                } else {
+                    ChatMessage(
+                        role = "user",
+                        content = instruction + "\n\n（上面那段对话里带过的图片附在下面，" +
+                            "请在摘要里写清图片内容——之后图片本身就不会留在上下文里了）",
+                        images = images,
+                    )
+                }
+            )
         }
         val raw = runCatching { llm.complete(messages) }.getOrNull() ?: return null
         return NodeOutputParser.parse(raw)
@@ -194,6 +224,11 @@ class Compressor(
         "assistant" -> "小助"
         "tool" -> "工具结果"
         else -> m.role
+    }
+
+    private companion object {
+        /** 一次压缩最多把几张图交给摘要模型（后台任务，多了又慢又贵）。 */
+        const val MAX_SUMMARY_IMAGES = 4
     }
 
     private fun ts(millis: Long): String =
