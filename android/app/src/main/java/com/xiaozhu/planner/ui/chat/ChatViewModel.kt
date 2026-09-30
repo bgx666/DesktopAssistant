@@ -13,6 +13,7 @@ import com.xiaozhu.planner.core.memory.MemoryHit
 import com.xiaozhu.planner.core.memory.MemoryStore
 import com.xiaozhu.planner.core.memory.NodeInfo
 import com.xiaozhu.planner.core.memory.NodeRenderer
+import com.xiaozhu.planner.core.migrate.SeedImport
 import com.xiaozhu.planner.core.speech.Speaker
 import com.xiaozhu.planner.data.db.MessageEntity
 import com.xiaozhu.planner.data.db.NodeEntity
@@ -72,7 +73,21 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             runCatching { engine.heartbeat.armWithFallback() }
         }
         // 把库里的历史读出来画上（这是"记忆搬过来了"唯一看得见的地方）
-        viewModelScope.launch { reloadFromStore() }
+        viewModelScope.launch {
+            // 随包带进来的旧数据：首次启动自动导入（装完即迁移完，不用传文件/选文件）
+            val seeded = withContext(Dispatchers.IO) {
+                runCatching { SeedImport.importIfNeeded(getApplication(), engine.db) }.getOrNull()
+            }
+            if (seeded is SeedImport.Outcome.Imported) {
+                _state.update {
+                    it.copy(
+                        memoryNotice = "已导入电脑上的记忆：节点 ${seeded.nodes} 个、" +
+                            "对话 ${seeded.messages} 条、日程 ${seeded.calendar} 项"
+                    )
+                }
+            }
+            reloadFromStore()
+        }
         // 标题栏的心跳倒计时与逾期角标要跟着时间走（PC 版靠后端推 state，这边自己滴答）
         viewModelScope.launch {
             while (true) {

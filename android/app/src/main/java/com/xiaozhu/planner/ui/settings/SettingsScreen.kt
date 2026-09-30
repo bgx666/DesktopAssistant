@@ -39,6 +39,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.xiaozhu.planner.core.llm.EndpointUrl
 import com.xiaozhu.planner.data.SettingsStore
 import com.xiaozhu.planner.reminder.ReminderNotifications
+import com.xiaozhu.planner.ui.theme.PlannerColors
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -303,6 +304,31 @@ fun SettingsScreen(
                 onClick = { picker.launch(arrayOf("application/json", "application/gzip", "*/*")) },
                 enabled = !importState.busy,
             ) { Text(if (importState.busy) "处理中…" else "选择导出文件") }
+
+            // 随包带了旧数据时（"给自己装机"的构建）：一键导入，不用传文件
+            if (remember { importVm.hasBundledSeed() }) {
+                Text(
+                    "这个安装包里**已经带了**电脑上的那份旧数据。",
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(top = 8.dp),
+                )
+                Row {
+                    Button(
+                        onClick = { importVm.importBundled(wipeFirst = true) },
+                        enabled = !importState.busy,
+                    ) { Text("导入并替换手机上的") }
+                    TextButton(
+                        onClick = { importVm.importBundled(wipeFirst = false) },
+                        enabled = !importState.busy,
+                        modifier = Modifier.padding(start = 8.dp),
+                    ) { Text("只补空的") }
+                }
+                Text(
+                    "「导入并替换」会先清空手机上现有的对话与日程（首次装机选它）。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = PlannerColors.TextSoft,
+                )
+            }
 
             importState.error?.let {
                 Text(

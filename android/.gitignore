@@ -7,3 +7,7 @@ captures/
 .externalNativeBuild/
 .cxx/
 .kotlin/
+
+# 随包带进来的旧数据（真实对话，绝不入库）。
+# 只在"给自己装机"时临时放进去，见 core/migrate/SeedImport.kt
+app/src/main/assets/seed/

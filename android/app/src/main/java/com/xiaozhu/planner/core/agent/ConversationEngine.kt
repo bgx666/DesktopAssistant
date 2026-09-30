@@ -48,8 +48,10 @@ import java.time.ZonedDateTime
 class ConversationEngine private constructor(private val app: Application) {
 
     val settings = SettingsStore(app)
-    val store = MemoryStore(PlannerDatabase.get(app))
-    val calendar = CalendarStore(PlannerDatabase.get(app).calendar())
+    /** 数据库单例（种子导入等场景要直接用它）。 */
+    val db = PlannerDatabase.get(app)
+    val store = MemoryStore(db)
+    val calendar = CalendarStore(db.calendar())
     val conversation = ConversationService(store)
     val scheduler = ReminderScheduler(app, calendar, PrefsDndStore(app))
 
