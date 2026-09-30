@@ -48,7 +48,7 @@ class OpenAiClient(
         try {
             call.execute().use { response ->
                 if (!response.isSuccessful) {
-                    emit(LlmEvent.Failed("HTTP ${response.code} ${response.message} ${errorBody(response)}".trim()))
+                    emit(LlmEvent.Failed(describeFailure(response)))
                     return@flow
                 }
                 val source = response.body?.source()
@@ -74,12 +74,21 @@ class OpenAiClient(
         val request = buildRequest(messages, null, stream = false)
         client.newCall(request).execute().use { response ->
             if (!response.isSuccessful) {
-                throw IllegalStateException("HTTP ${response.code} ${errorBody(response)}".trim())
+                throw IllegalStateException(describeFailure(response))
             }
             val text = response.body?.string().orEmpty()
             val parsed = PlannerJson.decodeFromString(ChatResponse.serializer(), text)
             parsed.choices.firstOrNull()?.message?.content.orEmpty()
         }
+    }
+
+    /** 报错要能直接指导下一步（见 [EndpointUrl.hintFor]）。 */
+    private fun describeFailure(response: okhttp3.Response): String {
+        val body = errorBody(response)
+        val head = "HTTP ${response.code} ${response.message}".trim()
+        val hint = EndpointUrl.hintFor(response.code, body)
+        return listOfNotNull(head, hint?.let { "→ $it" }, body.take(300).takeIf { it.isNotBlank() })
+            .joinToString("\n")
     }
 
     /** 内部可见是为了能单测"URL 与请求头拼得对不对"——这次的 404 就是拼错了。 */

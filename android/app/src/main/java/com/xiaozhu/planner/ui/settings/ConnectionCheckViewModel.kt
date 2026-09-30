@@ -63,10 +63,15 @@ class ConnectionCheckViewModel(app: Application) : AndroidViewModel(app) {
         val header = buildString {
             append("地址：").append(client.endpoint()).append('\n')
             append("模型：").append(settings.model).append('\n')
-            append("请求头：").append(client.sentHeaders().joinToString("、"))
+            append("请求头：").append(client.sentHeaders().joinToString("、")).append('\n')
+            // 把 session 值也摆出来（脱敏）：只有确认它非空且稳定，才能排除这一类 400
+            val session = settings.openCodeSession
+            append(EndpointUrl.SESSION_HEADER).append("：")
+            append(if (session.isBlank()) "**空的**（网关会 400）" else "${session.take(8)}…（${session.length} 字符）")
+            append('\n')
+            append("User-Agent：").append(EndpointUrl.userAgent(com.xiaozhu.planner.BuildConfig.VERSION_NAME))
             if (EndpointUrl.isOpenCode(settings.baseUrl)) {
-                append("\n（opencode 网关要求 ").append(EndpointUrl.SESSION_HEADER)
-                append("，已带；没有它会 400 MissingSessionID）")
+                append("\n（这个地址是 opencode 网关，它要求上面的 session 头）")
             }
         }
 

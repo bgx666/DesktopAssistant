@@ -65,17 +65,35 @@ class EndpointUrlTest {
     }
 
     @Test
-    fun `opencode 带 session 头，别的服务商不带`() {
-        val oc = EndpointUrl.extraHeaders("https://opencode.ai/zen/go/v1", "abc-123")
-        assertEquals(mapOf("x-opencode-session" to "abc-123"), oc)
+    fun `session 头无条件发，不再按域名判断`() {
+        // 一开始写成"只有 host 含 opencode.ai 才发"，一旦 base 写法/域名与预期不同
+        // 头就静默不发，表现成"改了半天还是 400"
+        assertEquals(
+            mapOf("x-opencode-session" to "abc-123"),
+            EndpointUrl.extraHeaders("https://api.deepseek.com/v1", "abc-123"),
+        )
+        assertEquals(
+            mapOf("x-opencode-session" to "abc-123"),
+            EndpointUrl.extraHeaders("https://whatever.example/v1", "abc-123"),
+        )
+        // 只有真没有 id 时才不发（发空值等于没发，还可能被判非法）
+        assertEquals(emptyMap<String, String>(), EndpointUrl.extraHeaders("https://x/v1", ""))
+        assertEquals(emptyMap<String, String>(), EndpointUrl.extraHeaders("https://x/v1", null))
+    }
 
-        assertEquals(emptyMap<String, String>(),
-            EndpointUrl.extraHeaders("https://api.deepseek.com/v1", "abc-123"))
-        // 没配 session 就别发一个空头
-        assertEquals(emptyMap<String, String>(),
-            EndpointUrl.extraHeaders("https://opencode.ai/zen/go/v1", ""))
-        assertEquals(emptyMap<String, String>(),
-            EndpointUrl.extraHeaders("https://opencode.ai/zen/go/v1", null))
+    @Test
+    fun `报错能翻译成下一步该干什么`() {
+        val missing = EndpointUrl.hintFor(400, """{"error":{"type":"MissingSessionID"}}""")
+        assertTrue(missing != null && missing.contains("测试连接"))
+
+        val html = EndpointUrl.hintFor(404, "<!DOCTYPE html><html lang=\"en\">")
+        assertTrue(html != null && html.contains("Base URL"))
+
+        assertTrue(EndpointUrl.hintFor(401, "unauthorized")!!.contains("API Key"))
+        assertTrue(EndpointUrl.hintFor(429, "slow down")!!.contains("限流"))
+        assertTrue(EndpointUrl.hintFor(503, "bad gateway")!!.contains("服务端"))
+        // 没见过的错误不要硬编一段话
+        assertEquals(null, EndpointUrl.hintFor(400, "something else"))
     }
 
     @Test

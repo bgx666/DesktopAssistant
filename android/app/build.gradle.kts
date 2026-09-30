@@ -14,11 +14,11 @@ android {
         applicationId = "com.xiaozhu.planner"
         minSdk = 26
         targetSdk = 35
-        versionCode = 2
-        // 0.2.0：除「连电脑」外的能力都已就位（记忆树 / 日历提醒 / 语音 / 心跳 / 迁移）。
+        versionCode = 3
+        // 0.2.1：session 头改成无条件发（不再按域名判断），报错会翻译成"下一步该干什么"。
         // 之前一直是 0.1.0，导致几次构建之间**版本号区分不了**——排查"你装的是哪一版"
         // 只能看设置页页脚的安装时间。以后每次可安装的改动都递增 versionCode。
-        versionName = "0.2.0"
+        versionName = "0.2.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 

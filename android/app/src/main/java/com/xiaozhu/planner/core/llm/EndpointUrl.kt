@@ -46,10 +46,41 @@ object EndpointUrl {
     /**
      * 该端点需要的附加请求头。
      *
-     * opencode 的 zen 网关没有 session 头会直接 400（`MissingSessionID`）；
-     * 别的服务商多一个头也无害，所以只在确实是它的时候加。
+     * opencode 的 zen 网关没有 session 头会直接 400（`MissingSessionID`）。
+     *
+     * **无条件发**，不再只按域名判断：一开始写成"只有 host 含 opencode.ai 才发"，
+     * 结果一旦 base 写法/域名与预期不同（换域名、走代理、用户手填），头就**静默不发**，
+     * 表现成"改了半天还是 400"。而多一个 `x-` 开头的自定义头，对 OpenAI / DeepSeek
+     * 这类服务商是完全无害的（它们按 RFC 忽略不认识的头）。
      */
-    fun extraHeaders(base: String, sessionId: String?): Map<String, String> =
-        if (isOpenCode(base) && !sessionId.isNullOrBlank()) mapOf(SESSION_HEADER to sessionId)
-        else emptyMap()
+    fun extraHeaders(base: String, sessionId: String?): Map<String, String> {
+        val id = sessionId?.takeIf { it.isNotBlank() } ?: return emptyMap()
+        return mapOf(SESSION_HEADER to id)
+    }
+
+    /**
+     * 把服务商的报错翻译成"下一步该干什么"。
+     *
+     * 这一层踩过的坑都是**报错本身看不出病因**的：
+     * 404 返回的是一整页 HTML（看着像服务挂了）、400 只说缺个头（不说客户端该发什么）。
+     * 把这两种情况写成一句人话，用户就不用每次都来问。
+     */
+    fun hintFor(status: Int, body: String): String? = when {
+        body.contains("MissingSessionID", ignoreCase = true) ->
+            "网关要求 $SESSION_HEADER 头。去设置页点「测试连接」，那里会显示实际发出的头" +
+                "和 session 值；如果 session 是空的，把那个框清空再保存会自动生成一个。"
+
+        status == 404 && body.contains("<html", ignoreCase = true) ->
+            "返回的是一张网页而不是接口响应 —— Base URL 多半写错了。" +
+                "填到 /v1 为止即可（带 /chat/completions 也行，会自动去掉重复的一段）。"
+
+        status == 401 || status == 403 ->
+            "API Key 不对或没有权限（换服务商时 key 不通用）。"
+
+        status == 429 -> "触发了限流，等一会儿再试。"
+
+        status >= 500 -> "服务端出错，不是配置问题，稍后再试。"
+
+        else -> null
+    }
 }
