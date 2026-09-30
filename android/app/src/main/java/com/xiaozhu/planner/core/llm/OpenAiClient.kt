@@ -15,7 +15,7 @@ import java.util.concurrent.TimeUnit
 /**
  * 直连 OpenAI 兼容端点（默认 DeepSeek）的流式客户端。
  *
- * 只依赖 OkHttp，不用任何 SDK——协议就是 `POST {base}/chat/completions` + SSE。
+ * 只依赖 OkHttp，不用任何厂商 SDK——协议就是 `POST {base}/chat/completions` + SSE。
  * 取消：协程被取消时 [okhttp3.Call.cancel] 会被调用，不会留下挂着的连接。
  */
 class OpenAiClient(
@@ -23,11 +23,11 @@ class OpenAiClient(
     private val apiKey: String,
     private val model: String,
     private val client: OkHttpClient = defaultClient(),
-) {
+) : LlmStreamer {
 
-    fun stream(
+    override fun stream(
         messages: List<ChatMessage>,
-        tools: List<ToolSpec> = emptyList(),
+        tools: List<ToolSpec>,
     ): Flow<LlmEvent> = flow {
         val url = baseUrl.trimEnd('/') + "/chat/completions"
         val body = PlannerJson.encodeToString(
@@ -70,7 +70,7 @@ class OpenAiClient(
         } finally {
             call.cancel()
         }
-    }
+    }.flowOn(Dispatchers.IO)
 
     private fun StreamDelta.toEvent(): LlmEvent = when (this) {
         is StreamDelta.Content -> LlmEvent.TextDelta(text)
