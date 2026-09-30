@@ -92,13 +92,18 @@ class SettingsStore(context: Context) {
 
     companion object {
         /**
-         * 默认走 opencode 的 zen 网关（用户日常用的那条）。
-         * Base URL 带不带 `/chat/completions` 都能填——见 `core/llm/EndpointUrl.kt`。
-         * 换回 DeepSeek 官方：把 Base 改成 `https://api.deepseek.com/v1`、模型填对应名字。
+         * 默认走 **DeepSeek 官方**（与 PC 版同一个端点、同一个默认模型）。
+         *
+         * 之前默认填的是 opencode 的 zen 网关，但实测**太慢**（同一句话要等明显更久），
+         * 而且那个网关还要额外发 session 头、模型名也是它自己的一套。官方端点直连、
+         * 模型名与 PC 版一致，出问题也更好查。
+         *
+         * 换回 opencode：Base 填 `https://opencode.ai/zen/go/v1`，
+         * 模型填 `deepseek-v4.1-flash`（session 头会自动带上）。
          */
-        const val DEFAULT_BASE = "https://opencode.ai/zen/go/v1"
-        const val DEFAULT_MODEL = "deepseek-v4.1-flash"
-        const val DEEPSEEK_BASE = "https://api.deepseek.com/v1"
+        const val DEFAULT_BASE = "https://api.deepseek.com/v1"
+        const val DEFAULT_MODEL = "deepseek-v4-flash-vision-exp"
+        const val OPENCODE_BASE = "https://opencode.ai/zen/go/v1"
 
         const val TTS_ENGINE_MIMO = "mimo"
         const val TTS_ENGINE_SYSTEM = "system"

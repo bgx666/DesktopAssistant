@@ -140,7 +140,16 @@ object PcImport {
     // ── 对话 buffer（LangChain messages_to_dict 的形状）────────
 
     /**
-     * `[{"type":"human","data":{"content":"..."}}, ...]` → 安卓的消息行。
+     * buffer（`[{"type":"human","data":{...}}, ...]`）→ 安卓的消息行。
+     *
+     * **这里有两个曾经搞错、后果很严重的地方**：
+     *
+     * 1. **buffer 里混着 node 消息**（`data.metadata.node_id`，即"记忆摘要"）。
+     *    它们必须按 node 消息导入（带 nodeId/nodeStart），否则会被当成普通原文：
+     *    界面上变成一大堆摘要气泡，而且**下一次压缩会把它们再总结一遍**——
+     *    表现就是"把 8/8 到 9/27 的全部内容压成了一个节点"。
+     * 2. **每条消息都带原始时间戳**（`data.metadata.ts`）。丢掉它会让所有导入的消息
+     *    变成"现在"，之后新建的记忆节点时间范围就全是错的。
      *
      * 认不出形状时**不猜**：记一条 skipped 并跳过。宁可少一条历史，
      * 也不要把 `data` 当成正文塞进去（那会污染记忆）。
@@ -166,12 +175,21 @@ object PcImport {
                     return@mapIndexedNotNull null
                 }
             }
+            val metadata = data["metadata"] as? JsonObject
+            val nodeId = metadata?.get("node_id")?.jsonPrimitive?.contentOrNull
+                ?.takeIf { it.isNotBlank() }
+            val nodeStart = metadata?.get("node_start")?.jsonPrimitive?.contentOrNull?.toIntOrNull()
+            val ts = metadata?.get("ts")?.jsonPrimitive?.contentOrNull?.toEpochMillis()
+
             val content = data["content"]?.let { flattenContent(it) }.orEmpty()
             val calls = (data["tool_calls"] as? JsonArray)?.mapNotNull { it.toToolCall() }.orEmpty()
             MessageEntity(
                 role = role,
                 content = content,
-                tsMillis = now,
+                // 有原始时间就用它：没有的话新建的节点时间范围会全错
+                tsMillis = ts ?: now,
+                nodeId = nodeId,
+                nodeStart = nodeStart,
                 toolCalls = calls.takeIf { it.isNotEmpty() }
                     ?.let { PlannerJson.encodeToString(ListSerializer(ToolCall.serializer()), it) },
                 toolCallId = data["tool_call_id"]?.jsonPrimitive?.contentOrNull,

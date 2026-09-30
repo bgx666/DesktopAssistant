@@ -66,6 +66,15 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             HeartbeatEvents.fired.collect { note -> onHeartbeatFired(note) }
         }
+        // 压缩是后台跑的（不阻塞对话），完成后通知界面：提示 + 重画记忆卡片
+        viewModelScope.launch {
+            engine.compressionEvents.collect { outcomes ->
+                describeCompression(outcomes)?.let { notice ->
+                    _state.update { it.copy(memoryNotice = "记忆更新：$notice") }
+                }
+                reloadFromStore()
+            }
+        }
         viewModelScope.launch(Dispatchers.IO) {
             runCatching { engine.calendar.extendAllSeries() }
             runCatching { engine.scheduler.sync() }
@@ -212,9 +221,6 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 patch(assistantId) { it.copy(text = it.text + "\n（中断：${e.message}）", failed = true) }
             } finally {
                 _state.update { it.copy(streaming = false) }
-            }
-            describeCompression(engine.lastCompression)?.let { notice ->
-                _state.update { it.copy(memoryNotice = "记忆更新：$notice") }
             }
             // 落盘后再回读一次：新消息要带上 rawIndex，否则它不可撤销
             reloadFromStore(keepTail = assistantId)

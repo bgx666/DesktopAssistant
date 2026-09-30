@@ -113,9 +113,9 @@ fun SettingsScreen(
                 singleLine = true,
                 supportingText = {
                     Text(
-                        "默认 opencode 网关：${SettingsStore.DEFAULT_BASE}\n" +
+                        "默认 DeepSeek 官方：${SettingsStore.DEFAULT_BASE}\n" +
                             "带不带 /chat/completions 都行（会自动去掉重复的一段）。" +
-                            "换 DeepSeek 官方：${SettingsStore.DEEPSEEK_BASE}"
+                            "换 opencode 网关：${SettingsStore.OPENCODE_BASE} + deepseek-v4.1-flash"
                     )
                 },
                 modifier = Modifier.fillMaxWidth().padding(top = 8.dp),

@@ -27,7 +27,13 @@ import com.xiaozhu.planner.data.SettingsStore
 import com.xiaozhu.planner.data.db.PlannerDatabase
 import com.xiaozhu.planner.proactive.HeartbeatScheduler
 import com.xiaozhu.planner.reminder.ReminderScheduler
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.time.ZoneId
@@ -81,6 +87,13 @@ class ConversationEngine private constructor(private val app: Application) {
      */
     private val history = mutableListOf<ChatMessage>()
     private val roundMutex = Mutex()
+
+    /** 后台压缩用的协程域（PC 版对应的是 `planner-compress` 线程）。 */
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /** 压缩进行中（同一时间只压一次）。 */
+    @Volatile
+    private var compressing = false
 
     @Volatile
     private var loaded = false
@@ -142,6 +155,8 @@ class ConversationEngine private constructor(private val app: Application) {
                 finishRound(before)
             }
         }
+        // 锁**外**触发压缩：下一次对话不必等这次压缩（PC 版就是后台线程做的）
+        startCompression()
     }
 
     /** 一轮结束后的收尾（放在 finally 里：中途取消也要把已生成的部分落盘）。 */
@@ -149,10 +164,41 @@ class ConversationEngine private constructor(private val app: Application) {
         val tail = if (history.size <= before) emptyList() else history.drop(before).toList()
         runCatching { conversation.persist(tail, System.currentTimeMillis()) }
         runCatching { saveState() }
-        runCatching { compressIfNeeded() }
         // 模型可能刚改过日程（工具内部也会 sync，这里兜一层：重复调用是幂等的）
         runCatching { scheduler.sync() }
+        // 注意：**压缩不在这里做**。PC 版是另起线程压，只有"换入"时才等空闲窗口；
+        // 放在轮次里会让下一次对话一直等这次压缩（用户体感：说话前先卡几秒）。
     }
+
+    /**
+     * 压缩（后台跑，**不阻塞对话**）。
+     *
+     * 与 PC 版 `_maybe_compress_async` 同构：模型调用慢，但对话不该等它。
+     * 换入（改 buffer + 重建内存历史）时才短暂拿一次 [roundMutex]。
+     */
+    private fun startCompression() {
+        if (compressing) return
+        compressing = true
+        scope.launch {
+            try {
+                val outcomes = compressIfNeeded()
+                lastCompression = outcomes
+                if (outcomes.any { it !is CompressionOutcome.Skipped }) {
+                    // 只在换入这一刻占用锁：此刻 buffer 已经改完，重建内存历史即可
+                    roundMutex.withLock { reloadHistory() }
+                    _compressionEvents.emit(outcomes)
+                }
+            } catch (_: Exception) {
+                // 压缩失败绝不能影响对话
+            } finally {
+                compressing = false
+            }
+        }
+    }
+
+    /** 压缩完成的广播（界面据此提示"记忆更新：…"并重画记忆卡片）。 */
+    private val _compressionEvents = MutableSharedFlow<List<CompressionOutcome>>(extraBufferCapacity = 4)
+    val compressionEvents: SharedFlow<List<CompressionOutcome>> = _compressionEvents
 
     /**
      * 撤销：把第 [rawIndex] 条**原始消息及其之后**的全部原文删掉（PC 版 `/undo` 同义）。
