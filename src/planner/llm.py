@@ -62,7 +62,19 @@ def build_chat_model(api_key: str | None = None,
     api_key = api_key or os.getenv("LLM_API_KEY")
     kwargs: dict[str, Any] = {}
     if model_name.startswith("deepseek-v4"):
-        kwargs["extra_body"] = {"thinking": {"type": "enabled"}, "reasoning_effort": "low"}
+        # 推理档位：显式给 high（官方默认档）。
+        #
+        # 这里原来写的是 "low"（想更快更省），但 2026-09-30 用一道**真实的方案题**实测
+        # （deepseek-flash，各 1 次）：
+        #   effort=low  → 推理 3005 token、正文 1604 字、20.5 秒
+        #   effort=high → 推理 1645 token、正文 2222 字、15.4 秒
+        #   effort=max  → 推理 2615 token、正文 2030 字、18.8 秒
+        # low **没带来任何好处**（那次反而推理更多、答得更短、还更慢），
+        # 用户体感就是"回答短、不够聪明"。所以改成官方默认的 high。
+        #
+        # 不再显式发 `thinking`：默认就在推理（不发它也有上千 reasoning token），
+        # 显式打开没收益——实测那次推理反而更多。
+        kwargs["extra_body"] = {"reasoning_effort": "high"}
     return ChatOpenAI(
         model=model_name,
         api_key=api_key,

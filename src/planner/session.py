@@ -751,21 +751,31 @@ class PlannerSession:
     # ── 异步压缩（后台线程，不阻塞生成）──────────────────────
 
     def _maybe_compress_async(self) -> None:
-        """阈值检查：raw ≥ 60 且未在压缩 → spawn 后台压缩线程。
+        """阈值检查：原始消息数 ≥ 设置的「触发条数」且未在压缩 → spawn 后台压缩线程。
 
         压缩线程对 buffer 快照压缩（不触碰原 buffer），压缩完成后等待
         空闲窗口（无生成/无待处理消息），原子替换"新消息以外"的旧部分。
+
+        门槛**读用户的设置**（`settings.compress_trigger`），不再写死常量：
+        原来这里用的是 `SUMMARIZE_TRIGGER_MESSAGES = 60`，于是设置页里把
+        "触发条数"调成 40 不生效（仍要等到 60 条）、调成 80 则会白跑一趟
+        （60 条就启动，但那时 `raw - keep` 圈不出批次）。
         """
         if self._compressing:
             return
+        trigger = int(
+            (getattr(self, "settings", None) or {}).get(
+                "compress_trigger", _SUMMARIZE_TRIGGER
+            )
+        )
         with self.buffer_lock:
             raw = [m for m in self.recent_buffer
                    if "node_id" not in (getattr(m, "metadata", None) or {})]
-            if len(raw) < _SUMMARIZE_TRIGGER:
+            if len(raw) < trigger:
                 return
             snapshot = list(self.recent_buffer)
         self._compressing = True
-        _logger.info("[compress] 触发异步压缩（raw=%d）", len(raw))
+        _logger.info("[compress] 触发异步压缩（raw=%d，门槛=%d）", len(raw), trigger)
         threading.Thread(target=self._run_async_compression, args=(snapshot,),
                          name="planner-compress", daemon=True).start()
 

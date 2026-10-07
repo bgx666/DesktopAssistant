@@ -4,22 +4,24 @@ package com.xiaozhu.planner.core.llm
  * 推理档位（`reasoning_effort`）。
  *
  * DeepSeek 的 V4 系列默认就在推理，而且**默认档是 `high`**（`GET /models` 里
- * `effort.default_level = "high"`）。PC 版显式把它降到 `low`（`llm.py:64-65`），
- * 为的是快一点、省一点、别那么啰嗦——这里对齐同一意图。
+ * `effort.default_level = "high"`）。这里显式给 `high`，与 PC 保持一致。
  *
- * 实测（2026-09-30，DeepSeek 官方，同一个问题各 3 次）：
- * - 不发字段：推理 172/274/167 token，延迟 2.19/2.08/1.97 秒
- * - `reasoning_effort=low`：推理 154/169/202，延迟 1.85/2.05/1.90 秒
- * - `thinking:{type:enabled}` + low：推理 215、延迟 2.32 秒 → **更差**
+ * **为什么不是 `low`**（曾经是，2026-09-30 改掉）：
+ * 一开始只在"一道没营养的短问题"上量过，结论是 low 略快略省；换成**一道真实的方案题**
+ * 再量，结论反过来了（deepseek-flash，各 1 次）：
+ * - `low`：推理 3005 token、正文 1604 字、20.5 秒
+ * - `high`：推理 1645 token、正文 2222 字、15.4 秒
+ * - `max`：推理 2615 token、正文 2030 字、18.8 秒
+ * 也就是 low **没带来任何好处**，反而推理更多、答得更短、还更慢——
+ * 用户体感正是"回答短、不够聪明"。
+ * 教训：**别拿简单问题上的测量去决定真实场景的档位**。
  *
- * 所以这里**只发 `reasoning_effort`**，不发 `thinking`：
- * 默认本来就开着推理（不发字段也有上百 reasoning token），
- * 再显式打开没有收益，实测那次反而推理得更多。
+ * 另外**不发 `thinking`**：默认本来就开着推理（不发也有上千 reasoning token），
+ * 显式打开没收益，实测那次推理反而更多。
  *
- * 注意 PC 的判断条件是 `model_name.startswith("deepseek-v4")`，
+ * 还有一条与 PC 不同的地方：PC 的判断条件是 `model_name.startswith("deepseek-v4")`，
  * 而官方现在的主力 id 叫 `deepseek-flash`（正式名 DeepSeek-V4.1-Flash）——
- * **按 PC 那个前缀，用户在官方端点上的模型根本匹配不上**，档位设置等于没生效。
- * 这里把两种情况都算进来。
+ * **按 PC 那个前缀，用户在官方端点上的模型根本匹配不上**。这里把两种情况都算进来。
  */
 object ReasoningEffort {
 
@@ -37,13 +39,13 @@ object ReasoningEffort {
         val isDeepSeekV4 = id.startsWith("deepseek-v4") ||
             id == "deepseek-flash" ||
             id.startsWith("deepseek-flash-")
-        return if (isDeepSeekV4) LOW else null
+        return if (isDeepSeekV4) HIGH else null
     }
 
     /** 设置页的说明文案。 */
     fun describe(effort: String): String = when (effort) {
-        LOW -> "low：最快最省，适合日常陪聊与提醒"
-        HIGH -> "high：官方默认，想得更久一些"
+        LOW -> "low：想得最少（实测并不更快，也不更省）"
+        HIGH -> "high：官方默认档，推荐"
         MAX -> "max：想得最久，费钱也最慢"
         else -> effort
     }

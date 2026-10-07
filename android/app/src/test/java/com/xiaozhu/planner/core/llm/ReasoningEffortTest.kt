@@ -12,9 +12,9 @@ import org.junit.Test
 /**
  * 推理档位。
  *
- * 实测（DeepSeek 官方，同一个问题各 3 次）：默认档是 `high`（不发字段也有 170–270
- * reasoning token）；`reasoning_effort=low` 更快更省；而 `thinking:{type:enabled}`
- * 没有收益、实测那次推理反而更多——所以**只发 effort，不发 thinking**。
+ * 档位给 `high`（官方默认）：用一道真实的方案题实测，`low` 反而推理更多、
+ * 答得更短、还更慢（low 3005/1604字/20.5s vs high 1645/2222字/15.4s）。
+ * 只发 effort，不发 `thinking`——默认就在推理，显式打开没收益。
  */
 class ReasoningEffortTest {
 
@@ -29,11 +29,11 @@ class ReasoningEffortTest {
     @Test
     fun `官方主力 id 也降档（PC 的前缀判断匹配不上它）`() {
         // PC 的条件是 startswith("deepseek-v4")，而官方现在叫 deepseek-flash
-        assertEquals(ReasoningEffort.LOW, ReasoningEffort.forModel("deepseek-flash"))
-        assertEquals(ReasoningEffort.LOW, ReasoningEffort.forModel("deepseek-v4-pro"))
-        assertEquals(ReasoningEffort.LOW, ReasoningEffort.forModel("deepseek-v4-flash-vision-exp"))
+        assertEquals(ReasoningEffort.HIGH, ReasoningEffort.forModel("deepseek-flash"))
+        assertEquals(ReasoningEffort.HIGH, ReasoningEffort.forModel("deepseek-v4-pro"))
+        assertEquals(ReasoningEffort.HIGH, ReasoningEffort.forModel("deepseek-v4-flash-vision-exp"))
         // 大小写与空格不该影响判断
-        assertEquals(ReasoningEffort.LOW, ReasoningEffort.forModel("  DeepSeek-Flash "))
+        assertEquals(ReasoningEffort.HIGH, ReasoningEffort.forModel("  DeepSeek-Flash "))
     }
 
     @Test
@@ -44,11 +44,11 @@ class ReasoningEffortTest {
     }
 
     @Test
-    fun `请求体里确实带上了 low`() {
+    fun `请求体里确实带上了 high`() {
         val body = bodyOf("deepseek-flash")
         val root = PlannerJson.parseToJsonElement(body).jsonObject
         assertEquals(
-            "low",
+            "high",
             (root["reasoning_effort"] as? JsonPrimitive)?.content,
         )
     }
@@ -85,8 +85,8 @@ class ReasoningEffortTest {
 
     @Test
     fun `三档的说明文案都在`() {
-        assertTrue(ReasoningEffort.describe(ReasoningEffort.LOW).contains("省"))
-        assertTrue(ReasoningEffort.describe(ReasoningEffort.HIGH).contains("默认"))
+        assertTrue(ReasoningEffort.describe(ReasoningEffort.HIGH).contains("推荐"))
+        assertTrue(ReasoningEffort.describe(ReasoningEffort.LOW).contains("最少"))
         assertTrue(ReasoningEffort.describe(ReasoningEffort.MAX).contains("最久"))
         assertEquals(3, ReasoningEffort.SUPPORTED.size)
     }
