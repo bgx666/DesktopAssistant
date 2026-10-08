@@ -6,6 +6,8 @@
 - compress_keep       压缩后保留多少条原始消息（须 < trigger）
 - compact_threshold   某层节点数达到多少触发向上合并
 - compact_factor      每次合并几个节点（须 < threshold）
+- thinking_mode       思考开关：adaptive（自适应，默认）/ enabled（总是思考）/ disabled（关闭）
+- reasoning_effort   思考强度：low / high（默认）/ max（关闭思考时官方会忽略它）
 - llm_api_key/base_url/model  LLM 配置（留空 = 使用环境变量 / .env）
 """
 
@@ -23,6 +25,8 @@ DEFAULT_SETTINGS: dict = {
     "compress_keep": 20,
     "compact_threshold": 8,
     "compact_factor": 4,
+    "thinking_mode": "adaptive",
+    "reasoning_effort": "high",
     "llm_api_key": "",
     "llm_base_url": "",
     "llm_model": "",
@@ -38,6 +42,14 @@ _LIMITS = {
     "compress_keep": (5, 200),
     "compact_threshold": (3, 50),
     "compact_factor": (2, 10),
+}
+
+# 枚举字段：只接受这几个值。
+# 官方 thinking.type 的三个变体都实测有效（2026-09-30）：disabled 时 reasoning token
+# 真的是 0、同一道题快约 30%，而且此时 reasoning_effort 会被忽略。
+_ENUMS = {
+    "thinking_mode": ("adaptive", "enabled", "disabled"),
+    "reasoning_effort": ("low", "high", "max"),
 }
 
 
@@ -76,6 +88,12 @@ def save_settings(data_root: Path, updates: dict) -> dict:
             if not (lo <= num <= hi):
                 raise ValueError(f"{k} 需在 {lo}~{hi} 之间")
             merged[k] = num
+        elif k in _ENUMS:
+            allowed = _ENUMS[k]
+            text = str(v or "").strip().lower()
+            if text not in allowed:
+                raise ValueError(f"{k} 只能是 {'/'.join(allowed)}")
+            merged[k] = text
         else:
             # 布尔字段保真（tts_enabled）；其余字符串化（空值归一为 ""）
             merged[k] = v if isinstance(v, bool) else str(v or "")

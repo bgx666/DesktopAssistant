@@ -196,6 +196,31 @@
             <input type="text" id="llm_model" placeholder="如 deepseek-v4-flash" />
           </div>
         </section>
+
+        <section>
+          <h2>思考</h2>
+          <div class="row">
+            <label>开关</label>
+            <select id="thinking_mode">
+              <option value="adaptive">自适应（推荐）</option>
+              <option value="enabled">总是思考</option>
+              <option value="disabled">关闭</option>
+            </select>
+          </div>
+          <div class="row">
+            <label>想多久</label>
+            <select id="reasoning_effort">
+              <option value="low">少想一点</option>
+              <option value="high">默认</option>
+              <option value="max">多想一点</option>
+            </select>
+          </div>
+          <div class="hint">
+            回答前先想一遍会让复杂问题答得更好，简单问题则纯属多花时间——<b>自适应</b>就是让它自己判断。<br />
+            <b>关闭</b>时官方会忽略「想多久」（实测推理 token 真的是 0，同一道题快约 30%），复杂问题会明显变差。<br />
+            档位差别在<b>难题</b>上才明显，简单问题三档几乎一样。
+          </div>
+        </section>
       </div>
     </main>
   </div>

@@ -45,6 +45,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.xiaozhu.planner.core.llm.ApiKeyCheck
 import com.xiaozhu.planner.core.llm.EndpointUrl
+import com.xiaozhu.planner.core.llm.ThinkingControl
 import com.xiaozhu.planner.data.SettingsStore
 import com.xiaozhu.planner.reminder.ReminderNotifications
 import com.xiaozhu.planner.ui.theme.PlannerColors
@@ -71,6 +72,9 @@ fun SettingsScreen(
     var ocSession by remember { mutableStateOf(store.openCodeSession) }
     var showKey by remember { mutableStateOf(false) }
     var saved by remember { mutableStateOf(false) }
+    // 思考开关与强度（点选后立即生效，和端点设置一样不需要点保存）
+    var thinkingMode by remember { mutableStateOf(store.thinkingMode) }
+    var effortValue by remember { mutableStateOf(store.reasoningEffort) }
     // 收起文字工具条要用（点空白处调一次）
     val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
     val textToolbar = androidx.compose.ui.platform.LocalTextToolbar.current
@@ -286,6 +290,75 @@ fun SettingsScreen(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 8.dp),
             )
+
+            // ── 思考（开关 + 强度）──────────────────────────────
+            HorizontalDivider(modifier = Modifier.padding(vertical = 16.dp))
+            Text("思考", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "回答前先想一遍会让复杂问题答得更好，简单问题则纯属多花时间。" +
+                    "自适应就是让它自己判断。",
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(top = 4.dp, bottom = 6.dp),
+            )
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                ThinkingControl.MODES.forEach { mode ->
+                    FilterChip(
+                        selected = thinkingMode == mode,
+                        onClick = { store.thinkingMode = mode; thinkingMode = mode },
+                        label = { Text(ThinkingControl.modeLabel(mode)) },
+                    )
+                }
+            }
+            Text(
+                ThinkingControl.modeHint(thinkingMode),
+                style = MaterialTheme.typography.labelMedium,
+                color = PlannerColors.TextSoft,
+                modifier = Modifier.padding(top = 2.dp),
+            )
+
+            // 关闭思考时强度不生效（官方会忽略这个字段），所以藏起来——
+            // 摆一个不起作用的控件比不摆更糟
+            if (thinkingMode != ThinkingControl.DISABLED) {
+                Text(
+                    "想多久",
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.padding(top = 10.dp),
+                )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState())
+                        .padding(top = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    ThinkingControl.EFFORTS.forEach { effort ->
+                        FilterChip(
+                            selected = effortValue == effort,
+                            onClick = { store.reasoningEffort = effort; effortValue = effort },
+                            label = { Text(ThinkingControl.effortLabel(effort)) },
+                        )
+                    }
+                }
+                Text(
+                    "档位差别在难题上才明显，简单问题三档几乎一样。",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = PlannerColors.TextSoft,
+                    modifier = Modifier.padding(top = 2.dp),
+                )
+            } else {
+                Text(
+                    "已关闭思考：最快，但复杂问题会明显变差。",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = PlannerColors.Danger,
+                    modifier = Modifier.padding(top = 6.dp),
+                )
+            }
 
             // ── 记忆压缩（与 PC 版同名同范围同交叉约束）──────────
             HorizontalDivider(modifier = Modifier.padding(vertical = 16.dp))

@@ -148,6 +148,9 @@ class ConversationEngine private constructor(private val app: Application) {
         model = settings.model,
         extraHeaders = EndpointUrl.extraHeaders(settings.baseUrl, settings.openCodeSession),
         userAgent = EndpointUrl.userAgent(com.xiaozhu.planner.BuildConfig.VERSION_NAME),
+        // 思考开关与强度（设置页可改；见 ThinkingControl）
+        thinkingMode = settings.thinkingMode,
+        reasoningEffort = settings.reasoningEffort,
     )
 
     /**

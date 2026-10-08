@@ -50,31 +50,79 @@ def is_vision_model(model_name: str) -> bool:
     return any(k in name for k in ("vision", "-vl", "-omni", "multimodal", "gpt-4o", "gpt-4.1"))
 
 
+#: 思考开关的三个取值（官方 thinking.type，实测都有效）
+THINKING_MODES = ("adaptive", "enabled", "disabled")
+#: 思考强度的三个取值（官方 reasoning_effort）
+REASONING_EFFORTS = ("low", "high", "max")
+
+
+def is_deepseek_v4(model_name: str) -> bool:
+    """是不是 DeepSeek v4 家族（决定发不发思考参数）。
+
+    **不能只判断 `deepseek-v4` 前缀**：官方现在的主力 id 叫 `deepseek-flash`
+    （正式名 DeepSeek-V4.1-Flash），前缀判断匹配不上它——
+    用官方名时设置页里的思考开关会**静默失效**（测试抓到的就是这个）。
+    """
+    name = (model_name or "").strip().lower()
+    return (
+        name.startswith("deepseek-v4")
+        or name == "deepseek-flash"
+        or name.startswith("deepseek-flash-")
+    )
+
+
+def thinking_extra_body(model_name: str,
+                        thinking_mode: str | None = None,
+                        reasoning_effort: str | None = None) -> dict:
+    """DeepSeek v4 的思考参数（**纯函数**，方便直接测）。
+
+    单独抽出来的原因：LangChain 把 `extra_body` 交给底层 client 在请求时合并，
+    实例上看不到这个属性——想断言"到底发了什么"就只能靠这个函数。
+
+    规则：
+    - 只有 DeepSeek v4 家族发这两个字段（别的服务商不认，发了会 400）
+    - 取值非法就回落到默认（adaptive / high），不让设置页的脏值传到线上
+    - `disabled` 时**不发** `reasoning_effort`：官方会忽略它，
+      发了只会让人误以为强度还在起作用
+    """
+    if not is_deepseek_v4(model_name):
+        return {}
+    mode = (thinking_mode or "adaptive").strip().lower()
+    if mode not in THINKING_MODES:
+        mode = "adaptive"
+    effort = (reasoning_effort or "high").strip().lower()
+    if effort not in REASONING_EFFORTS:
+        effort = "high"
+    extra: dict = {"thinking": {"type": mode}}
+    if mode != "disabled":
+        extra["reasoning_effort"] = effort
+    return extra
+
+
 def build_chat_model(api_key: str | None = None,
                      base_url: str | None = None,
-                     model_name: str | None = None) -> ChatOpenAI:
+                     model_name: str | None = None,
+                     thinking_mode: str | None = None,
+                     reasoning_effort: str | None = None) -> ChatOpenAI:
     """DeepSeek v4 适配的 ChatOpenAI。
 
     配置优先级：显式参数（用户设置）> PLANNER_LLM_MODEL > LLM_MODEL > 默认 vision-exp。
+
+    思考开关与强度来自设置页（`settings.py` 的 `thinking_mode` / `reasoning_effort`），
+    拼装逻辑见 [thinking_extra_body]。实测要点（2026-09-30，DeepSeek 官方）：
+    - `disabled` 时 reasoning token **真的是 0**，同一道题快约 30%
+    - 曾经这里写死 `reasoning_effort: "low"`（想更快更省），但用一道**真实的方案题**
+      实测发现 low 反而推理更多、答得更短、还更慢（3005/1604字/20.5s vs
+      high 的 1645/2222字/15.4s）。所以现在默认 `high`，并把选择权交给设置页
+    - 不再显式发 `thinking: enabled`：默认就在推理，显式打开没收益
     """
     model_name = resolve_model_name(model_name)
     base_url = (base_url or os.getenv("LLM_BASE_URL", "")).rstrip("/")
     api_key = api_key or os.getenv("LLM_API_KEY")
     kwargs: dict[str, Any] = {}
-    if model_name.startswith("deepseek-v4"):
-        # 推理档位：显式给 high（官方默认档）。
-        #
-        # 这里原来写的是 "low"（想更快更省），但 2026-09-30 用一道**真实的方案题**实测
-        # （deepseek-flash，各 1 次）：
-        #   effort=low  → 推理 3005 token、正文 1604 字、20.5 秒
-        #   effort=high → 推理 1645 token、正文 2222 字、15.4 秒
-        #   effort=max  → 推理 2615 token、正文 2030 字、18.8 秒
-        # low **没带来任何好处**（那次反而推理更多、答得更短、还更慢），
-        # 用户体感就是"回答短、不够聪明"。所以改成官方默认的 high。
-        #
-        # 不再显式发 `thinking`：默认就在推理（不发它也有上千 reasoning token），
-        # 显式打开没收益——实测那次推理反而更多。
-        kwargs["extra_body"] = {"reasoning_effort": "high"}
+    extra = thinking_extra_body(model_name, thinking_mode, reasoning_effort)
+    if extra:
+        kwargs["extra_body"] = extra
     return ChatOpenAI(
         model=model_name,
         api_key=api_key,

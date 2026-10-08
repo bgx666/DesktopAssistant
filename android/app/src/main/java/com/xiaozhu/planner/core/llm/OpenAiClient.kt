@@ -34,6 +34,9 @@ class OpenAiClient(
     private val client: OkHttpClient = defaultClient(),
     private val extraHeaders: Map<String, String> = emptyMap(),
     private val userAgent: String = EndpointUrl.userAgent("dev"),
+    /** 思考开关与强度（设置页可改；见 [ThinkingControl]）。 */
+    private val thinkingMode: String = ThinkingControl.ADAPTIVE,
+    private val reasoningEffort: String = ReasoningEffort.HIGH,
 ) : LlmStreamer, LlmCompleter {
 
     /** 这个客户端会发哪些头（设置页的「测试连接」用它把实际情况摆出来）。 */
@@ -130,7 +133,10 @@ class OpenAiClient(
                 model = model,
                 messages = messages.map { it.toWire() },
                 stream = stream,
-                reasoningEffort = ReasoningEffort.forModel(model),
+                thinking = thinkingPayload()?.get("thinking") as? kotlinx.serialization.json.JsonObject,
+                reasoningEffort = thinkingPayload()
+                    ?.get("reasoning_effort")
+                    ?.let { (it as? kotlinx.serialization.json.JsonPrimitive)?.content },
             ),
         ).length
         return buildString {
@@ -141,12 +147,18 @@ class OpenAiClient(
         }
     }
 
+    /** 思考参数（设置页的三选一 + 强度）；非 DeepSeek 模型返回 null。 */
+    private fun thinkingPayload(): kotlinx.serialization.json.JsonObject? =
+        ThinkingControl.payload(model, thinkingMode, reasoningEffort)
+
     /** 内部可见是为了能单测"URL 与请求头拼得对不对"——这次的 404 就是拼错了。 */
     internal fun buildRequest(
         messages: List<ChatMessage>,
         tools: List<ToolSpec>?,
         stream: Boolean,
     ): Request {
+        // 思考开关与强度来自设置（见 ThinkingControl）；非 DeepSeek 模型整块不发出
+        val thinking = thinkingPayload()
         val body = PlannerJson.encodeToString(
             ChatRequest.serializer(),
             ChatRequest(
@@ -155,7 +167,10 @@ class OpenAiClient(
                 tools = tools,
                 stream = stream,
                 streamOptions = if (stream) StreamOptions() else null,
-                reasoningEffort = ReasoningEffort.forModel(model),
+                thinking = thinking?.get("thinking") as? kotlinx.serialization.json.JsonObject,
+                reasoningEffort = thinking
+                    ?.get("reasoning_effort")
+                    ?.let { (it as? kotlinx.serialization.json.JsonPrimitive)?.content },
             ),
         )
         val builder = Request.Builder()
@@ -233,9 +248,11 @@ internal data class ChatRequest(
     val stream: Boolean = true,
     @SerialName("stream_options") val streamOptions: StreamOptions? = null,
     /**
-     * 推理档位。DeepSeek V4 家族默认是 `high`，我们降到 `low`（与 PC 同一意图，
-     * 实测更快更省）。非 DeepSeek 模型为 null → 字段不发出。
+     * 思考开关：`{"type":"adaptive|enabled|disabled"}`（官方字段，见 [ThinkingControl]）。
+     * 非 DeepSeek 模型为 null → 不发出。
      */
+    val thinking: kotlinx.serialization.json.JsonObject? = null,
+    /** 思考强度 low/high/max；`thinking.type=disabled` 时**不发**（官方会忽略）。 */
     @SerialName("reasoning_effort") val reasoningEffort: String? = null,
 )
 

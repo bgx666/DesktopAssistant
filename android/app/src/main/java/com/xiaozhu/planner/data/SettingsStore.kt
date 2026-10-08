@@ -112,6 +112,24 @@ class SettingsStore(context: Context) {
         compactFactor = compactFactor,
     ).problem()
 
+    // ── 思考（开关 + 强度）────────────────────────────────────
+    //
+    // 官方字段 thinking.type 接受 adaptive / enabled / disabled，三种都实测有效：
+    // disabled 时 reasoning token 真的是 0（同一道题快约 30%），
+    // 且此时 reasoning_effort 会被忽略——所以界面上关掉思考就把强度藏起来。
+
+    /** 自适应（默认）/ 总是思考 / 关闭。 */
+    var thinkingMode: String
+        get() = prefs.getString(KEY_THINKING_MODE, THINKING_DEFAULT).orEmpty()
+            .ifBlank { THINKING_DEFAULT }
+        set(v) = prefs.edit().putString(KEY_THINKING_MODE, v).apply()
+
+    /** 思考强度 low / high（默认）/ max。关闭思考时不生效。 */
+    var reasoningEffort: String
+        get() = prefs.getString(KEY_REASONING_EFFORT, EFFORT_DEFAULT).orEmpty()
+            .ifBlank { EFFORT_DEFAULT }
+        set(v) = prefs.edit().putString(KEY_REASONING_EFFORT, v).apply()
+
 
     /**
      * 恢复成出厂默认端点（设置页的按钮）。
@@ -221,6 +239,14 @@ class SettingsStore(context: Context) {
         private const val KEY_COMPACT_THRESHOLD = "compact_threshold"
         private const val KEY_COMPACT_FACTOR = "compact_factor"
         private const val KEY_IMAGE_CAP = "image_cap_bytes"
+        private const val KEY_THINKING_MODE = "thinking_mode"
+        private const val KEY_REASONING_EFFORT = "reasoning_effort"
+
+        /** 思考默认档：自适应（简单问题直接答，复杂的先想）。 */
+        const val THINKING_DEFAULT = com.xiaozhu.planner.core.llm.ThinkingControl.ADAPTIVE
+
+        /** 思考强度默认：官方默认档 high。 */
+        const val EFFORT_DEFAULT = com.xiaozhu.planner.core.llm.ReasoningEffort.HIGH
 
         /** 图片占用的默认建议上限：500 MB。 */
         const val DEFAULT_IMAGE_CAP = 500L * 1024 * 1024

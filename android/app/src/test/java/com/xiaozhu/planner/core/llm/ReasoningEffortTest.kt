@@ -54,9 +54,14 @@ class ReasoningEffortTest {
     }
 
     @Test
-    fun `不发 thinking 字段（实测没收益，反而推理更多）`() {
+    fun `默认发 adaptive，而不是替用户强制开启`() {
+        // 曾经这里断言"不发 thinking"（当时只在简单问题上量过，以为显式打开没收益）。
+        // 后来发现官方 thinking.type 有 adaptive/enabled/disabled 三个变体，
+        // 而且用户明确要在设置里能调——所以现在**有意**发出去，默认 adaptive。
         val body = bodyOf("deepseek-flash")
-        assertFalse("不该带 thinking：$body", body.contains("\"thinking\""))
+        assertTrue("应该带 thinking：$body", body.contains("\"thinking\""))
+        assertTrue("默认是自适应：$body", body.contains("\"type\":\"adaptive\""))
+        assertFalse("不该替用户强制开启：$body", body.contains("\"type\":\"enabled\""))
     }
 
     @Test

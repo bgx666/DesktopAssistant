@@ -37,6 +37,9 @@
       $('#llm_api_key').value = current.llm_api_key || '';
       $('#llm_base_url').value = current.llm_base_url || '';
       $('#llm_model').value = current.llm_model || '';
+      // 思考开关与强度（默认 adaptive / high，与 settings.py 的 DEFAULT_SETTINGS 一致）
+      $('#thinking_mode').value = current.thinking_mode || 'adaptive';
+      $('#reasoning_effort').value = current.reasoning_effort || 'high';
       $('#tts_enabled').checked = current.tts_enabled !== false;
       $('#tts_engine').value = current.tts_engine || '';
       drawChart();
@@ -237,6 +240,8 @@
     updates.llm_api_key = $('#llm_api_key').value.trim();
     updates.llm_base_url = $('#llm_base_url').value.trim();
     updates.llm_model = $('#llm_model').value.trim();
+    updates.thinking_mode = $('#thinking_mode').value;
+    updates.reasoning_effort = $('#reasoning_effort').value;
     updates.tts_enabled = $('#tts_enabled').checked;
     updates.tts_engine = $('#tts_engine').value;
     updates.tts_voice = $('#tts_voice').value;

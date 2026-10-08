@@ -14,9 +14,9 @@ android {
         applicationId = "com.xiaozhu.planner"
         minSdk = 26
         targetSdk = 35
-        versionCode = 25
+        versionCode = 26
         // 0.5.9：图片管理页（看/找/删/导出 zip）+ 设置页图片占用提示（超上限只提醒不自动删）。
-        versionName = "0.5.9"
+        versionName = "0.5.10"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 

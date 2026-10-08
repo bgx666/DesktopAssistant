@@ -228,12 +228,14 @@ class PlannerSession:
             if self.mock:
                 self._llm = MockChatModel(session=self)
             else:
-                from .settings import DEFAULT_SETTINGS
                 s = self.settings
                 self._llm = build_chat_model(
                     api_key=s.get("llm_api_key") or None,
                     base_url=s.get("llm_base_url") or None,
                     model_name=s.get("llm_model") or None,
+                    # 思考开关与强度（设置页可改，见 settings.py 的 _ENUMS）
+                    thinking_mode=s.get("thinking_mode"),
+                    reasoning_effort=s.get("reasoning_effort"),
                 )
         return self._llm
 
@@ -243,12 +245,15 @@ class PlannerSession:
             if self.mock:
                 self._summary_model = MockChatModel()
             else:
-                from .settings import DEFAULT_SETTINGS
                 s = self.settings
                 self._summary_model = build_chat_model(
                     api_key=s.get("llm_api_key") or None,
                     base_url=s.get("llm_base_url") or None,
                     model_name=s.get("llm_model") or None,
+                    # 摘要也跟随同一套思考设置：压缩是后台任务，
+                    # 关掉思考能明显省时间，而摘要质量对档位不敏感
+                    thinking_mode=s.get("thinking_mode"),
+                    reasoning_effort=s.get("reasoning_effort"),
                 )
         return self._summary_model
 
