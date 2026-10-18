@@ -8,9 +8,10 @@ __pycache__/
 .pytest_cache/
 frontend/node_modules/
 frontend/dist/
-promo/
+# 宣传物料（GitHub 主页/视频，体积大且与代码无关）
+docs/marketing/
 planner-release/
 # 评测脚本与数据（LoCoMo 等，含 .db 与运行产物，不入库）
-eval_locomo/
-# 数据迁移备份（运行时数据快照，不入库）
-data_backup_*/
+docs/research/
+# 历史归档（运行时数据快照、旧发版产物，不入库）
+archive/

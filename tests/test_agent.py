@@ -586,6 +586,19 @@ def _node_count(session) -> int:
                if "node_id" in (getattr(m, "metadata", None) or {}))
 
 
+# 叶子压缩只看 token 预算：测试把预算调到下限并用填充消息快速达到
+_TEST_COMPRESS_BUDGET = 10000
+_PAD = "x" * 200
+
+
+def _prefill_for_compress(s, count, tag="占位"):
+    """灌 count 条带填充的消息，使估算 token 越过测试压缩预算（条数 > keep）。"""
+    s.update_settings({"compress_token_budget": _TEST_COMPRESS_BUDGET})
+    for i in range(count):
+        s.recent_buffer.append(HumanMessage(content=f"{tag} {i} " + _PAD))
+    s._msg_counter += count
+
+
 def _trigger_async_compress(session, timeout=15.0):
     """触发异步压缩并等待节点数增加（后台线程完成）。
 
@@ -608,14 +621,11 @@ def _trigger_async_compress(session, timeout=15.0):
 
 def test_tool_result_not_lost_after_compress(data_root):
     """工具结果事件配对正常（历史 seen_count 回归场景由异步压缩规避）。"""
-    from planner.middleware import SUMMARIZE_TRIGGER_MESSAGES
     from planner.session import PlannerSession as PS
     s = PS(data_root, mock=True)
     try:
-        # 塞到压缩阈值前 1 条，玩家消息触发后必超阈值
-        for i in range(SUMMARIZE_TRIGGER_MESSAGES - 1):
-            s.recent_buffer.append(HumanMessage(content=f"占位消息 {i}"))
-        s._msg_counter += SUMMARIZE_TRIGGER_MESSAGES - 1
+        # 灌到压缩预算边缘后，玩家消息触发生成 → 压缩必然发生
+        _prefill_for_compress(s, 60, tag="占位消息")
 
         _drive_generation(s, "帮我安排一下学习计划")
         events = s.drain_events()
@@ -641,14 +651,12 @@ def test_compressed_nodes_kept_at_start(data_root):
     回归：压缩节点经 langgraph add_messages 追加到末尾，多次压缩后
     早期摘要会卡在对话中间（时间顺序错乱）。
     """
-    from planner.middleware import SUMMARIZE_KEEP_MESSAGES, SUMMARIZE_TRIGGER_MESSAGES
+    from planner.middleware import SUMMARIZE_KEEP_MESSAGES
     from planner.session import PlannerSession as PS
     s = PS(data_root, mock=True)
     try:
         for _round in range(2):
-            for i in range(SUMMARIZE_TRIGGER_MESSAGES - 1):
-                s.recent_buffer.append(HumanMessage(content=f"第{_round}轮占位 {i}"))
-            s._msg_counter += SUMMARIZE_TRIGGER_MESSAGES - 1
+            _prefill_for_compress(s, 60, tag=f"第{_round}轮占位")
             _drive_generation(s, f"帮我安排任务（第{_round}轮）")
             _trigger_async_compress(s)
 
@@ -675,14 +683,11 @@ def test_compressed_ranges_are_global_sequential(data_root):
     （假重叠）；对齐小B _span 机制后按 _compressed_total 累计。
     """
     import re
-    from planner.middleware import SUMMARIZE_KEEP_MESSAGES, SUMMARIZE_TRIGGER_MESSAGES
     from planner.session import PlannerSession as PS
     s = PS(data_root, mock=True)
     try:
         for _round in range(2):
-            for i in range(SUMMARIZE_TRIGGER_MESSAGES - 1):
-                s.recent_buffer.append(HumanMessage(content=f"第{_round}轮占位 {i}"))
-            s._msg_counter += SUMMARIZE_TRIGGER_MESSAGES - 1
+            _prefill_for_compress(s, 60, tag=f"第{_round}轮占位")
             _drive_generation(s, f"帮我安排任务（第{_round}轮）")
             _trigger_async_compress(s)
 
@@ -706,13 +711,10 @@ def test_compressed_ranges_are_global_sequential(data_root):
 
 def test_compression_emits_memory_update(data_root):
     """压缩成功后应推送 memory_update 事件（前端据此重载历史同步对话框）。"""
-    from planner.middleware import SUMMARIZE_TRIGGER_MESSAGES
     from planner.session import PlannerSession as PS
     s = PS(data_root, mock=True)
     try:
-        for i in range(SUMMARIZE_TRIGGER_MESSAGES - 1):
-            s.recent_buffer.append(HumanMessage(content=f"占位消息 {i}"))
-        s._msg_counter += SUMMARIZE_TRIGGER_MESSAGES - 1
+        _prefill_for_compress(s, 60, tag="占位消息")
         _drive_generation(s, "帮我安排一下学习计划")
         # 异步压缩完成 → memory_update 事件
         deadline = time.time() + 15
@@ -740,12 +742,13 @@ def test_compress_batch_includes_paired_tool_messages(data_root):
     回归：否则删 ai 留 tool → 孤儿 ToolMessage → DeepSeek 400（生成全挂）。
     """
     from langchain_core.messages import AIMessage, ToolMessage
-    from planner.middleware import SummarizationMiddleware, SUMMARIZE_KEEP_MESSAGES
+    from planner.middleware import SummarizationMiddleware
     s = PlannerSession(data_root, mock=True)
     try:
-        # 构造：ai(tool_calls) 恰好在 batch 边界（index 40），tool 结果在保留区
+        s.update_settings({"compress_token_budget": 10000})   # 只看 token 预算
+        # 构造：ai(tool_calls) 恰好在 batch 边界（40 条填充后即 ai）
         for i in range(40):
-            s.recent_buffer.append(HumanMessage(content=f"占位 {i}"))
+            s.recent_buffer.append(HumanMessage(content=f"占位 {i} " + "x" * 200))
         ai = AIMessage(content="调用工具", id="cut-ai",
                        tool_calls=[{"name": "get_next_actions", "args": {},
                                     "id": "cut-call-1", "type": "tool_call"}])
@@ -753,7 +756,7 @@ def test_compress_batch_includes_paired_tool_messages(data_root):
         s.recent_buffer.append(ai)
         s.recent_buffer.append(tool)
         for i in range(19):
-            s.recent_buffer.append(HumanMessage(content=f"后置 {i}"))
+            s.recent_buffer.append(HumanMessage(content=f"后置 {i} " + "x" * 200))
         s._msg_counter += 40 + 2 + 19
 
         comp = SummarizationMiddleware(s)
@@ -870,10 +873,10 @@ def test_generation_without_heartbeat_keeps_original(data_root):
     from planner.llm import MockChatModel
 
     class _NoHbMock(MockChatModel):
-        def _player_reply(self):
+        def _player_reply(self, reasoning: str = ""):
             return self._make_result("好的，我记住了。")
 
-        def _heartbeat_reply(self):
+        def _heartbeat_reply(self, reasoning: str = ""):
             return self._make_result("（已查看，一切正常。）")
 
     s = PlannerSession(data_root, mock=True)

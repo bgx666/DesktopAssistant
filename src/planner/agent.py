@@ -23,6 +23,7 @@ from langchain.agents import create_agent
 from langchain.agents.middleware import ModelCallLimitMiddleware
 
 from .middleware import (
+    ApprovalMiddleware,
     DndGuardMiddleware,
     HeartbeatTrackMiddleware,
     LoggingMiddleware,
@@ -56,13 +57,18 @@ def build_planner_agent(session):
         StopRequestMiddleware(session),
         NudgeMiddleware(),            # 第 5 轮注入收尾提示（软上限）
         HeartbeatTrackMiddleware(),   # 调过 heartbeat → 跳 end（停止信号）
+        ApprovalMiddleware(session),  # 代码工作区：写/区外读审批（黑名单硬拒）
         LoggingMiddleware(session),
         SummarizationMiddleware(session),
-        # 硬保险：模型连续调工具停不下来时兜底。正常情况下由模型自己
-        # "不再返回工具调用"结束本轮，或调 heartbeat 主动收尾。
-        # ⚠️ 别改成 1：LangGraph「工具→必再调模型」被 limit 掐断会往上下文
-        # 塞 "Model call limits exceeded" 错误消息（yaya 实测）污染 buffer。
-        ModelCallLimitMiddleware(run_limit=10, exit_behavior="end"),
+        # 硬保险：模型连续调工具停不下来时兜底（默认 100，可在 设置 → 交互 调整）。
+        # 正常情况下由模型自己"不再返回工具调用"结束本轮，或调 heartbeat 主动收尾。
+        # ⚠️ 别设太小：LangGraph「工具→必再调模型」被 limit 掐断会往上下文
+        # 塞 "Model call limits exceeded" 消息（exit_behavior=end 注入 AI 消息，
+        # session 写回 buffer 前会把它替换成中文提示，见 _neutralize_limit_message）；
+        # 10 次对"干活"（多文件读写+跑测试）太少，改干活模式后默认提到 100。
+        ModelCallLimitMiddleware(
+            run_limit=int(session.settings.get("model_call_limit", 100) or 100),
+            exit_behavior="end"),
     ]
     agent = create_agent(
         model=model,

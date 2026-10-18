@@ -102,23 +102,21 @@ def test_compress_snapshot_stores_time_range(data_root, monkeypatch):
 
     s = PlannerSession(data_root, mock=True)
     try:
+        s.update_settings({"compress_token_budget": 10000})   # 只看 token 预算
         tree = s.get_memory_tree()
-        # 构造带时间戳的原始消息（60 条，跨时间段）
+        # 构造带时间戳的原始消息（60 条，跨时间段；带填充越过 token 预算）
         import datetime
         base = datetime.datetime(2026, 8, 8, 9, 0, 0)
         msgs = []
         for i in range(60):
             ts = (base + datetime.timedelta(minutes=i)).strftime("%Y-%m-%d %H:%M:%S")
-            msgs.append(HumanMessage(content=f"消息{i}", metadata={"ts": ts}))
+            msgs.append(HumanMessage(content=f"消息{i}" + "x" * 180,
+                                     metadata={"ts": ts}))
         comp = SummarizationMiddleware(s)
         orig_call = comp._call_compress
 
         def fake_call(ctx, instruction):
-            return MemoryNodeOutput(
-                summary="压缩摘要",
-                profile={"preferences": [], "personality": [], "habits": [], "goals": []},
-                future_notes=[],
-            )
+            return MemoryNodeOutput(summary="压缩摘要")
 
         monkeypatch.setattr(comp, "_call_compress", fake_call)
         removes, adds = comp.compress_snapshot(msgs)

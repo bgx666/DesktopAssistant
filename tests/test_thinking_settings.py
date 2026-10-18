@@ -45,7 +45,7 @@ def test_accepts_all_documented_values(tmp_path):
 def test_old_settings_file_without_new_keys_still_loads(tmp_path):
     """老配置文件（没有这两个键）要能正常读，并补上默认值。"""
     (tmp_path / "settings.json").write_text(
-        json.dumps({"press_ms": 300, "compress_trigger": 60}), encoding="utf-8"
+        json.dumps({"press_ms": 300, "compress_token_budget": 20000}), encoding="utf-8"
     )
     loaded = load_settings(tmp_path)
     assert loaded["press_ms"] == 300
@@ -144,3 +144,37 @@ def test_build_chat_model_omits_extra_body_for_other_vendors(monkeypatch):
     monkeypatch.setattr(llm_module, "ChatOpenAI", FakeChatOpenAI)
     llm_module.build_chat_model(api_key="sk-test", base_url="https://x", model_name="gpt-4o")
     assert "extra_body" not in captured
+
+
+# ── OpenCode Go 网关：adaptive 必须映射为 enabled（实机 400 的修复）──
+
+def test_opencode_provider_maps_adaptive_to_enabled():
+    """OpenCode Go 只认 thinking.type=enabled/disabled；adaptive 会 400 →
+    发出去之前映射为 enabled（官方端点不受影响，仍发 adaptive）。"""
+    assert thinking_extra_body("deepseek-v4.1-flash", "adaptive", "high",
+                               provider="opencode") == {
+        "thinking": {"type": "enabled"}, "reasoning_effort": "high"}
+    assert thinking_extra_body("deepseek-v4.1-flash", "enabled", "low",
+                               provider="opencode")["thinking"]["type"] == "enabled"
+    assert thinking_extra_body("deepseek-v4.1-flash", "disabled", None,
+                               provider="opencode") == {
+        "thinking": {"type": "disabled"}}
+    # 官方 deepseek（provider 缺省/deepseek）保持 adaptive 原样
+    assert thinking_extra_body("deepseek-flash", "adaptive", "high",
+                               provider="deepseek")["thinking"]["type"] == "adaptive"
+    assert thinking_extra_body("deepseek-flash", "adaptive",
+                               "high")["thinking"]["type"] == "adaptive"
+
+
+def test_build_chat_model_passes_mapped_thinking():
+    """build_chat_model 把映射后的 extra_body 交给模型实例（真实出口断言）。"""
+    from planner.llm import build_chat_model
+
+    m = build_chat_model(api_key="x", base_url="http://127.0.0.1:1/v1",
+                         model_name="deepseek-v4.1-flash", thinking_mode="adaptive",
+                         reasoning_effort="high", provider="opencode")
+    assert m.extra_body.get("thinking") == {"type": "enabled"}
+    m2 = build_chat_model(api_key="x", base_url="http://127.0.0.1:1/v1",
+                          model_name="deepseek-flash", thinking_mode="adaptive",
+                          reasoning_effort="high", provider="deepseek")
+    assert m2.extra_body.get("thinking") == {"type": "adaptive"}

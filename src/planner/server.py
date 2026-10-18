@@ -11,6 +11,20 @@
 - POST /dnd       免打扰开关（{enabled, until_hour?}）
 - POST /nudge     手动戳一下：立即触发一次自主生成
 - POST /toggle_mock 运行时切换 Mock/真实 LLM
+- GET  /workspace 代码工作区状态与授权规则概要
+- POST /workspace 设置/清空代码工作区（{path}；空 = 关闭）
+- POST /approval  回填审批结果（{id, decision: allow_once|always|deny, scope?}）
+- POST /question  回填 ask_user 提问结果（{id, answer?, selected?}）
+- GET  /llm/providers 模型服务商预设 + 当前生效配置（模型菜单用）
+- GET  /llm/models    某服务商的可用模型（优先拉端点 /models，失败回退预设）
+- GET  /llm/stats     模型用量/缓存命中统计（最近 N 轮生成）
+- GET  /file          图片展示（show_image 工具；仅工作区/卸载目录内图片）
+- POST /preview       HTML 预览寄存（```html 卡片；{html} → {url}）
+- GET  /preview/{id}  预览文档（注入收紧版 CSP：内联脚本可跑、网络/表单/嵌套禁用）
+- GET  /changes       文件变更历史（代码工作区写操作留底）
+- POST /changes/rollback 回退到某条变更之前（{id}）
+- POST /changes/clear 清空变更历史（不动文件）
+- POST /permissions/delete|clear 「记住并允许」规则管理
 """
 
 from __future__ import annotations
@@ -32,6 +46,29 @@ from .content import content_text
 from .session import BACKEND_TAG, CHARACTER_ID, DISPLAY_NAME, PLAYER_NAME, PlannerSession
 
 _logger = logging.getLogger("planner.server")
+
+#: 预览文档的收紧版 CSP：允许内联脚本/样式（互动演示），禁止一切网络请求
+#: （connect-src 'none' 断掉 fetch/XHR 调本地后端 API 的路）与表单/嵌套框架
+_PREVIEW_CSP = ("default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
+                "img-src data: blob: https: http://127.0.0.1:*; media-src data: blob: https:; "
+                "font-src data:; connect-src 'none'; form-action 'none'; frame-src 'none'; "
+                "object-src 'none'; base-uri 'none'")
+
+
+def _wrap_preview_html(html: str) -> str:
+    """给 ```html 预览文档注入收紧版 CSP meta（尽量插进已有 <head>，否则包一层壳）。"""
+    meta = f'<meta http-equiv="Content-Security-Policy" content="{_PREVIEW_CSP}">'
+    low = html.lower()
+    if "<head>" in low:
+        idx = low.index("<head>") + len("<head>")
+        return html[:idx] + meta + html[idx:]
+    if "<html" in low:
+        i = low.index("<html")
+        j = html.find(">", i)
+        if j != -1:
+            return html[:j + 1] + "<head>" + meta + "</head>" + html[j + 1:]
+    return ('<!doctype html><html><head><meta charset="utf-8">' + meta
+            + "</head><body>" + html + "</body></html>")
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -129,6 +166,203 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json({"ok": True, "state": self.session.state_dict()})
         elif path == "/settings":
             self._send_json({"ok": True, "settings": self.session.settings})
+        elif path == "/workspace":
+            # 代码工作区状态（设置页/标题栏徽标/审批 UI 用）
+            from .workspace import PermissionStore
+            s = self.session.settings
+            ws = str(s.get("workspace_root") or "").strip()
+            cwd = self.session.effective_cwd()
+            self._send_json({"ok": True, "workspace": ws, "enabled": bool(ws),
+                             "cwd": str(cwd) if cwd is not None else "",
+                             "recent": list(s.get("workspace_recent") or []),
+                             "permission_mode": str(s.get("permission_mode") or "ask"),
+                             "rules": PermissionStore(self.session.data_root).load()})
+        elif path == "/workspace/dirs":
+            # 工作目录面板：列某个目录的直接子目录（仅工作区内；path 相对当前目录）
+            query = parse_qs(parsed.query)
+            raw = (query.get("path") or [""])[0]
+            ws = str(self.session.settings.get("workspace_root") or "").strip()
+            if not ws:
+                self._send_json({"ok": False, "error": "no_workspace"}, status=400)
+                return
+            from .workspace import is_blocked, is_within, resolve_target
+            ws_path = Path(ws).resolve()
+            base = self.session.effective_cwd()
+            target = resolve_target(base, raw) if str(raw or "").strip() else base
+            if target is None or not is_within(ws_path, target) or not target.is_dir():
+                self._send_json({"ok": False, "error": "bad_path"}, status=400)
+                return
+            dirs = []
+            try:
+                for p in sorted(target.iterdir(), key=lambda x: x.name.lower()):
+                    if p.is_dir() and not p.name.startswith(".") and not is_blocked(p):
+                        dirs.append(p.name)
+            except OSError as exc:
+                self._send_json({"ok": False, "error": str(exc)}, status=400)
+                return
+            self._send_json({"ok": True, "path": str(target), "dirs": dirs[:100]})
+        elif path == "/workspace/files":
+            # @ 引用补全：当前目录下的文件列表（相对当前目录，≤50；q 子串过滤）
+            query = parse_qs(parsed.query)
+            q = (query.get("q") or [""])[0].strip().lower()
+            base = self.session.effective_cwd()
+            if base is None:
+                self._send_json({"ok": False, "error": "no_workspace"}, status=400)
+                return
+            from .workspace import is_blocked
+            skip = {"node_modules", "__pycache__", ".venv", "venv", "dist", "build",
+                    ".git", ".idea", ".pytest_cache"}
+            out: list[str] = []
+            scanned = 0
+            try:
+                for p in base.rglob("*"):
+                    if len(out) >= 50 or scanned >= 4000:
+                        break
+                    if not p.is_file() or is_blocked(p):
+                        continue
+                    try:
+                        rel = p.relative_to(base).as_posix()
+                    except ValueError:
+                        continue
+                    if any(part in skip for part in rel.split("/")[:-1]):
+                        continue
+                    scanned += 1
+                    if q and q not in rel.lower():
+                        continue
+                    out.append(rel)
+            except OSError:
+                pass
+            self._send_json({"ok": True, "files": out})
+        elif path == "/llm/providers":
+            # 服务商预设 + 当前生效配置（标题栏模型菜单 / 设置页）；has_key 用于菜单提示
+            from .llm import PROVIDER_PRESETS, resolve_llm_config
+            cfg = resolve_llm_config(self.session.settings)
+            providers_out = []
+            for pid, p in PROVIDER_PRESETS.items():
+                pc = resolve_llm_config({**self.session.settings, "llm_provider": pid})
+                providers_out.append({
+                    "id": pid, "label": p["label"], "base_url": p["base_url"],
+                    "models": p["models"], "default": p["default"],
+                    "has_key": bool(pc["api_key"]),
+                })
+            self._send_json({
+                "ok": True,
+                "providers": providers_out,
+                "current": {"provider": cfg["provider"], "model": cfg["model"],
+                            "base_url": cfg["base_url"], "has_key": bool(cfg["api_key"])},
+            })
+        elif path == "/llm/models":
+            # 某服务商的可用模型：优先拉端点 models（有 key 时），失败回退预设清单
+            query = parse_qs(parsed.query)
+            pid = (query.get("provider") or [""])[0].strip().lower()
+            from .llm import PROVIDER_PRESETS, provider_headers, resolve_llm_config
+            preset = PROVIDER_PRESETS.get(pid)
+            if not preset:
+                self._send_json({"ok": False, "error": "unknown_provider"}, status=400)
+                return
+            models: list[str] = []
+            source = "preset"
+            try:
+                import httpx
+                cfg = resolve_llm_config({**self.session.settings, "llm_provider": pid})
+                if cfg["api_key"]:
+                    url = preset.get("models_url") or (cfg["base_url"].rstrip("/") + "/models")
+                    headers = {"Authorization": f"Bearer {cfg['api_key']}"}
+                    headers.update(provider_headers(pid, self.session.llm_session_id()))
+                    r = httpx.get(url, headers=headers, timeout=5)
+                    r.raise_for_status()
+                    data = r.json()
+                    ids = [str(m.get("id")) for m in (data.get("data") or []) if m.get("id")]
+                    if ids:
+                        models = ids[:80]
+                        source = "live"
+            except Exception:   # 离线 / key 失效 / 端点不支持 → 回退预设
+                models = []
+            if not models:
+                models = list(preset["models"])
+            self._send_json({"ok": True, "models": models, "source": source})
+        elif path == "/llm/stats":
+            # 模型用量/缓存命中统计（最近 N 轮生成）：状态条「📊」面板
+            self._send_json({"ok": True,
+                             "summary": self.session.llm_stats.summary(),
+                             "records": self.session.llm_stats.list()})
+        elif path.startswith("/preview/"):
+            # HTML 预览文档（POST /preview 寄存后的取用）：包一层收紧版 CSP 返回。
+            # 走 http 而不是 srcdoc：srcdoc 会继承面板的 CSP（script-src 'self'）→ 内联脚本被拦。
+            pid = path[len("/preview/"):]
+            html = (getattr(self.session, "_previews", {}) or {}).get(pid)
+            if not html:
+                self._send_json({"ok": False, "error": "not_found"}, status=404)
+                return
+            body = _wrap_preview_html(html).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        elif path == "/file":
+            # 图片展示（show_image 工具）：只允许工作区 / 助手卸载目录内的图片，
+            # 防路径穿越；格式与大小白名单。
+            from urllib.parse import parse_qs as _parse_qs, unquote
+            q = _parse_qs(parsed.query)
+            raw = unquote((q.get("path") or [""])[0])
+            if not raw:
+                self._send_json({"ok": False, "error": "bad_path"}, status=400)
+                return
+            from .workspace import is_blocked, is_within
+            p = Path(raw)
+            try:
+                p = p.resolve()
+            except OSError:
+                self._send_json({"ok": False, "error": "bad_path"}, status=400)
+                return
+            allowed_roots = [Path(str(self.session.data_root)) / "tool_results",
+                             Path(str(self.session.data_root)) / "images"]
+            ws_raw = str(self.session.settings.get("workspace_root") or "").strip()
+            if ws_raw:
+                try:
+                    allowed_roots.append(Path(ws_raw).resolve())
+                except OSError:
+                    pass
+            if not any(is_within(root, p) for root in allowed_roots):
+                self._send_json({"ok": False, "error": "forbidden"}, status=403)
+                return
+            if is_blocked(p) or p.suffix.lower() not in {
+                    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}:
+                self._send_json({"ok": False, "error": "forbidden"}, status=403)
+                return
+            if not p.is_file():
+                self._send_json({"ok": False, "error": "not_found"}, status=404)
+                return
+            try:
+                if p.stat().st_size > 15 * 1024 * 1024:
+                    self._send_json({"ok": False, "error": "too_large"}, status=413)
+                    return
+                body = p.read_bytes()
+            except OSError as exc:
+                self._send_json({"ok": False, "error": str(exc)}, status=400)
+                return
+            content_type = {
+                ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+                ".gif": "image/gif", ".webp": "image/webp", ".bmp": "image/bmp",
+            }[p.suffix.lower()]
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(body)
+        elif path == "/changes":
+            # 文件变更历史（新→旧）；?limit= 可选
+            query = parse_qs(parsed.query)
+            try:
+                limit = max(1, min(500, int((query.get("limit") or ["200"])[0])))
+            except (TypeError, ValueError):
+                limit = 200
+            db = self.session.get_changes_db()
+            self._send_json({"ok": True, "changes": db.list(limit=limit)})
         elif path == "/dequeue":
             # 长轮询：?wait=N（秒，0~30）→ 无事件时服务端等待至多有事件/超时；
             # 不带 wait 保持立即返回（测试/旧客户端兼容）。前端 main.js 传 ?wait=25。
@@ -160,10 +394,11 @@ class _Handler(BaseHTTPRequestHandler):
             engine = (query.get("engine") or [None])[0]
             self._send_json({"ok": True, "voices": self.session.tts.list_voices(engine=engine)})
         elif path == "/tts/say":
-            # 喇叭按钮/试听：按需合成整句（text → wav），返回 /tts/{name} URL
+            # 气泡按钮/测试按钮合成整句（text → wav），返回 /tts/{name} URL
             query = parse_qs(parsed.query)
             text = (query.get("text") or [""])[0]
             voice = (query.get("voice") or [None])[0]
+            _logger.info("[tts] /tts/say 请求（%d 字，voice=%s）：%s", len(text), voice or "-", text[:40])
             if not text.strip():
                 self._send_json({"ok": False, "error": "empty_text"}, status=400)
                 return
@@ -229,6 +464,12 @@ class _Handler(BaseHTTPRequestHandler):
                     msgs.append({"role": "user", "content": content,
                                  "id": getattr(m, "id", None) or ""})
                 elif role == "ai":
+                    # 思考过程（持久化在 additional_kwargs）：独立条目，前端渲染成
+                    # 折叠单行的思考行（历史重建与实时 thinking_stream 同一套样式）
+                    reasoning = str((getattr(m, "additional_kwargs", None) or {})
+                                    .get("reasoning_content") or "")
+                    if reasoning.strip():
+                        msgs.append({"role": "thinking", "content": reasoning})
                     if content:
                         msgs.append({"role": "assistant", "content": content})
                     # 历史工具调用卡片（与实时事件 _emit_tool_events 保持一致）
@@ -241,9 +482,24 @@ class _Handler(BaseHTTPRequestHandler):
                 elif role == "tool":
                     if getattr(m, "name", "") == "continue_speaking":
                         continue
+                    # 写操作留底关联（写进消息 additional_kwargs 的 change_ids）
+                    # → 历史重建也显示「修改前后」diff
+                    ak = getattr(m, "additional_kwargs", None) or {}
+                    ids = ak.get("change_ids") or []
+                    diff = (self.session.change_diff([int(i) for i in ids],
+                                                     tool=getattr(m, "name", "") or "")
+                            if ids else None)
                     msgs.append({"role": "tool_result",
                                  "id": tool_ref,
-                                 "content": str(getattr(m, "content", "") or "")})
+                                 "content": str(getattr(m, "content", "") or ""),
+                                 "diff": diff})
+                    # show_image 展示过的图片（additional_kwargs.image_paths）→ 图片条目
+                    from .session import image_url as _image_url
+                    captions = ak.get("image_captions") or []
+                    for i, img_path in enumerate(ak.get("image_paths") or []):
+                        msgs.append({"role": "image",
+                                     "url": _image_url(str(img_path)),
+                                     "caption": str(captions[i]) if i < len(captions) else ""})
             self._send_json({"ok": True, "messages": msgs})
         else:
             self._send_json({"ok": False, "error": f"unknown endpoint: {path}"}, status=404)
@@ -404,6 +660,146 @@ class _Handler(BaseHTTPRequestHandler):
         elif path == "/toggle_mock":
             mode = self.session.toggle_mock()
             self._send_json({"ok": True, "mode": mode})
+        elif path == "/workspace":
+            body = self._read_json_body()
+            raw = str(body.get("path", "") or "").strip()
+            if raw:
+                target = Path(raw).expanduser()
+                try:
+                    target = target.resolve()
+                except OSError:
+                    target = None
+                if target is None or not target.is_dir():
+                    self._send_json({"ok": False, "error": "not_a_directory"}, status=400)
+                    return
+                raw = str(target)
+            try:
+                settings = self.session.update_settings({"workspace_root": raw})
+            except ValueError as exc:
+                self._send_json({"ok": False, "error": str(exc)}, status=400)
+                return
+            cwd = self.session.effective_cwd()
+            self._send_json({"ok": True,
+                             "workspace": settings.get("workspace_root", ""),
+                             "enabled": bool(settings.get("workspace_root")),
+                             "cwd": str(cwd) if cwd is not None else "",
+                             "recent": settings.get("workspace_recent", []),
+                             "permission_mode": settings.get("permission_mode", "ask")})
+        elif path == "/workspace/cwd":
+            # 切换当前工作目录（必须工作区内；空串 = 回到工作区根）
+            body = self._read_json_body()
+            raw = str(body.get("path", "") or "").strip()
+            ws = str(self.session.settings.get("workspace_root") or "").strip()
+            if not ws:
+                self._send_json({"ok": False, "error": "no_workspace"}, status=400)
+                return
+            from .workspace import is_within
+            ws_path = Path(ws).resolve()
+            if raw:
+                target = Path(raw).expanduser()
+                try:
+                    target = target.resolve()
+                except OSError:
+                    target = None
+                if (target is None or not target.is_dir()
+                        or not is_within(ws_path, target)):
+                    self._send_json({"ok": False, "error": "bad_path"}, status=400)
+                    return
+                raw = str(target)
+            try:
+                settings = self.session.update_settings({"workspace_cwd": raw})
+            except ValueError as exc:
+                self._send_json({"ok": False, "error": str(exc)}, status=400)
+                return
+            cwd = self.session.effective_cwd()
+            self._send_json({"ok": True, "cwd": str(cwd) if cwd is not None else "",
+                             "workspace": settings.get("workspace_root", ""),
+                             "recent": settings.get("workspace_recent", []),
+                             "permission_mode": settings.get("permission_mode", "ask")})
+        elif path == "/approval":
+            body = self._read_json_body()
+            req_id = str(body.get("id", "") or "").strip()
+            decision = str(body.get("decision", "") or "").strip().lower()
+            if not req_id or decision not in ("allow_once", "always", "deny"):
+                self._send_json({"ok": False, "error": "bad_request"}, status=400)
+                return
+            ok = self.session.resolve_approval(req_id, decision, body.get("scope"))
+            self._send_json({"ok": ok, "error": None if ok else "not_found"},
+                            status=200 if ok else 404)
+        elif path == "/question":
+            body = self._read_json_body()
+            req_id = str(body.get("id", "") or "").strip()
+            answer = str(body.get("answer", "") or "")
+            selected = str(body.get("selected", "") or "")
+            if not req_id or (not answer.strip() and not selected.strip()):
+                self._send_json({"ok": False, "error": "bad_request"}, status=400)
+                return
+            ok = self.session.resolve_question(req_id, answer, selected)
+            self._send_json({"ok": ok, "error": None if ok else "not_found"},
+                            status=200 if ok else 404)
+        elif path == "/preview":
+            # HTML 预览寄存（```html 代码块 → iframe 卡片）：前端 POST html → 拿 url；
+            # 取用时（GET /preview/{id}）包一层收紧版 CSP。内存缓存，环形上限。
+            body = self._read_json_body()
+            html = str(body.get("html") or "")
+            if not html.strip():
+                self._send_json({"ok": False, "error": "empty"}, status=400)
+                return
+            if len(html) > 1_000_000:
+                self._send_json({"ok": False, "error": "too_large"}, status=413)
+                return
+            store = getattr(self.session, "_previews", None)
+            if store is None:
+                store = {}
+                self.session._previews = store
+            if len(store) >= 60:
+                for k in list(store.keys())[:30]:
+                    store.pop(k, None)
+            import uuid as _uuid
+            pid = _uuid.uuid4().hex[:16]
+            store[pid] = html
+            self._send_json({"ok": True, "url": "/preview/" + pid})
+        elif path == "/changes/rollback":
+            # 回退到某条变更之前（把 id ≥ 该值且未回退的变更从新到旧恢复）
+            body = self._read_json_body()
+            try:
+                cid = int(body.get("id"))
+            except (TypeError, ValueError):
+                self._send_json({"ok": False, "error": "bad_id"}, status=400)
+                return
+            from .changes import rollback_to
+            db = self.session.get_changes_db()
+            if db.get(cid) is None:
+                self._send_json({"ok": False, "error": "not_found"}, status=404)
+                return
+            ws_raw = str(self.session.settings.get("workspace_root") or "").strip()
+            workspace = Path(ws_raw).resolve() if ws_raw else None
+            result = rollback_to(db, cid, workspace)
+            self.session.push_event({"type": "changes_update"})
+            self._send_json({"ok": True, **result})
+        elif path == "/changes/clear":
+            self.session.get_changes_db().clear()
+            self._send_json({"ok": True})
+        elif path == "/permissions/delete":
+            from .workspace import PermissionStore
+            body = self._read_json_body()
+            store = PermissionStore(self.session.data_root)
+            rules = store.load()
+            try:
+                idx = int(body.get("index"))
+            except (TypeError, ValueError):
+                self._send_json({"ok": False, "error": "bad_index"}, status=400)
+                return
+            if not (0 <= idx < len(rules)):
+                self._send_json({"ok": False, "error": "not_found"}, status=404)
+                return
+            removed = rules.pop(idx)
+            store.save(rules)
+            self._send_json({"ok": True, "removed": removed, "rules": rules})
+        elif path == "/permissions/clear":
+            from .workspace import PermissionStore
+            PermissionStore(self.session.data_root).clear()
+            self._send_json({"ok": True, "rules": []})
         else:
             self._send_json({"ok": False, "error": f"unknown endpoint: {path}"}, status=404)
 

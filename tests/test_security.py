@@ -1,8 +1,10 @@
-"""安全审计测试：小助（LLM 可达面）没有任何修改文件/执行命令的能力。
+"""安全审计测试：小助（LLM 可达面）的能力边界。
 
-保证面：
-- 工具集：只读文件（read_file/list_dir）+ 任务/记忆业务，无 shell/exec/写文件
-- 源码：tools.py 所有 open() 均为只读模式；无 subprocess/os.system/exec/eval
+保证面（代码 Agent 改造后）：
+- **无命令执行**：无 shell/exec/subprocess/os.system；无 os.remove/os.rename
+- **写文件只经两处**：工作区代码工具（仅 workspace 启用时注册、审批制、黑名单兜底）
+  与工具结果卸载（data/tool_results/）；默认（无 workspace）工具集无任何写工具
+- 源码：build_tools 的 read_file 段所有 open() 均为只读模式
 - 后端写操作仅限自身 data/（记忆树/日志/任务库），路径由代码固定、LLM 不可指定
 """
 
@@ -14,7 +16,7 @@ TOOLS_SRC = Path(__file__).resolve().parent.parent / "src" / "planner" / "tools.
 
 
 def test_toolset_names_are_safe():
-    """工具名不含 shell/exec/写文件等危险能力。"""
+    """默认工具集（无工作区）不含 shell/exec/写文件等危险能力。"""
     names = [t["function"]["name"] for t in all_tool_schemas()]
     forbidden = ("shell", "exec", "command", "system", "write", "edit",
                  "delete", "remove", "move", "copy", "rename", "create_file")
@@ -37,11 +39,22 @@ def test_read_file_opens_readonly():
 
 
 def test_tools_source_no_command_execution():
-    """tools.py 无命令执行/代码执行能力。"""
+    """tools.py 不出现 os.system / exec / eval 这类"无门禁"执行；命令走审批工具。
+
+    注：`run_command` 是**审批制**命令工具（默认不注册、逐条审批、破坏性命令硬拒），
+    它用 subprocess 是设计内的——这里保证其它"裸执行"入口不存在。
+    """
     src = TOOLS_SRC.read_text(encoding="utf-8")
-    for bad in ("subprocess", "os.system", "Popen", "exec(", "eval(",
-                "os.remove", "os.rename", "os.makedirs", "write_text", "write_bytes"):
+    for bad in ("os.system", "os.popen", "exec(", "eval(",
+                "os.remove", "os.rename", "os.makedirs"):
         assert bad not in src, f"tools.py 含 {bad}"
+    # write_bytes 只允许出现在 show_image 的网络图片缓存写入（data/images；
+    # content-type/大小白名单 + /file 只服务工作区/缓存目录，另见 test_show_image.py）
+    for i, line in enumerate(src.splitlines(), 1):
+        if "write_bytes" in line:
+            assert "dest.write_bytes" in line, f"tools.py:{i} 出现计划外的 write_bytes"
+    assert "def build_code_tools" in src and "def _offload_if_large" in src
+    assert "def run_command" in src and "def _kill_process_tree" in src
 
 
 def test_read_only_behavior():

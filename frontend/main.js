@@ -1,8 +1,9 @@
 // main.js —— Electron 悬浮球主进程
 // 悬浮球（常驻置顶，可拖拽） + 对话面板（点击球"变形"展开，失焦"变形"收回）
 
-const { app, BrowserWindow, Tray, Menu, nativeImage, screen, ipcMain, session } = require('electron');
+const { app, BrowserWindow, Tray, Menu, nativeImage, screen, ipcMain, session, dialog, shell } = require('electron');
 const { spawn } = require('child_process');
+const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
 
@@ -12,6 +13,9 @@ const PYTHON = process.env.PLANNER_PYTHON || 'python';
 const TRAY_ICON_FILE = path.join(__dirname, 'assets', 'bubble_32.png');   // 悬浮窗同款托盘图标
 const APP_ICON_FILE = path.join(__dirname, 'assets', 'bubble.ico');      // 应用/快捷方式图标
 
+// Windows 任务栏分组（AppUserModelID）：不设的话开发/打包环境的任务栏都归到 "Electron"
+app.setAppUserModelId('com.xiaozhu.planner');
+
 // 独立实例：release 版设 PLANNER_USER_DATA，避免与开发版共用 userData
 // （单实例锁、悬浮球位置等全部随之隔离，两个版本可同时运行）
 if (process.env.PLANNER_USER_DATA) {
@@ -19,8 +23,11 @@ if (process.env.PLANNER_USER_DATA) {
 }
 
 const BUBBLE_SIZE = 100;     // 悬浮球窗口尺寸（core 44px 居中，四周留 ~28px 给辉光）
-const PANEL_W = 350;         // 面板宽
-const PANEL_H = 520;         // 面板高
+const PANEL_W_DEFAULT = 680; // 面板默认宽（大窗，看代码用；可拖拽边缘调整并持久化）
+const PANEL_H_DEFAULT = 760; // 面板默认高
+const PANEL_MIN = 320;       // 拖拽调整下限
+let panelW = PANEL_W_DEFAULT;
+let panelH = PANEL_H_DEFAULT;
 
 let bubbleWin = null;
 let panelWin = null;
@@ -197,8 +204,11 @@ function createPanel() {
     transparent: true,
     hasShadow: false,
     resizable: false,
-    alwaysOnTop: true,
-    skipTaskbar: true,
+    alwaysOnTop: false,   // 展开的面板不常驻最前（用户设定）：可被其他窗口盖住
+    // 面板在任务栏有标签（点任务栏可找到/切回小助）；收起（hide）后标签自动消失。
+    // 悬浮球/气泡窗口仍 skipTaskbar: true——托盘型的小部件不占任务栏。
+    skipTaskbar: false,
+    icon: APP_ICON_FILE,  // 任务栏图标（圆球）
     show: false,
     backgroundColor: '#00000000',
     webPreferences: {
@@ -210,8 +220,7 @@ function createPanel() {
   });
   panelWin.loadFile(path.join(__dirname, 'renderer', 'index.html'));
   appLog('[win] panel created');
-  // 面板与悬浮球同级最高层级
-  panelWin.setAlwaysOnTop(true, 'pop-up-menu');
+  // 面板不设 always-on-top（用户设定）；被压住时用托盘图标/重复启动把它拉回前台
   // 页面加载完成（listener 就绪）后，补发暂存的变形请求
   panelWin.webContents.once('did-finish-load', () => {
     panelLoaded = true;
@@ -237,14 +246,39 @@ function createPanel() {
       morphOut(); // 收起 = 变形回悬浮球
     }
   });
-  // 最小化会暂停 renderer 的 rAF → 变形动画卡死（实测：托盘再也打不开）。
-  // 直接隐藏并重置状态（不 restore+hide 组合——残留状态会导致下次 show 无效；
-  // 不 destroy——实测 destroy 会连带导致整个应用退出）。
+  // 任务栏最小化（skipTaskbar:false 后用户可点任务栏图标）：**稳定展开态不干预**，
+  // 走系统标准最小化/还原（点一下缩小、再点还原，与普通窗口一致）。
+  // 只有"变形动画进行中"被最小化才要处理——renderer 的 rAF 会随最小化暂停、动画冻住：
+  //   - 展开动画中 → 直接落到"已展开"终态（面板保持最小化，点任务栏可还原）；
+  //   - 收起动画中 → 完成"变回悬浮球"：restore 再延迟 hide（避免在"最小化+隐藏"残留
+  //     状态下留出任务栏幽灵按钮，历史上点它会又冒出一个面板+同时出现悬浮球而卡住）。
   panelWin.on('minimize', () => {
-    clearMorphTimeout();
-    panelState = 'hidden';
-    if (panelWin && !panelWin.isDestroyed()) panelWin.hide();
-    showBubble();
+    if (panelState === 'shown') {
+      return;
+    }
+    if (panelState === 'morphing_in') {
+      clearMorphTimeout();
+      panelState = 'shown';
+      ignoreBlurUntil = Date.now() + 500;
+      if (panelLoaded && panelWin && !panelWin.isDestroyed()) {
+        panelWin.webContents.send('morph-force-finish', 'in');
+      }
+      return;
+    }
+    if (panelState === 'morphing_out') {
+      clearMorphTimeout();
+      panelState = 'hidden';
+      if (panelLoaded && panelWin && !panelWin.isDestroyed()) {
+        panelWin.webContents.send('morph-force-finish', 'out');
+      }
+      try { panelWin.restore(); } catch { /* 忽略 */ }
+      setTimeout(() => {
+        if (panelWin && !panelWin.isDestroyed() && panelState === 'hidden') {
+          panelWin.hide();
+        }
+      }, 60);
+      showBubble();
+    }
   });
   // 窗口被意外销毁（系统关闭/崩溃路径）→ 完整重置状态，绝不让状态残留卡死
   panelWin.on('closed', () => {
@@ -273,18 +307,26 @@ function resetPanelState() {
 }
 
 // ── 面板目标位置：贴悬浮球视觉边缘旁，夹在屏幕工作区内 ──────────
+function panelSize() {
+  // 面板实际尺寸（宽模式在屏幕上放不下时按工作区收缩）
+  const b = bubbleWin.getBounds();
+  const disp = screen.getDisplayNearestPoint({ x: b.x, y: b.y }).workArea;
+  return { w: Math.min(panelW, disp.width - 8), h: Math.min(panelH, disp.height - 8) };
+}
+
 function panelTargetPos() {
   const b = bubbleWin.getBounds();
   const disp = screen.getDisplayNearestPoint({ x: b.x, y: b.y }).workArea;
+  const size = panelSize();
   // 球窗口比视觉球大（辉光留白）：以球视觉中心（=窗口中心）定位，面板贴球边缘
   const ballCX = b.x + b.width / 2;
   const ballCY = b.y + b.height / 2;
   const BALL_R = 22;   // 视觉球半径（44/2）
   let x = ballCX + BALL_R + 6;
-  let y = ballCY - Math.round(PANEL_H / 2);
-  if (x + PANEL_W > disp.x + disp.width) x = ballCX - BALL_R - PANEL_W - 6;
-  x = Math.max(disp.x + 4, Math.min(x, disp.x + disp.width - PANEL_W - 4));
-  y = Math.max(disp.y + 4, Math.min(y, disp.y + disp.height - PANEL_H - 4));
+  let y = ballCY - Math.round(size.h / 2);
+  if (x + size.w > disp.x + disp.width) x = ballCX - BALL_R - size.w - 6;
+  x = Math.max(disp.x + 4, Math.min(x, disp.x + disp.width - size.w - 4));
+  y = Math.max(disp.y + 4, Math.min(y, disp.y + disp.height - size.h - 4));
   return { x: Math.round(x), y: Math.round(y) };
 }
 
@@ -317,7 +359,8 @@ function forceFinishIn() {
   clearMorphTimeout();
   if (panelWin && !panelWin.isDestroyed()) {
     const target = panelTargetPos();
-    panelWin.setBounds({ x: target.x, y: target.y, width: PANEL_W, height: PANEL_H });
+    const size = panelSize();
+    panelWin.setBounds({ x: target.x, y: target.y, width: size.w, height: size.h });
     if (panelWin.isMinimized()) panelWin.restore();
     panelWin.show();      // 若从未显示（加载卡住），强制显示
   }
@@ -376,11 +419,12 @@ function morphIn() {
   panelDragged = false;                       // 每次展开重置拖动标记
   clearAllToasts();                           // 展开面板时清掉所有气泡
   const from = bubbleWin.getBounds();            // 球当前矩形（renderer 起始 transform 用）
-  const to = { ...panelTargetPos(), w: PANEL_W, h: PANEL_H };
+  const size = panelSize();
+  const to = { ...panelTargetPos(), w: size.w, h: size.h };
   // 窗口一次到位（面板最终位置尺寸），变形动画由 renderer 的 CSS transform
   // 完成（GPU 合成）——不再每帧 resize 窗口，帧率大幅提升
   panelWin.setBounds({
-    x: to.x, y: to.y, width: PANEL_W, height: PANEL_H,
+    x: to.x, y: to.y, width: size.w, height: size.h,
   });
   panelState = 'morphing_in';
   if (bubbleWin && !bubbleWin.isDestroyed()) bubbleWin.hide();  // 球由变形窗口接管
@@ -412,6 +456,17 @@ function morphOut() {
   sendMorph('out', from, to);
 }
 
+// ── 面板置前（面板不常驻最前，被压住时需要能拉回来）──────────
+function focusPanel() {
+  if (!panelWin || panelWin.isDestroyed()) return;
+  try {
+    if (panelWin.isMinimized()) panelWin.restore();
+    panelWin.show();
+    panelWin.moveTop();
+    panelWin.focus();
+  } catch { /* 窗口销毁中忽略 */ }
+}
+
 function togglePanel() {
   // 窗口没了但状态残留 → 先重置，再按用户意图执行（防"托盘无反应"）
   if ((!panelWin || panelWin.isDestroyed()) && panelState !== 'hidden') {
@@ -426,8 +481,10 @@ function togglePanel() {
   }
   if (panelState === 'hidden') {
     morphIn();
-  } else {
-    morphOut(); // shown / morphing_in 都收（renderer 会打断在途动画）
+  } else if (panelWin && !panelWin.isDestroyed()) {
+    // 面板已展开：置前 + 聚焦。面板不再常驻最前（用户设定），托盘/重复启动需要
+    // 能把被其他窗口压住的面板拉回来；收起请用界面「—」按钮或 Esc。
+    focusPanel();
   }
 }
 
@@ -620,6 +677,10 @@ async function checkBackend() {
     setBackendOnline(true);
     broadcastState(data.state);
     broadcastPanelState();
+    // 后端刚就绪：补发一次设置。渲染进程可能在后端就绪**之前**启动（start.bat
+    // 同时拉起，后端初始化要几秒）——voiceMode attach 时的一次性 /settings 拉取
+    // 会静默失败，语音播报开关等拿不到真实值（实测：关掉播报仍在朗读的直接原因）。
+    fetchSettingsAndBroadcast();
     startDequeuePoll();
   } catch {
     // 后端尚未就绪 → 广播离线状态，短暂退避后重试健康检查
@@ -627,6 +688,15 @@ async function checkBackend() {
     broadcastState({ offline: true });
     if (!quitting) dequeueTimer = setTimeout(checkBackend, 1000);
   }
+}
+
+// 拉取后端设置并广播给各窗口（'settings' 事件 → 渲染进程 onSettings）
+async function fetchSettingsAndBroadcast() {
+  try {
+    const r = await fetch(BACKEND_URL + '/settings', { signal: AbortSignal.timeout(3000) });
+    const d = await r.json();
+    if (d.ok) broadcastSettings(d.settings);
+  } catch { /* 后端不可达：下次在线转换/保存时再补 */ }
 }
 
 async function pollDequeue() {
@@ -645,10 +715,31 @@ async function pollDequeue() {
     broadcastState(data.state);
     broadcastPanelState();
     if (!events.length) return;
-    // text_stream 是瞬态流式事件：如果已经发给当前窗口，面板展开时不能重放，
-    // 否则同一句话会被流式 TTS 再播一遍（重复说话）。
-    pendingEvents.push(...events.filter((ev) => ev.type !== 'text_stream'));
-    if (pendingEvents.length > 60) pendingEvents.splice(0, pendingEvents.length - 60);
+    // 面板窗口（**含隐藏态**）能收就实时收：隐藏期间 DOM 与对话流保持一致，展开时
+    // 不必依赖 /history 重建——在途的思考/工具调用还没写进 buffer，重建会把它们抹掉
+    // （用户实测：生成中收/展面板，工具行和思考流全丢了）。audio 除外（按形态单播）。
+    const panelAlive = panelLoaded && panelWin && !panelWin.isDestroyed();
+    if (panelAlive) {
+      const panelEvents = events.filter((ev) => ev.type !== 'audio');
+      if (panelEvents.length) panelWin.webContents.send('events', panelEvents);
+    } else {
+      // 面板页还没加载完 → 暂存，morph-in-done 时补发；流式事件不缓存（迟到重放会重复渲染）
+      pendingEvents.push(...events.filter(
+        (ev) => ev.type !== 'text_stream' && ev.type !== 'thinking_stream'));
+      if (pendingEvents.length > 200) pendingEvents.splice(0, pendingEvents.length - 200);
+    }
+    // 审批/提问请求：面板隐藏时没人能看到弹窗 → 会静默等到超时（默认拒绝/跳过）。
+    // 隐藏 → 自动展开；已展开但可能被其他窗口压住（面板不常驻最前）→ 置前。
+    const needsPopup = events.some((ev) => ev.type === 'approval_request' || ev.type === 'question_request');
+    if (needsPopup) {
+      if (panelState === 'hidden') {
+        appLog('[popup] 收到审批/提问请求，面板隐藏 → 自动展开');
+        morphIn();
+      } else if (panelState === 'shown') {
+        appLog('[popup] 收到审批/提问请求 → 面板置前');
+        focusPanel();
+      }
+    }
     if (panelState === 'hidden') {
       // 悬浮球形态：文本事件冒气泡；audio 事件 → 气泡窗口播放；
       // text_stream 也转发（语音对话模式的流式 TTS 在悬浮球形态同样可用）
@@ -661,17 +752,14 @@ async function pollDequeue() {
           bubbleWin.webContents.send('events', [ev]);
         }
       }
-    } else if (panelLoaded && panelWin && !panelWin.isDestroyed()) {
-      // 面板展开：推给面板渲染（含 morphing_in/out，事件顺序保持）
-      panelWin.webContents.send('events', events);
-      // audio 事件 → 面板窗口播放（展开时也朗读）
+    } else if (panelAlive) {
+      // 面板展开：audio 事件 → 面板窗口播放（展开时也朗读）
       for (const ev of events) {
         if (ev.type === 'audio' && ev.url) {
           panelWin.webContents.send('audio', ev.url);
         }
       }
     }
-    // morphing_in 且页面未加载完 → 事件留在 pendingEvents，morph-in-done 时补发
   } catch {
     // 后端不可达 → 广播离线状态，各窗口状态点变红
     setBackendOnline(false);
@@ -796,6 +884,61 @@ ipcMain.handle('api-fetch', async (e, reqPath, opts = {}) => {
   return { status: res.status, ok: res.ok, text };
 });
 
+// 选择代码工作区目录（设置页「选择…」按钮 / 工作目录面板「更换工作区」）；取消返回空串
+ipcMain.handle('pick-directory', async (event) => {
+  try {
+    const senderWin = BrowserWindow.fromWebContents(event.sender);
+    const parent = (senderWin && !senderWin.isDestroyed()) ? senderWin
+      : (panelWin && !panelWin.isDestroyed()) ? panelWin
+        : (bubbleWin && !bubbleWin.isDestroyed()) ? bubbleWin : null;
+    const r = await dialog.showOpenDialog(parent, {
+      title: '选择代码工作区',
+      properties: ['openDirectory'],
+    });
+    // Windows 已知坑：原生对话框关闭后键盘焦点可能不还给原窗口
+    // （表现："按钮能点、输入框打不了字"）→ 显式把焦点还回去
+    if (parent && !parent.isDestroyed()) {
+      try {
+        parent.focus();
+        if (parent.webContents && !parent.webContents.isDestroyed()) {
+          parent.webContents.focus();
+        }
+      } catch { /* 忽略 */ }
+    }
+    if (r.canceled || !r.filePaths || !r.filePaths.length) return '';
+    return r.filePaths[0];
+  } catch {
+    return '';
+  }
+});
+
+// 面板置前并聚焦（托盘/审批自动展开/前端焦点兜底共用）
+ipcMain.on('focus-panel', () => focusPanel());
+
+// 键盘焦点兜底：把焦点还给发起窗口（Windows 原生对话框/边缘情况会带走键盘焦点，
+// 表现为"鼠标能点、打不了字"；webContents.focus() 是把键盘输入接回来的关键一步）
+ipcMain.on('refocus-window', (event) => {
+  const w = BrowserWindow.fromWebContents(event.sender);
+  if (w && !w.isDestroyed()) {
+    try {
+      w.focus();
+      if (w.webContents && !w.webContents.isDestroyed()) w.webContents.focus();
+    } catch { /* 忽略 */ }
+  }
+});
+
+// 在系统文件管理器中打开目录（工作目录面板「打开文件夹」）
+ipcMain.handle('open-path', async (e, p) => {
+  const target = String(p || '');
+  if (!target) return { ok: false, error: 'empty' };
+  try {
+    const err = await shell.openPath(target);   // 成功返回空串，失败返回错误描述
+    return err ? { ok: false, error: err } : { ok: true };
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+});
+
 // 清理前端 TTS 缓存：只保留最近 7 天、最多 200 个文件 / 200MB
 function cleanupTtsCache(maxAgeMs = 7 * 24 * 3600 * 1000, maxFiles = 200, maxBytes = 200 * 1024 * 1024) {
   try {
@@ -838,13 +981,52 @@ ipcMain.handle('api-audio', async (e, reqPath) => {
     fs.writeFileSync(file, buf);
     cleanupTtsCache();
     const fileUrl = 'file:///' + file.replace(/\\/g, '/');
-    appLog('[tts] audioFile: ' + name + ' ' + buf.length + ' bytes -> ' + fileUrl);
+    let from = '?';
+    try { from = String(e.sender.getURL() || '').split('/').pop(); } catch { /* 忽略 */ }
+    appLog('[tts] audioFile: ' + name + ' ' + buf.length + ' bytes <- ' + from);
     return fileUrl;
   } catch (err) { appLog('[tts] audioFile FAIL: ' + name + ' ' + err.message); return null; }
 });
 
+// 图片下载：主进程拉 /file?path=… → 写 userData/image_cache → 返回 file:// 路径（img 直接显示）
+// （与音频同理：file:// 页面直连 http 媒体受 CORS/PNA 限制，统一走主进程落地文件）
+ipcMain.handle('api-image', async (e, url) => {
+  const u = String(url || '');
+  if (!u.startsWith('/file?path=')) return null;
+  try {
+    const res = await fetch(BACKEND_URL + u, { signal: AbortSignal.timeout(30000) });
+    if (!res.ok) return null;
+    const buf = Buffer.from(await res.arrayBuffer());
+    const extByType = { 'image/png': '.png', 'image/jpeg': '.jpg', 'image/gif': '.gif',
+                        'image/webp': '.webp', 'image/bmp': '.bmp' };
+    const ctype = String(res.headers.get('content-type') || '').split(';')[0].trim();
+    const ext = extByType[ctype] || '.png';
+    const digest = crypto.createHash('sha1').update(u).digest('hex').slice(0, 16);
+    const dir = path.join(app.getPath('userData'), 'image_cache');
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, digest + ext);
+    fs.writeFileSync(file, buf);
+    cleanupImageCache(dir);
+    const fileUrl = 'file:///' + file.replace(/\\/g, '/');
+    return fileUrl;
+  } catch (err) { appLog('[image] api-image FAIL: ' + err.message); return null; }
+});
+
+// 图片缓存清理：按修改时间保留最新 100 张
+function cleanupImageCache(dir) {
+  try {
+    const files = fs.readdirSync(dir)
+      .map((n) => ({ p: path.join(dir, n), m: fs.statSync(path.join(dir, n)).mtimeMs }))
+      .sort((a, b) => b.m - a.m);
+    for (const f of files.slice(100)) {
+      try { fs.unlinkSync(f.p); } catch { /* 忽略 */ }
+    }
+  } catch { /* 清理失败不影响显示 */ }
+}
+
 // 全局挂载文件（拖拽上传）：主进程单点持有，两窗口（悬浮球/面板）共享，
 // 变更即广播——球显示文件数徽标、面板显示对话框上方文件条。
+
 let mountedFiles = [];
 
 function broadcastMounted() {
@@ -887,6 +1069,15 @@ let uiSettings = { press_ms: 200 };
       if (raw && typeof raw.press_ms === 'number') uiSettings.press_ms = raw.press_ms;
       // voice_mode 会随开关保存，但这里必须加载——否则每次重启语音模式都被重置为关
       if (raw && typeof raw.voice_mode === 'boolean') uiSettings.voice_mode = raw.voice_mode;
+      // 面板尺寸（拖拽边缘调整后持久化）
+      if (raw && typeof raw.panel_w === 'number') {
+        uiSettings.panel_w = raw.panel_w;
+        panelW = Math.max(PANEL_MIN, Math.round(raw.panel_w));
+      }
+      if (raw && typeof raw.panel_h === 'number') {
+        uiSettings.panel_h = raw.panel_h;
+        panelH = Math.max(PANEL_MIN, Math.round(raw.panel_h));
+      }
       return;
     }
     // 首次：从后端 settings.json 迁移 press_ms（后端旧数据）
@@ -920,6 +1111,112 @@ ipcMain.on('save-ui-settings', (e, updates) => {
   saveUiSettingsFile();
   broadcastUiSettings();
 });
+// 面板尺寸：程序化设置（测试/恢复默认用）；拖拽调整走 panel-resize-start/end
+ipcMain.handle('panel-size-get', () => ({ w: panelW, h: panelH }));
+ipcMain.on('panel-size-set', (e, size) => {
+  const w = Math.max(PANEL_MIN, Math.round(Number(size && size.w) || panelW));
+  const h = Math.max(PANEL_MIN, Math.round(Number(size && size.h) || panelH));
+  panelW = w;
+  panelH = h;
+  uiSettings.panel_w = w;
+  uiSettings.panel_h = h;
+  saveUiSettingsFile();
+  applyPanelBoundsKeepAnchor();
+});
+
+// 拖拽边缘调整大小（透明窗口不支持原生 resize → 渲染层报边缘，主进程跟光标调尺寸）
+let resizeState = null;
+
+function clampPanelSize(w, h, disp) {
+  return {
+    w: Math.max(PANEL_MIN, Math.min(w, disp.width - 8)),
+    h: Math.max(PANEL_MIN, Math.min(h, disp.height - 8)),
+  };
+}
+
+function applyPanelBoundsKeepAnchor() {
+  if (!panelWin || panelWin.isDestroyed() || panelState !== 'shown') return;
+  try {
+    const b = panelWin.getBounds();
+    const disp = screen.getDisplayNearestPoint({ x: b.x + 10, y: b.y + 10 }).workArea;
+    const size = clampPanelSize(panelW, panelH, disp);
+    const x = Math.max(disp.x + 4, Math.min(b.x, disp.x + disp.width - size.w - 4));
+    const y = Math.max(disp.y + 4, Math.min(b.y, disp.y + disp.height - size.h - 4));
+    panelWin.setBounds({ x: Math.round(x), y: Math.round(y), width: size.w, height: size.h });
+  } catch { /* 窗口销毁中忽略 */ }
+}
+
+function stopPanelResize(save = true) {
+  if (!resizeState) return;
+  clearInterval(resizeState.timer);
+  resizeState = null;
+  if (save) {
+    uiSettings.panel_w = panelW;
+    uiSettings.panel_h = panelH;
+    saveUiSettingsFile();
+    appLog('[panel] resized to ' + panelW + 'x' + panelH);
+  }
+}
+
+ipcMain.on('panel-resize-start', (e, edge) => {
+  if (!panelWin || panelWin.isDestroyed() || panelState !== 'shown') return;
+  stopPanelResize(false);
+  const b = panelWin.getBounds();
+  const cur = screen.getCursorScreenPoint();
+  resizeState = {
+    edge: String(edge || 'se').toLowerCase(),
+    sx: cur.x, sy: cur.y, b,
+    startedAt: Date.now(),
+    lastCur: cur, lastMoveAt: Date.now(),
+    timer: null,
+  };
+  appLog('[panel] resize start edge=' + resizeState.edge);
+  resizeState.timer = setInterval(() => {
+    const st = resizeState;
+    if (!st || !panelWin || panelWin.isDestroyed() || panelState !== 'shown') {
+      stopPanelResize(true);
+      return;
+    }
+    const cur2 = screen.getCursorScreenPoint();
+    if (cur2.x !== st.lastCur.x || cur2.y !== st.lastCur.y) {
+      st.lastCur = cur2;
+      st.lastMoveAt = Date.now();
+    }
+    // 兜底：光标 2 秒没动（或拖了 30 秒）→ 视为松手，收尾
+    if (Date.now() - st.lastMoveAt > 2000 || Date.now() - st.startedAt > 30000) {
+      stopPanelResize(true);
+      return;
+    }
+    const disp = screen.getDisplayNearestPoint({ x: st.b.x + 20, y: st.b.y + 20 }).workArea;
+    const dx = cur2.x - st.sx;
+    const dy = cur2.y - st.sy;
+    const east = st.edge.includes('e');
+    const west = st.edge.includes('w');
+    const south = st.edge.includes('s');
+    const north = st.edge.includes('n');
+    const right = st.b.x + st.b.width;
+    const bottom = st.b.y + st.b.height;
+    let w = st.b.width;
+    let h = st.b.height;
+    if (east || west) w = Math.max(PANEL_MIN, st.b.width + (east ? dx : -dx));
+    if (north || south) h = Math.max(PANEL_MIN, st.b.height + (south ? dy : -dy));
+    if (east) w = Math.min(w, disp.x + disp.width - 4 - st.b.x);
+    if (south) h = Math.min(h, disp.y + disp.height - 4 - st.b.y);
+    if (west) w = Math.min(w, right - disp.x - 4);
+    if (north) h = Math.min(h, bottom - disp.y - 4);
+    w = Math.max(PANEL_MIN, w);
+    h = Math.max(PANEL_MIN, h);
+    const x = west ? right - w : st.b.x;
+    const y = north ? bottom - h : st.b.y;
+    panelW = Math.round(w);
+    panelH = Math.round(h);
+    try {
+      panelWin.setBounds({ x: Math.round(x), y: Math.round(y), width: panelW, height: panelH });
+    } catch { /* 忽略 */ }
+  }, 16);
+});
+
+ipcMain.on('panel-resize-end', () => stopPanelResize(true));
 // ── 语音连续对话模式：主进程统一开关（菜单/按钮 → 持久化 → 双窗口广播）──
 function broadcastVoiceMode() {
   const on = !!uiSettings.voice_mode;
@@ -1001,11 +1298,7 @@ function openSettings() {
 ipcMain.on('open-settings', () => openSettings());
 // 设置保存后：重新拉取并广播给各窗口（长按时间等前端项即时生效）
 ipcMain.on('settings-saved', async () => {
-  try {
-    const r = await fetch(BACKEND_URL + '/settings', { signal: AbortSignal.timeout(3000) });
-    const d = await r.json();
-    if (d.ok) broadcastSettings(d.settings);
-  } catch { /* 后端不可达忽略 */ }
+  await fetchSettingsAndBroadcast();
 });
 function broadcastSettings(settings) {
   try {
@@ -1070,6 +1363,12 @@ ipcMain.on('move-panel', (e, x, y) => {
   }
 });
 ipcMain.on('morph-in-done', () => {
+  // 陈旧事件防护：只在真正 morphing_in 时处理（曾因 renderer 兜底定时器陈旧触发，
+  // "out 完成"事件把刚展开的面板又隐藏——现已在 morph.js 根治，这里再兜一层）
+  if (panelState !== 'morphing_in') {
+    appLog('[morph] 忽略陈旧的 morph-in-done（state=' + panelState + '）');
+    return;
+  }
   clearMorphTimeout();
   panelState = 'shown';
   ignoreBlurUntil = Date.now() + 500;   // 防 focus 延迟失败的闪回
@@ -1085,6 +1384,11 @@ ipcMain.on('morph-in-done', () => {
   }
 });
 ipcMain.on('morph-out-done', () => {
+  // 陈旧事件防护：只在真正 morphing_out 时处理（见 morph-in-done 同款注释）
+  if (panelState !== 'morphing_out') {
+    appLog('[morph] 忽略陈旧的 morph-out-done（state=' + panelState + '）');
+    return;
+  }
   clearMorphTimeout();
   panelState = 'hidden';
   if (panelWin && !panelWin.isDestroyed()) panelWin.hide();
@@ -1127,6 +1431,14 @@ ipcMain.on('quit-app', () => doQuit());ipcMain.on('bubble-menu', (e) => {
     });
   }
   items.push({ type: 'separator' });
+  items.push({
+    label: '显示最近的气泡',
+    click: () => {
+      if (bubbleWin && !bubbleWin.isDestroyed()) {
+        bubbleWin.webContents.send('show-reply');
+      }
+    },
+  });
   items.push({ label: '清除气泡', click: () => clearAllToasts() });
   items.push({ type: 'separator' }, { label: '退出', click: () => doQuit() });
   const menu = Menu.buildFromTemplate(items);
@@ -1155,6 +1467,14 @@ if (!gotSingleLock) {
     cleanupTtsCache(); // 启动时清理旧 TTS 缓存
     ensureBackend(); // 后端不在线则自动拉起
     startBackendMonitor(); // 先健康检查，确认在线后再进入 /dequeue 长轮询
+    // 打开即展开（用户设定）：默认以大窗启动（仍可点「—」变形回悬浮球）。
+    // 稍延迟：让球先就位（变形动画的起点）、面板页有时间加载。
+    setTimeout(() => {
+      if (!quitting && panelState === 'hidden') {
+        showBubble();      // 确保球可见（动画起点）
+        morphIn();
+      }
+    }, 500);
   });
 }
 

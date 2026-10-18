@@ -2,8 +2,9 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
+  <!-- frame-src：只允许本地后端提供 HTML 预览（```html 卡片，iframe 仍在 sandbox 内） -->
   <meta http-equiv="Content-Security-Policy"
-        content="default-src 'self'; connect-src http://127.0.0.1:*; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:;" />
+        content="default-src 'self'; connect-src http://127.0.0.1:*; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:; frame-src http://127.0.0.1:*;" />
   <title>小助</title>
   <link rel="stylesheet" href="style.css" />
 </head>
@@ -24,20 +25,36 @@
       <header id="titlebar">
         <div id="logo"><span class="dot"></span><span id="title">小助</span></div>
         <div id="status">
+          <span id="compressing" class="hidden">压缩记忆中…</span>
           <span id="thinking" class="hidden">思考中…</span>
-          <span id="ctx-tokens" title="当前上下文 token 估算">…</span>
+          <span id="approval-badge" class="hidden" title="有操作等待审批">!</span>
           <span id="heartbeat" title="下次主动找你"></span>
         </div>
         <div id="titlebar-btns">
-          <button id="btn-settings" title="设置">⚙</button>
+          <button id="btn-settings" title="设置">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+          </button>
           <button id="btn-fold" title="收起（变回悬浮球）">—</button>
         </div>
       </header>
+
+      <!-- 边缘拖拽调整大小（透明窗口不支持原生边框 resize，渲染层接管） -->
+      <div id="resize-handles">
+        <div class="rs rs-n" data-edge="n"></div>
+        <div class="rs rs-s" data-edge="s"></div>
+        <div class="rs rs-w" data-edge="w"></div>
+        <div class="rs rs-e" data-edge="e"></div>
+        <div class="rs rs-nw" data-edge="nw"></div>
+        <div class="rs rs-ne" data-edge="ne"></div>
+        <div class="rs rs-sw" data-edge="sw"></div>
+        <div class="rs rs-se" data-edge="se"></div>
+      </div>
 
       <!-- Tab 导航 -->
       <nav id="tabs">
         <button class="tab active" data-tab="chat">聊天</button>
         <button class="tab" data-tab="calendar">日历<span id="agenda-badge" class="badge hidden"></span></button>
+        <button class="tab" data-tab="changes">变更</button>
       </nav>
 
       <!-- 聊天 -->
@@ -45,12 +62,26 @@
         <div id="mounted-bar" class="hidden"></div>
         <div id="messages"></div>
         <audio id="tts-audio" hidden></audio>
+        <div id="at-list" class="hidden"></div>
         <button id="jump-bottom" class="hidden" title="回到最新消息">↓</button>
         <form id="input-bar">
           <textarea id="input" rows="1" placeholder="告诉小助你要做什么…（Enter 发送 / Shift+Enter 换行）"></textarea>
-          <div id="input-actions">
-            <button id="voice-btn" type="button" title="语音对话模式（免按连续对话，说话可打断小助）">🎤</button>
-            <button id="send" type="submit" title="发送（长按：语音输入）">发送</button>
+          <!-- 底部一行（框内）：左侧状态 chips，右侧语音/发送按钮（opencode 式布局） -->
+          <div id="input-foot">
+            <!-- 状态条：目录 / 权限模式 / 模型 / 思考强度 / 用量统计 -->
+            <div id="composer-bar">
+              <button id="cb-dir" class="cb-chip hidden" type="button" title="">—</button>
+              <button id="cb-mode" class="cb-chip hidden" type="button" title="权限模式（点击切换）">Ask</button>
+              <button id="cb-model" class="cb-chip" type="button" title="模型（点击切换）">模型</button>
+              <button id="cb-effort" class="cb-chip" type="button" title="思考强度（点击切换）">默认</button>
+              <button id="cb-stats" class="cb-chip" type="button" title="原始消息上下文 / 缓存命中 / TPS（最近 50 轮平均，点击看明细）">—</button>
+            </div>
+            <div id="input-actions">
+              <button id="voice-btn" type="button" title="点击开始录音，再点一下结束并转成文字">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+              </button>
+              <button id="send" type="submit" title="发送（Enter）">发送</button>
+            </div>
           </div>
         </form>
       </section>
@@ -88,6 +119,110 @@
           </form>
         </div>
       </section>
+
+      <!-- 变更历史（代码工作区写操作留底；可回退到任意一条之前） -->
+      <section id="changes" class="view">
+        <div id="changes-bar">
+          <span id="changes-summary">本工作区的文件变更（新→旧）</span>
+          <button id="changes-refresh" type="button" title="刷新">刷新</button>
+          <button id="changes-clear" type="button" title="清空历史（不动文件）">清空</button>
+        </div>
+        <div id="changes-list"></div>
+        <div id="changes-hint">
+          「回退到此条之前」= 撤销该条及之后的所有变更（按新→旧逐个恢复文件内容）；
+          标「未留底」的大文件无法回退。
+        </div>
+      </section>
+
+      <!-- 权限模式菜单（点输入框下方权限 chip 切换；模仿 Codex /permissions） -->
+      <div id="mode-menu" class="popover hidden">
+        <div class="pop-title">权限模式</div>
+        <button class="mode-item" type="button" data-mode="ask">
+          <b>Ask</b><span>写操作与命令都要你逐条确认（默认）</span></button>
+        <button class="mode-item" type="button" data-mode="auto">
+          <b>Auto</b><span>当前目录内写自动放行；命令仍需逐条确认</span></button>
+        <button class="mode-item" type="button" data-mode="read_only">
+          <b>只读</b><span>禁止一切写入与命令</span></button>
+      </div>
+
+      <!-- 模型菜单（按服务商分组；内容由 JS 渲染） -->
+      <div id="model-menu" class="popover hidden"></div>
+
+      <!-- 思考强度菜单 -->
+      <div id="effort-menu" class="popover hidden">
+        <div class="pop-title">思考强度</div>
+        <button class="mode-item" type="button" data-effort="low">
+          <b>少想一点</b><span>更快更省，难题可能变差</span></button>
+        <button class="mode-item" type="button" data-effort="high">
+          <b>默认</b><span>官方默认档（推荐）</span></button>
+        <button class="mode-item" type="button" data-effort="max">
+          <b>多想一点</b><span>最慢最贵，难题最好</span></button>
+      </div>
+
+      <!-- 上下文与用量面板（点状态条合并 chip）：上下文分解 + 最近 50 轮用量明细 -->
+      <div id="stats-panel" class="popover hidden">
+        <div class="pop-title">上下文与用量<button id="stats-close" class="pop-x" type="button">✕</button></div>
+        <div class="pop-sec">上下文占用（各分项占 100 万总窗口的比例）</div>
+        <div id="ctx-bars"></div>
+        <div id="ctx-foot" class="pop-sec"></div>
+        <div class="pop-divider"></div>
+        <div class="pop-sec">模型用量（最近 50 轮）</div>
+        <div id="stats-summary"></div>
+        <div id="stats-list"></div>
+      </div>
+
+      <!-- 工作目录面板（点标题栏目录 chip） -->
+      <div id="ws-panel" class="popover hidden">
+        <div class="pop-title">工作目录<button id="ws-close" class="pop-x" type="button">✕</button></div>
+        <div id="ws-crumbs" class="ws-crumbs"></div>
+        <div id="ws-dirs" class="ws-list"></div>
+        <div class="pop-actions">
+          <button id="ws-use" class="mini-btn" type="button">设为当前目录</button>
+          <button id="ws-root" class="mini-btn" type="button">回到根</button>
+          <button id="ws-open" class="mini-btn" type="button">打开文件夹</button>
+          <button id="ws-change" class="mini-btn" type="button">更换工作区…</button>
+        </div>
+        <div class="pop-sec">最近目录</div>
+        <div id="ws-recent" class="ws-list"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 审批弹窗（代码工作区：写操作 / 工作区外读，超时默认拒绝）
+       ⚠️ 必须在脚本之前：app.js 在加载时就要给按钮绑事件 -->
+  <div id="approval" class="hidden">
+    <div class="approval-card">
+      <div class="approval-title">小助请求执行操作</div>
+      <div class="approval-tool" id="approval-tool"></div>
+      <div class="approval-paths" id="approval-paths"></div>
+      <pre class="approval-preview hidden" id="approval-preview"></pre>
+      <div class="approval-scopes hidden" id="approval-scopes"></div>
+      <div class="approval-note">
+        允许后立即执行；「记住并允许」按所选范围加白名单（更换工作区时清空）。
+        不操作则 <b id="approval-countdown">…</b> 后自动拒绝。
+      </div>
+      <div class="approval-btns">
+        <button id="approval-once" type="button">允许一次</button>
+        <button id="approval-always" type="button">记住并允许</button>
+        <button id="approval-deny" type="button">拒绝</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ask_user 提问卡改为**对话区内联卡片**（app.js showQuestion 动态插入），
+       不再有全屏遮罩弹窗（会挡住对话内容，用户没法参考上文） -->
+
+  <!-- 应用内确认框（替代 window.confirm：Windows 原生弹窗关闭后键盘焦点
+       可能不还给页面 → "鼠标能点、打不了字"，要最小化再还原才恢复）
+       ⚠️ 必须在脚本之前 -->
+  <div id="ui-confirm" class="hidden">
+    <div class="approval-card ui-confirm-card">
+      <div class="approval-title" id="ui-confirm-title">请确认</div>
+      <div id="ui-confirm-text" class="ui-confirm-text"></div>
+      <div class="approval-btns">
+        <button id="ui-confirm-cancel" type="button">取消</button>
+        <button id="ui-confirm-ok" type="button">确定</button>
+      </div>
     </div>
   </div>
 

@@ -298,6 +298,19 @@
     splitAndQueue(true);               // 收尾剩余缓冲
   }
 
+  // 立即停嘴：暂停当前播放、强制结束播放等待、清空队列与预取
+  // （tts_mute / 语音播报开关关闭 / 打断 共用）
+  function stopSpeakingNow() {
+    if (ttsAudio) { try { ttsAudio.pause(); } catch { /* 忽略 */ } }
+    if (currentPlayResolve) {
+      const resolvePlay = currentPlayResolve;
+      currentPlayResolve = null;
+      resolvePlay();
+    }
+    playQueue = [];
+    prefetchMap = new Map();
+  }
+
   function splitAndQueue(force) {
     // 取到最后一个标点为止的“完整文本”，剩余部分留在 streamBuf
     const m = streamBuf.match(/.*[。！？…；\n，,.]/);
@@ -463,14 +476,7 @@
           if (suppressTts) {
             // 自主学习：立即停嘴，后续文本不再朗读
             mutedTts = true;
-            if (ttsAudio) { try { ttsAudio.pause(); } catch { /* 忽略 */ } }
-            if (currentPlayResolve) {
-              const resolvePlay = currentPlayResolve;
-              currentPlayResolve = null;
-              resolvePlay();
-            }
-            playQueue = [];
-            prefetchMap = new Map();
+            stopSpeakingNow();
           }
         } else if (ev.type === 'text_stream' && ev.content) {
           handleTextStream(ev.content);
@@ -483,8 +489,12 @@
     });
     window.planner.onVoiceMode((on) => setEnabled(on));
     // 自动语音播报开关（普通模式流式 TTS 也遵守）
+    // 运行中关闭（设置页保存 → 主进程广播）→ 立即停嘴，含正在播的那句
     window.planner.onSettings((s) => {
-      if (s && typeof s.tts_enabled !== 'undefined') ttsEnabled = !!s.tts_enabled;
+      if (!s || typeof s.tts_enabled === 'undefined') return;
+      const on = !!s.tts_enabled;
+      if (!on && ttsEnabled) stopSpeakingNow();
+      ttsEnabled = on;
     });
     apiFetch('/settings').then((r) => {
       try {
@@ -511,15 +521,9 @@
     state: () => state,
     // 流式 TTS 接管后，抑制后端整句 audio 事件（防双播）
     shouldSuppressAudio: () => true,
-    suppressAudio: () => {
-      mutedTts = true;
-      if (ttsAudio) { try { ttsAudio.pause(); } catch { /* 忽略 */ } }
-      if (currentPlayResolve) {
-        const resolvePlay = currentPlayResolve;
-        currentPlayResolve = null;
-        resolvePlay();
-      }
-    },
+    suppressAudio: stopSpeakingNow,
+    // 自动语音播报开关当前值（e2e 断言：设置页保存后运行中实时同步）
+    ttsEnabled: () => ttsEnabled,
     // 用户开始语音输入/打断时调用：停嘴 + 停止后端生成
     interrupt,
   };

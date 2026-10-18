@@ -16,12 +16,10 @@ html, body {
   gap: 8px;
   margin: 2px;
   padding: 10px 12px;
-  background: rgba(255, 255, 255, 0.88);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
-  border: 1px solid rgba(138, 168, 255, 0.30);
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
   border-radius: 12px;
-  box-shadow: 0 0 0 1px rgba(138, 168, 255, 0.28);       /* 无投影阴影，仅细描边 */
+  box-shadow: 0 8px 24px rgba(16, 24, 40, 0.10), 0 1px 3px rgba(16, 24, 40, 0.06);
   animation: toastIn 240ms ease-out;
   cursor: pointer;
 }
@@ -33,10 +31,10 @@ html, body {
 
 #toast-text {
   flex: 1;
-  font-family: "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+  font-family: "Segoe UI", "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
   font-size: 13px;
   line-height: 1.5;
-  color: #2b2f38;
+  color: #1b1d23;
   white-space: pre-wrap;      /* 完整显示，长文本自动撑高（窗口随内容自适应） */
   word-break: break-word;
 }
@@ -44,15 +42,16 @@ html, body {
 /* 轻量 markdown（与面板聊天区一致的渲染样式） */
 #toast-text strong { font-weight: 700; }
 #toast-text code {
-  background: rgba(91, 124, 250, 0.12);
+  background: #f3f4f6;
+  border: 1px solid #e5e7eb;
   border-radius: 4px;
   padding: 1px 4px;
   font-family: Consolas, "Courier New", monospace;
   font-size: 12px;
 }
 #toast-text .md-code {
-  background: rgba(43, 47, 56, 0.06);
-  border: 1px solid rgba(43, 47, 56, 0.08);
+  background: #fafbfc;
+  border: 1px solid #e5e7eb;
   border-radius: 6px;
   padding: 6px 8px;
   margin: 4px 0 0;

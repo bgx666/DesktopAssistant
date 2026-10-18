@@ -100,6 +100,22 @@ def _decode_image(image_bytes: bytes) -> np.ndarray | None:
         return None
 
 
+def ocr_enabled() -> bool:
+    """OCR 依赖是否可用（回退路径的提示文案用）。"""
+    return _HAS_DEP
+
+
+def ocr_image_file(path) -> str | None:
+    """识别图片文件 → 文字（view_image 在无视觉模型时的回退；依赖缺失返回 None）。"""
+    if not _HAS_DEP:
+        return None
+    try:
+        return _global_client().recognize_path(str(path))
+    except Exception:
+        _logger.exception("[ocr] 文件 OCR 失败")
+        return None
+
+
 def ocr_png_from_screen(screen: np.ndarray) -> str | None:
     """从屏幕像素数组（BGRA，mss 输出）直接 OCR（内部转换，避免临时文件）。"""
     if not _HAS_DEP:

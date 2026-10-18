@@ -206,7 +206,10 @@ def test_capture_screen_vision_path(monkeypatch):
     tools = {t.name: t for t in build_tools(fake)}
     res = tools["capture_screen"].invoke({})
     assert "已注入本次对话" in res
-    assert fake._pending_screenshots == ["data:image/png;base64,AAA"]
+    assert len(fake._pending_screenshots) == 1
+    entry = fake._pending_screenshots[0]
+    assert entry["url"] == "data:image/png;base64,AAA"
+    assert "屏幕截图" in entry["text"]
 
     # 截图转 data URL 失败 → 回退 OCR，不污染 pending 队列
     monkeypatch.setattr("planner.imageutil.numpy_to_data_url", lambda shot: None)
@@ -214,4 +217,4 @@ def test_capture_screen_vision_path(monkeypatch):
                         lambda shot: "OCR 兜底文字")
     res2 = tools["capture_screen"].invoke({})
     assert "OCR 兜底文字" in res2
-    assert fake._pending_screenshots == ["data:image/png;base64,AAA"]
+    assert len(fake._pending_screenshots) == 1

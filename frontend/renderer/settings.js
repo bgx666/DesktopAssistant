@@ -5,6 +5,31 @@
   const canvas = $('#chart');
   const ctx = canvas.getContext('2d');
 
+  // ── 应用内确认框（替代 window.confirm）────────────────────
+  // 原因：Windows 下原生 confirm 关闭后键盘焦点可能不还给页面（能点、打不了字）
+  let uiConfirmResolve = null;
+  function uiConfirm(message) {
+    const modal = $('#ui-confirm');
+    if (!modal) return Promise.resolve(window.confirm(message));   // DOM 缺失兜底
+    $('#ui-confirm-text').textContent = String(message || '');
+    modal.classList.remove('hidden');
+    return new Promise((resolve) => { uiConfirmResolve = resolve; });
+  }
+  function settleUiConfirm(ok) {
+    const modal = $('#ui-confirm');
+    if (modal) modal.classList.add('hidden');
+    const r = uiConfirmResolve;
+    uiConfirmResolve = null;
+    if (r) r(ok);
+  }
+  $('#ui-confirm-ok').addEventListener('click', () => settleUiConfirm(true));
+  $('#ui-confirm-cancel').addEventListener('click', () => settleUiConfirm(false));
+  document.addEventListener('keydown', (e) => {
+    if (!uiConfirmResolve) return;
+    if (e.key === 'Escape') { e.preventDefault(); settleUiConfirm(false); }
+    else if (e.key === 'Enter') { e.preventDefault(); settleUiConfirm(true); }
+  });
+
   // ── 选项卡切换 ──
   document.querySelectorAll('aside .tab').forEach((tab) => {
     tab.addEventListener('click', () => {
@@ -18,6 +43,99 @@
     });
   });
 
+  // ── 模型 API：分服务商 Key / 模型 / 端点（切换服务商互不覆盖）──
+  let llmProviders = [];
+  const llmDraft = {};    // 未保存的编辑：provider → {key, model, base}
+
+  function activeProvider() {
+    return $('#llm_provider').value || 'deepseek';
+  }
+
+  function snapshotProviderFields() {
+    const p = activeProvider();
+    llmDraft[p] = {
+      key: $('#llm_api_key_active').value,
+      model: $('#llm_model_active').value,
+      base: $('#llm_base_url_active').value,
+    };
+  }
+
+  function applyProviderFields() {
+    const p = activeProvider();
+    const preset = llmProviders.find((x) => x.id === p) || { models: [], base_url: '' };
+    const draft = llmDraft[p];
+    $('#llm_api_key_active').value = draft ? draft.key : (current[`llm_api_key_${p}`] || '');
+    $('#llm_model_active').value = draft ? draft.model : (current[`llm_model_${p}`] || '');
+    $('#llm_base_url_active').value = draft ? draft.base : (current[`llm_base_url_${p}`] || '');
+    $('#llm_base_url_active').placeholder = '留空 = ' + preset.base_url;
+    $('#llm_provider_hint').textContent = preset.base_url || '';
+    const list = $('#llm_model_list');
+    list.innerHTML = '';
+    (preset.models || []).forEach((m) => {
+      const opt = document.createElement('option');
+      opt.value = m;
+      list.appendChild(opt);
+    });
+  }
+
+  $('#llm_provider').addEventListener('change', () => {
+    snapshotProviderFields();   // 暂存当前服务商的未保存编辑
+    applyProviderFields();
+  });
+
+  // ── 代码工作区 + 已记住的授权规则 ────────────────────────
+  async function loadWorkspace() {
+    try {
+      const r = await window.planner.apiFetch('/workspace');
+      const d = JSON.parse(r.text);
+      if (!d.ok) return;
+      $('#workspace_root').value = d.workspace || '';
+      renderPermRules(d.rules || []);
+    } catch { /* 后端不可用：留空 */ }
+  }
+
+  function renderPermRules(rules) {
+    const box = $('#perm-rules');
+    if (!box) return;
+    box.innerHTML = '';
+    if (!rules.length) {
+      const div = document.createElement('div');
+      div.className = 'hint';
+      div.textContent = '（还没有规则——审批时选「记住并允许」会出现这里）';
+      box.appendChild(div);
+      return;
+    }
+    rules.forEach((r, i) => {
+      const row = document.createElement('div');
+      row.className = 'row';
+      const tool = document.createElement('label');
+      tool.textContent = r.tool || '?';
+      const val = document.createElement('span');
+      val.className = 'hint';
+      val.style.width = 'auto';
+      val.style.flex = '1';
+      val.textContent = r.cmd_glob ? `命令：${r.cmd_glob}` : (r.path_glob || '');
+      const btn = document.createElement('button');
+      btn.className = 'mini';
+      btn.type = 'button';
+      btn.textContent = '删除';
+      btn.addEventListener('click', async () => {
+        try {
+          await window.planner.apiFetch('/permissions/delete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ index: i }),
+          });
+        } catch { /* 忽略 */ }
+        await loadWorkspace();
+      });
+      row.appendChild(tool);
+      row.appendChild(val);
+      row.appendChild(btn);
+      box.appendChild(row);
+    });
+  }
+
   // ── 读取当前设置并回显：长按时间走主进程（本地配置），其余走后端 ──
   let current = {};
   async function loadSettings() {
@@ -30,13 +148,19 @@
       const r = await window.planner.apiFetch('/settings');
       const d = JSON.parse(r.text);
       current = d.settings || {};
-      for (const k of ['compress_trigger', 'compress_keep',
-                       'compact_threshold', 'compact_factor']) {
+      for (const k of ['compress_keep',
+                       'compact_threshold', 'compact_factor',
+                       'compress_token_budget', 'node_token_budget',
+                       'model_call_limit']) {
         $(`#${k}`).value = current[k] ?? '';
       }
-      $('#llm_api_key').value = current.llm_api_key || '';
-      $('#llm_base_url').value = current.llm_base_url || '';
-      $('#llm_model').value = current.llm_model || '';
+      $('#llm_provider').value = current.llm_provider || 'deepseek';
+      try {
+        const pr = await window.planner.apiFetch('/llm/providers');
+        const pd = JSON.parse(pr.text);
+        if (pd.ok) llmProviders = pd.providers || [];
+      } catch { /* 后端不可用：模型建议列表留空 */ }
+      applyProviderFields();
       // 思考开关与强度（默认 adaptive / high，与 settings.py 的 DEFAULT_SETTINGS 一致）
       $('#thinking_mode').value = current.thinking_mode || 'adaptive';
       $('#reasoning_effort').value = current.reasoning_effort || 'high';
@@ -44,7 +168,12 @@
       $('#tts_engine').value = current.tts_engine || '';
       drawChart();
     } catch { $('#msg').textContent = '后端不可用，无法读取压缩/LLM 设置'; }
+    // 代码工作区（独立端点：/workspace）+ 已记住的授权规则
+    await loadWorkspace();
     await loadVoices($('#tts_engine').value);
+    // 就绪标记：设置全部加载完成（e2e 等这个再操作——页面刚出现时脚本/数据
+    // 可能还没就绪，此时点保存会因字段为空/无监听而静默失败）
+    document.body.dataset.settingsLoaded = '1';
   }
 
   // 按引擎加载音色列表（保留当前已选音色；没有则清空）
@@ -122,17 +251,19 @@
   }
 
   function drawChart() {
-    const trigger = clampInt($('#compress_trigger').value, 20, 500, 60);
+    // 叶子压缩只看 token 预算：图上把预算换算成"等价条数"（每条按 MSG_TOKEN 估）画曲线
+    const tokenBudget = clampInt($('#compress_token_budget').value, 10000, 500000, 100000);
     const keep = clampInt($('#compress_keep').value, 5, 200, 20);
     const threshold = clampInt($('#compact_threshold').value, 3, 50, 8);
     const factor = clampInt($('#compact_factor').value, 2, 10, 4);
+    const trigger = Math.max(keep + 1, Math.round(tokenBudget / MSG_TOKEN));
     const W = canvas.width, H = canvas.height;
     const plotW = W - PAD.l - PAD.r, plotH = H - PAD.t - PAD.b;
     ctx.fillStyle = '#fff';
     ctx.fillRect(0, 0, W, H);
-    if (keep >= trigger || factor >= threshold) {
+    if (factor >= threshold) {
       ctx.fillStyle = '#d33'; ctx.font = '14px sans-serif';
-      ctx.fillText('参数不合法：保留条数 < 触发条数，合并个数 < 触发阈值', 30, 60);
+      ctx.fillText('参数不合法：合并个数 < 触发阈值', 30, 60);
       return;
     }
     pts = computePeaks(trigger, keep, threshold, factor);
@@ -175,7 +306,7 @@
 
     // 信息（黑字）
     ctx.fillStyle = '#111'; ctx.font = '12px sans-serif';
-    ctx.fillText(`触发 ${trigger} 条 / 保留 ${keep} 条 / 每层 ${threshold} 个合并 ${factor} 个`, PAD.l, 16);
+    ctx.fillText(`触发 ${tokenBudget.toLocaleString()} tok（≈${trigger} 条）/ 保留 ${keep} 条 / 每层 ${threshold} 个合并 ${factor} 个`, PAD.l, 16);
     ctx.fillStyle = '#666';
     const last = pts.length ? pts[pts.length - 1][1] : 0;
     ctx.fillText(`峰值（5 万轮）≈ ${Math.round(last / 1000)}k token · 拖动平移 · 滚轮缩放 · 双击重置`, PAD.l, 42);
@@ -216,7 +347,7 @@
   }
 
   // 输入即时重画（轻量：2500 点内毫秒级），参数变化重置视口
-  ['compress_trigger', 'compress_keep', 'compact_threshold', 'compact_factor']
+  ['compress_token_budget', 'compress_keep', 'compact_threshold', 'compact_factor']
     .forEach((id) => $(`#${id}`).addEventListener('input', () => { resetView(); drawChart(); }));
 
   // ── 保存：长按时间 → 主进程（本地，立即生效）；压缩/LLM → 后端 ──
@@ -232,14 +363,20 @@
     } catch { errs.push('长按时间保存失败'); }
     // 2) 压缩参数 + LLM（后端）
     const updates = {};
-    for (const k of ['compress_trigger', 'compress_keep',
-                     'compact_threshold', 'compact_factor']) {
+    for (const k of ['compress_keep',
+                     'compact_threshold', 'compact_factor',
+                     'compress_token_budget', 'node_token_budget',
+                     'model_call_limit']) {
       const v = parseInt($(`#${k}`).value, 10);
       if (!isNaN(v)) updates[k] = v;
     }
-    updates.llm_api_key = $('#llm_api_key').value.trim();
-    updates.llm_base_url = $('#llm_base_url').value.trim();
-    updates.llm_model = $('#llm_model').value.trim();
+    snapshotProviderFields();   // 把当前服务商的编辑并入草稿
+    Object.entries(llmDraft).forEach(([p, v]) => {
+      updates[`llm_api_key_${p}`] = String(v.key || '').trim();
+      updates[`llm_model_${p}`] = String(v.model || '').trim();
+      updates[`llm_base_url_${p}`] = String(v.base || '').trim();
+    });
+    updates.llm_provider = activeProvider();
     updates.thinking_mode = $('#thinking_mode').value;
     updates.reasoning_effort = $('#reasoning_effort').value;
     updates.tts_enabled = $('#tts_enabled').checked;
@@ -253,9 +390,29 @@
       });
       const d = JSON.parse(r.text);
       if (!d.ok) errs.push(d.error || '保存失败');
-      else current = d.settings;
+      else {
+        current = d.settings;
+        // 通知主进程广播新设置给悬浮球/面板（语音播报开关等**运行中实时生效**——
+        // 曾经漏掉这步：运行中关掉语音播报后，面板 voiceMode 的 ttsEnabled 仍是
+        // true，回复继续被流式朗读，直到重启才停）
+        window.planner.settingsSaved();
+      }
     } catch {
       errs.push('后端不可用，压缩/LLM 设置未保存');
+    }
+    // 3) 代码工作区（独立端点；路径变了后端会清空授权规则并重建 agent）
+    try {
+      const ws = $('#workspace_root').value.trim();
+      const r = await window.planner.apiFetch('/workspace', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: ws }),
+      });
+      const d = JSON.parse(r.text);
+      if (!d.ok) errs.push(d.error === 'not_a_directory' ? '工作区目录不存在' : (d.error || '工作区保存失败'));
+      else $('#workspace_root').value = d.workspace || '';
+    } catch {
+      errs.push('后端不可用，工作区设置未保存');
     }
     if (errs.length) {
       $('#msg').textContent = errs.join('；');
@@ -267,6 +424,22 @@
   });
 
   loadSettings();
+
+  // ── 代码工作区：选择目录 / 清除 ────────────────────────────
+  $('#btn_pick_ws').addEventListener('click', async () => {
+    const p = await window.planner.pickDirectory();
+    if (p) $('#workspace_root').value = p;
+  });
+  $('#btn_clear_ws').addEventListener('click', () => {
+    $('#workspace_root').value = '';
+  });
+  $('#perm-clear').addEventListener('click', async () => {
+    if (!(await uiConfirm('清空全部「记住并允许」规则？'))) return;
+    try {
+      await window.planner.apiFetch('/permissions/clear', { method: 'POST' });
+    } catch { /* 忽略 */ }
+    await loadWorkspace();
+  });
 
   // ── 试听：合成当前选中音色并播放（不保存）────────────
   const ttsAudio = document.getElementById('tts-audio');

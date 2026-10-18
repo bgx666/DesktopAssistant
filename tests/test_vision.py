@@ -41,21 +41,22 @@ def _force_vision(s, monkeypatch):
 # ── 模型解析 ─────────────────────────────────────────────────
 
 def test_resolve_model_default_vision(monkeypatch):
-    """未配置任何项 → 默认 vision-exp；PLANNER_LLM_MODEL 优先；共享 LLM_MODEL 不生效。"""
+    """未配置任何项 → 默认 deepseek-flash；PLANNER_LLM_MODEL 优先；共享 LLM_MODEL 不生效。"""
     monkeypatch.delenv("LLM_MODEL", raising=False)
     monkeypatch.delenv("PLANNER_LLM_MODEL", raising=False)
-    assert resolve_model_name() == "deepseek-v4-flash-vision-exp"
+    assert resolve_model_name() == "deepseek-flash"
     monkeypatch.setenv("PLANNER_LLM_MODEL", "planner-own-model")
     monkeypatch.setenv("LLM_MODEL", "shared-model")
     assert resolve_model_name() == "planner-own-model"
     assert resolve_model_name("settings-model") == "settings-model"
     monkeypatch.delenv("PLANNER_LLM_MODEL", raising=False)
     # 共享 LLM_MODEL（xiaob 的配置）不再影响 planner
-    assert resolve_model_name() == "deepseek-v4-flash-vision-exp"
+    assert resolve_model_name() == "deepseek-flash"
 
 
 def test_is_vision_model():
     assert is_vision_model("deepseek-v4-flash-vision-exp")
+    assert is_vision_model("deepseek-flash")   # 官方 V4.1-Flash 多模态（默认模型）
     assert is_vision_model("gpt-4o")
     assert is_vision_model("gpt-4o-mini")      # 含 "gpt-4o" 子串（mini 也支持视觉）
     assert is_vision_model("qwen2.5-vl-7b")
@@ -261,21 +262,22 @@ def test_history_endpoint_with_image(data_root, monkeypatch):
 
 
 def test_vision_capable_respects_model(data_root, monkeypatch):
-    """vision_capable：mock → False；默认模型 → True；纯文本模型 → False。"""
+    """vision_capable：mock → False；默认模型 → True；换纯文本模型 / 服务商 → False。"""
     s = PlannerSession(data_root, mock=True)
     try:
         assert not s.vision_capable   # mock 恒关
         monkeypatch.setattr(s, "mock", False)
         monkeypatch.delenv("LLM_MODEL", raising=False)
         monkeypatch.delenv("PLANNER_LLM_MODEL", raising=False)
-        assert s.vision_capable       # 默认 vision-exp（LLM_MODEL=flash 也不受影响）
-        monkeypatch.setenv("PLANNER_LLM_MODEL", "deepseek-v4-flash")
+        assert s.vision_capable       # 默认 deepseek-flash（分服务商字段）
+        s.settings["llm_model_deepseek"] = "deepseek-v4-flash"
         assert not s.vision_capable
-        monkeypatch.delenv("PLANNER_LLM_MODEL", raising=False)
-        s.settings["llm_model"] = "deepseek-v4-flash"
-        assert not s.vision_capable
-        s.settings["llm_model"] = "deepseek-v4-flash-vision-exp"
+        s.settings["llm_model_deepseek"] = "deepseek-flash"
         assert s.vision_capable
+        # 切到 OpenCode Go 的非视觉模型（glm 无视觉）→ False
+        s.settings["llm_provider"] = "opencode"
+        s.settings["llm_model_opencode"] = "glm-5.3"
+        assert not s.vision_capable
     finally:
         s.close()
 
@@ -288,7 +290,8 @@ def test_screen_inject_middleware(data_root, monkeypatch):
 
     s = PlannerSession(data_root, mock=True)
     try:
-        s._pending_screenshots = ["data:image/png;base64,AAA"]
+        s._pending_screenshots = [{"url": "data:image/png;base64,AAA",
+                                   "text": "（这是屏幕截图，请查看画面内容后回答。）"}]
         mw = ScreenShotInjectMiddleware(s)
         out = mw.before_model({}, None)
         assert out and "messages" in out
@@ -310,15 +313,15 @@ def test_compression_details_strip_image_blocks(data_root, monkeypatch):
 
     s = _force_vision(PlannerSession(data_root, mock=True), monkeypatch)
     try:
-        s.settings["compress_trigger"] = 20
+        s.settings["compress_token_budget"] = 10000    # 叶子压缩只看 token 预算
         s.settings["compress_keep"] = 5
-        # 25 条消息，第 0 条带图片块（batch = 最早 20 条）
+        # 25 条消息（带填充越过预算），第 0 条带图片块（batch = 最早 20 条）
         s._receive([
             {"type": "text", "text": "[10:00] 用户对你说：看图"},
             {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAA"}},
         ], trigger=True)
         for i in range(24):
-            s._receive(f"普通消息 {i}", trigger=True)
+            s._receive(f"普通消息 {i} " + "x" * 400, trigger=True)
         comp = SummarizationMiddleware(s)
         removes, adds = comp.compress_snapshot(list(s.recent_buffer))
         assert removes and adds

@@ -11,6 +11,7 @@
 - PlayerPriorityMiddleware before_model   玩家消息在 _inbox → 跳 end（让位）
 - NudgeMiddleware         after_model 计数 + before_model 第 5 轮注入「走神」提示
 - HeartbeatTrackMiddleware wrap_tool_call 记录 + before_model 跳转（heartbeat 即停）
+- ApprovalMiddleware      wrap_tool_call 代码工作区审批（写/区外读挂起，黑名单硬拒）
 - LoggingMiddleware       wrap_*        每轮 LLM/工具调用写 jsonl 日志
 
 ReAct 循环：**用 create_agent 内建的原生循环**（model → tools → model → …），
@@ -23,13 +24,28 @@ from __future__ import annotations
 import json
 import logging
 import time
+from pathlib import Path
 from typing import Any, Callable
 
 from langchain.agents.middleware import AgentMiddleware, AgentState, hook_config
-from langchain.messages import HumanMessage, RemoveMessage
+from langchain.messages import HumanMessage, RemoveMessage, ToolMessage
 from langgraph.runtime import Runtime
 from langgraph.types import Command
 from typing_extensions import NotRequired
+
+from .workspace import (
+    PermissionStore,
+    READ_TOOLS,
+    RUN_TOOLS,
+    WRITE_TOOLS,
+    blocked_command_reason,
+    command_prefix,
+    effective_cwd,
+    is_blocked,
+    is_within,
+    rel_posix,
+    tool_targets,
+)
 
 _logger = logging.getLogger("planner.middleware")
 
@@ -86,13 +102,16 @@ class AgendaSnapshotMiddleware(AgentMiddleware):
 # ── 屏幕截图注入 ─────────────────────────────────────────────
 
 class ScreenShotInjectMiddleware(AgentMiddleware):
-    """capture_screen 截屏后：把画面以 user 消息注入对话（图片块仅限 user 消息）。
+    """待注入图片（capture_screen 截屏 / view_image 读图）：以 user 消息注入对话。
 
-    工具结果（tool 消息）不能携带图片块（DeepSeek 400），但截屏的目的是让模型
-    "看到"画面——所以截图由工具存入 session._pending_screenshots，在本轮下一次
-    模型调用前（before_model）作为 user 消息注入 state。图片由此进入对话上下文：
+    工具结果（tool 消息）不能携带图片块（DeepSeek 400），但截屏/读图的目的就是让模型
+    "看到"画面——所以图片由工具存入 session._pending_screenshots（条目为
+    `{url, text, viewed?}`），在本轮下一次模型调用前（before_model）注入 state。
+    图片由此进入对话上下文：
     - 可被后续轮次/后续对话反复查看（同一张图随 buffer 常驻）；
-    - 与对话共用前缀缓存（后续相同前缀的请求命中 KV cache，不再重复计费图片 token）。
+    - 与对话共用前缀缓存（后续相同前缀的请求命中 KV cache，不再重复计费图片 token）；
+    - `viewed` 写入消息 additional_kwargs（白名单转换不发回端点）→ view_image 去重用，
+      重启后随 buffer_state 恢复；被压缩/移除后图片自然离开上下文、允许重新读入。
     """
 
     def __init__(self, session) -> None:
@@ -104,12 +123,27 @@ class ScreenShotInjectMiddleware(AgentMiddleware):
         if not pending:
             return None
         msgs = []
-        for url in pending:
-            msgs.append(HumanMessage(content=[
-                {"type": "text", "text": "（这是屏幕截图，请查看画面内容后回答。）"},
-                {"type": "image_url", "image_url": {"url": url}},
-            ]))
+        for entry in pending:
+            if isinstance(entry, dict):
+                url = str(entry.get("url") or "")
+                text = str(entry.get("text")
+                           or "（这是屏幕截图，请查看画面内容后回答。）")
+                kwargs: dict = {}
+                if entry.get("viewed"):
+                    kwargs["viewed_image"] = entry["viewed"]
+            else:   # 兼容纯 URL 字符串（旧格式/外部注入）
+                url, text, kwargs = str(entry), "（这是屏幕截图，请查看画面内容后回答。）", {}
+            if not url:
+                continue
+            msgs.append(HumanMessage(
+                content=[
+                    {"type": "text", "text": text},
+                    {"type": "image_url", "image_url": {"url": url}},
+                ],
+                additional_kwargs=kwargs))
         self.session._pending_screenshots = []
+        if not msgs:
+            return None
         return {"messages": msgs}
 
 
@@ -281,148 +315,418 @@ class LoggingMiddleware(AgentMiddleware):
         return result
 
 
+# ── 审批制（代码工作区）─────────────────────────────────────
+
+class ApprovalMiddleware(AgentMiddleware):
+    """写操作 / 工作区外读 → 挂起等用户确认；黑名单硬拒；超时默认拒绝。
+
+    规则（docs/代码Agent-实施计划.md 三、3.3）：
+    - 黑名单命中 → 硬拒（返回提示串，不弹审批）；
+    - 工作区内只读 → 放行；
+    - 写操作 / 工作区外读 → 查 permissions.json，未命中则挂起审批
+      （allow_once 放行 / always 落规则后放行 / deny 与超时默认拒绝）；
+    - 无 workspace：代码工具未注册；只读工具保持原有自由读（仍过黑名单）。
+
+    挂起由 session.request_approval 实现（Event 分片等待，用户点停止/关窗立即唤醒）。
+    拒绝时返回一条 ToolMessage 顶替工具结果（tool_call_id 对齐，避免孤儿 tool_calls）。
+    """
+
+    def __init__(self, session) -> None:
+        super().__init__()
+        self.session = session
+
+    def wrap_tool_call(self, request, handler: Callable):
+        name = request.tool_call.get("name") or ""
+        if name not in WRITE_TOOLS and name not in READ_TOOLS:
+            return handler(request)
+        verdict, message = self._authorize(name, request.tool_call.get("args") or {})
+        if verdict != "allow":
+            return ToolMessage(content=message,
+                               tool_call_id=request.tool_call.get("id") or "",
+                               name=name)
+        return handler(request)
+
+    def _authorize(self, name: str, args: dict) -> tuple[str, str]:
+        """返回 (allow|deny, 拒绝原因)。权限矩阵见 docs/代码Agent-界面升级方案.md 2.2。"""
+        st = self.session.settings
+        ws_raw = str(st.get("workspace_root") or "").strip()
+        try:
+            workspace = Path(ws_raw).resolve() if ws_raw else None
+        except OSError:
+            workspace = None
+        cwd = effective_cwd(workspace, str(st.get("workspace_cwd") or ""))
+        mode = str(st.get("permission_mode") or "ask").strip().lower()
+        # 命令执行：不走路径逻辑（硬黑名单 → 只读拒 → 规则 → 逐条审批）
+        if name in RUN_TOOLS:
+            return self._authorize_command(name, args)
+        targets = tool_targets(name, args, cwd)
+        if not targets:
+            return "deny", "（路径参数缺失，已取消该操作。）"
+        # 黑名单：任何模式都硬拒（读也拒——防 .env / 私钥泄进对话）
+        for p in targets:
+            if is_blocked(p):
+                return "deny", f"（该路径在保护名单内，已拒绝：{p}）"
+        # 自身落盘的工具结果（data/tool_results/）→ 读免审批（卸载回来的大输出）
+        try:
+            offload_dir = Path(str(self.session.data_root)) / "tool_results"
+            if name in READ_TOOLS and all(is_within(offload_dir, p) for p in targets):
+                return "allow", ""
+        except (TypeError, AttributeError):
+            pass
+        if workspace is None:
+            if name in WRITE_TOOLS:
+                return "deny", "（尚未设置代码工作区，写操作已取消。）"
+            return "allow", ""            # 无工作区：只读保持原有自由读
+        # 只读模式：禁一切写（cwd 内也禁）
+        if mode == "read_only" and name in WRITE_TOOLS:
+            return "deny", "（当前为只读模式，已取消。可在标题栏切换权限模式。）"
+        store = PermissionStore(self.session.data_root)
+        pending: list[tuple[str, str]] = []       # [(tool, 工作区相对路径)] 待审批
+        for p in targets:
+            inside = is_within(workspace, p)
+            rel = rel_posix(workspace, p)
+            if inside and name in READ_TOOLS:
+                continue                              # 区内只读 → 放行
+            if (not inside and name in READ_TOOLS
+                    and not st.get("code_read_outside_workspace", False)):
+                return "deny", (f"（工作区外的读取未开启，已取消：{p}。"
+                                "如需允许，请在设置中开启「允许工作区外读取」。）")
+            if (mode == "auto" and name in WRITE_TOOLS and inside
+                    and cwd is not None and is_within(cwd, p)):
+                continue                              # Auto：当前目录内写自动放行
+            if store.match(name, rel):
+                continue                              # 命中 always 规则
+            pending.append((name, rel))
+        if not pending:
+            return "allow", ""
+        preview = self._approval_preview(name, args)
+        decision = self.session.request_approval(
+            name, [str(p) for p in targets],
+            preview=preview,
+            scopes=self._approval_scopes(pending),
+            cwd=str(cwd) if cwd is not None else "",
+        )
+        if decision.startswith("always"):
+            for tool, rel in pending:
+                store.add(tool, self._scope_glob(rel, decision))
+            return "allow", ""
+        if decision == "allow_once":
+            return "allow", ""
+        if decision == "timeout":
+            return "deny", "（审批超时，已自动取消该操作。）"
+        if decision == "stop":
+            return "deny", "（用户中断了本次生成，操作已取消。）"
+        return "deny", "（用户拒绝了此操作，已取消。）"
+
+    @staticmethod
+    def _scope_glob(rel: str, decision: str) -> str:
+        """按用户选择的范围，把「工作区相对路径」转成规则 glob。"""
+        rel = str(rel or "").strip()
+        if decision == "always_workspace":
+            return "**"
+        if decision == "always_dir" and "/" in rel:
+            return rel.rsplit("/", 1)[0] + "/**"
+        return rel or "**"
+
+    def _authorize_command(self, name: str, args: dict) -> tuple[str, str]:
+        """命令执行：硬黑名单 → 只读模式拒 → 命中命令规则放行 → **逐条审批**。
+
+        Ask 与 Auto 模式下命令一律要用户确认（命令能逃出工作区边界，不能像写文件那样
+        按 cwd 自动放行）；只读模式直接拒绝。例外只有用户显式落下的命令规则
+        （「记住并允许」的 仅此命令 / 以 X 开头）。
+        """
+        cmd = str(args.get("command") or "").strip()
+        if not cmd:
+            return "deny", "（命令为空，已取消。）"
+        reason = blocked_command_reason(cmd)
+        if reason:
+            return "deny", f"（命令命中保护规则「{reason}」，已拒绝：{cmd[:160]}）"
+        mode = str(self.session.settings.get("permission_mode") or "ask").strip().lower()
+        if mode == "read_only":
+            return "deny", "（当前为只读模式，已取消。可在标题栏切换权限模式。）"
+        store = PermissionStore(self.session.data_root)
+        if store.match_command(name, cmd):
+            return "allow", ""
+        cwd = self.session.effective_cwd()
+        decision = self.session.request_approval(
+            name, [],
+            preview=cmd,
+            scopes=self._command_scopes(cmd),
+            cwd=str(cwd) if cwd is not None else "",
+        )
+        if decision == "always_cmd":
+            store.add_command(name, cmd)
+            return "allow", ""
+        if decision == "always_cmd_prefix":
+            store.add_command(name, command_prefix(cmd))
+            return "allow", ""
+        if decision == "allow_once":
+            return "allow", ""
+        if decision == "timeout":
+            return "deny", "（审批超时，已自动取消该命令。）"
+        if decision == "stop":
+            return "deny", "（用户中断了本次生成，命令已取消。）"
+        return "deny", "（用户拒绝了此命令，已取消。）"
+
+    @staticmethod
+    def _command_scopes(cmd: str) -> list[dict]:
+        """命令的授权范围候选：仅此命令 / 以「首词」开头的命令（如 pytest）。"""
+        scopes = [{"kind": "cmd", "label": "仅此命令", "glob": cmd}]
+        head = str(cmd or "").strip().split()
+        if head:
+            scopes.append({"kind": "cmd_prefix",
+                           "label": f"以「{head[0]}」开头的命令", "glob": head[0] + " *"})
+        return scopes
+
+    @staticmethod
+    def _approval_scopes(pending: list[tuple[str, str]]) -> list[dict]:
+        """候选授权范围（弹窗单选：仅此文件 / 此目录 / 整个工作区）。"""
+        rel = pending[0][1] if pending else ""
+        dir_part = rel.rsplit("/", 1)[0] if "/" in rel else ""
+        scopes = [{"kind": "file", "label": f"仅此文件（{rel or '?'}）", "glob": rel or "**"}]
+        if dir_part:
+            scopes.append({"kind": "dir", "label": f"此目录（{dir_part}/）",
+                           "glob": dir_part + "/**"})
+        scopes.append({"kind": "workspace", "label": "整个工作区", "glob": "**"})
+        return scopes
+
+    @staticmethod
+    def _approval_preview(name: str, args: dict) -> str:
+        """审批预览文本：run_command → 命令原文；edit_file → 统一 diff；write_file → 内容摘要；
+        apply_patch → 补丁原文（截断）。"""
+        import difflib
+        try:
+            if name == "run_command":
+                return str(args.get("command") or "")[:2000]
+            if name == "edit_file":
+                diff = difflib.unified_diff(
+                    str(args.get("old_string") or "").splitlines(),
+                    str(args.get("new_string") or "").splitlines(),
+                    lineterm="", n=1)
+                lines = list(diff)
+                return "\n".join(lines[:60]) + ("\n…（更多差异已省略）"
+                                                if len(lines) > 60 else "")
+            if name == "write_file":
+                content = str(args.get("content") or "")
+                head = "\n".join(content.strip().splitlines()[:5])
+                return f"共 {len(content)} 字符\n{head}"[:600]
+            if name == "apply_patch":
+                patch = str(args.get("patch") or "")
+                lines = patch.splitlines()
+                return "\n".join(lines[:80]) + ("\n…（补丁较长已截断）"
+                                                if len(lines) > 80 else "")
+        except Exception:
+            return ""
+        return ""
+
+
 # ── 压缩 + 记忆树 ────────────────────────────────────────────
 
-SUMMARIZE_TRIGGER_MESSAGES = 60
 SUMMARIZE_KEEP_MESSAGES = 20
+SUMMARIZE_TOKEN_BUDGET = 100000
 LEVEL_COMPACT_THRESHOLD = 8
 BRANCHING_FACTOR = 4
+#: 整批一次压缩的估算 token 上限：批次超过它才直接走分片（否则"整批优先"，
+#: 一次压缩 = 一个 L0 节点——用户预期；超窗失败也会自动回退分片兜底）
+_ONE_SHOT_MAX_TOKENS = 300000
+
+
+def should_compress_raw(raw_msgs: list, keep: int, token_budget: int) -> bool:
+    """是否需要叶子压缩：**只看原始消息估算 token ≥ 预算**（条数不参与判定）。
+
+    token 估算与 session.context_stats 一致（chars × 1.2，中文为主，偏保守）。
+    至少 2 条原始消息才可能圈出批次；正常保留 keep 条，连 keep 条都超预算时
+    只保留最后 1 条（见 compress_snapshot 的 keep_n 兜底）。
+    """
+    if len(raw_msgs) <= 1:
+        return False
+    if token_budget <= 0:
+        return False
+    chars = sum(len(str(getattr(m, "content", "") or "")) for m in raw_msgs)
+    return int(chars * 1.2) >= token_budget
 
 from pydantic import BaseModel, Field  # noqa: E402
 
 
-class ProfileInfo(BaseModel):
-    """节点中提炼的用户画像（无画像信息则为空数组）。"""
-    preferences: list[str] = Field(default_factory=list, description="喜好与偏好：用户喜欢/偏爱什么")
-    personality: list[str] = Field(default_factory=list, description="性格特点：行为模式、处事风格")
-    habits: list[str] = Field(default_factory=list, description="习惯与作息：规律性行为")
-    goals: list[str] = Field(default_factory=list, description="目标与动机：为什么做、想达成什么")
+#: 记忆节点 schema 版本（1 = 旧画像型；2 = 任务型，内容存 meta.fields）
+SCHEMA_VERSION = 2
+
+#: 节点上的保护标记：常驻在对话上下文的节点文本里；节点压缩时目标节点去掉它
+NODE_MARKER = "[已压缩 · 不需要压缩]"
+
+
+class TaskInfo(BaseModel):
+    """任务状态：目标 / 进度 / 待办 / 下一步 / 阻塞。"""
+    goal: str = Field(default="", description="当前总体目标（没有则留空）")
+    status: str = Field(default="", description="当前状态：做到哪了（一句话）")
+    todo: list[str] = Field(default_factory=list, description="未完成的待办")
+    next_steps: list[str] = Field(default_factory=list, description="计划的下一步")
+    blockers: list[str] = Field(default_factory=list, description="阻塞/风险")
+
+
+class DecisionInfo(BaseModel):
+    what: str = Field(default="", description="决定了什么")
+    why: str = Field(default="", description="为什么这样定（务必写清理由，它比结论更常被后续需要）")
+
+
+class LessonError(BaseModel):
+    symptom: str = Field(default="", description="症状：报错/异常现象")
+    cause: str = Field(default="", description="原因")
+    fix: str = Field(default="", description="解决办法")
+
+
+class LessonsInfo(BaseModel):
+    errors: list[LessonError] = Field(default_factory=list,
+                                      description="错误经验：症状/原因/修法")
+    patterns: list[str] = Field(default_factory=list,
+                                description="成功经验：可复用的做法/模式")
+
+
+class ContextInfo(BaseModel):
+    cwd: str = Field(default="",
+                     description="执行这段对话时所在的工作目录（由系统填写，你不用填）")
+    env: list[str] = Field(default_factory=list,
+                           description="环境与配置（路径、版本、依赖、设置）")
+    commands: list[str] = Field(default_factory=list,
+                                description="关键命令（可逐字保留）")
+    artifacts: list[str] = Field(default_factory=list,
+                                 description="文件/符号引用（路径、函数/字段名）")
+    constraints: list[str] = Field(default_factory=list,
+                                   description="必须遵守的约束（安全/规范/禁止事项；不随压缩丢弃）")
 
 
 class MemoryNodeOutput(BaseModel):
-    """压缩节点的 LLM 结构化输出（叶子与父节点共用）。
+    """压缩节点的 LLM 结构化输出（叶子与父节点共用；任务型 schema）。
 
     字段演进约定：新增字段改本 model + 提示词即可，存储零迁移
-    （meta 为 JSON 扩展位；extra=ignore 丢弃未知字段）。
+    （内容存 meta.fields JSON；extra=ignore 丢弃未知字段）。
     """
 
     model_config = {"extra": "ignore"}
 
-    summary: str = Field(description="内容摘要：只总结事件/决定/对话进程，不要包含用户画像信息")
-    profile: ProfileInfo = Field(default_factory=ProfileInfo)
-    future_notes: list[str] = Field(
+    summary: str = Field(description="这段时间发生了什么：事件/进展/决定与对话进程（叙述）")
+    task: TaskInfo = Field(default_factory=TaskInfo)
+    decisions: list[DecisionInfo] = Field(default_factory=list)
+    lessons: LessonsInfo = Field(default_factory=LessonsInfo)
+    context: ContextInfo = Field(default_factory=ContextInfo)
+    user: list[str] = Field(
         default_factory=list,
-        description="后续说明：参考待压缩区域之后的原始消息，对摘要/画像中的内容做出的"
-                    "澄清/修正/补全；仅当后续消息直接相关时填写，否则留空")
+        description="用户性格/偏好/习惯（含工作偏好：常用工具、代码风格、沟通习惯）；没有则留空数组")
     meta: dict = Field(default_factory=dict,
                        description="节点元信息：schema_version 与未来扩展字段")
 
+    def fields_payload(self) -> dict:
+        """落树字段载荷（不含 summary——它存 nodes.summary 列）。"""
+        d = self.model_dump()
+        d.pop("summary", None)
+        d.pop("meta", None)
+        return d
+
 
 _LEAF_INSTRUCTION = (
-    "请把以下内容压缩为结构化 JSON（只输出 JSON，不要输出其他文字）。\n"
-    "**各字段按实际内容填写：没有相关信息的字段保持空（profile 各维度留空数组、"
-    "future_notes 留空数组），不要为了填充而编造、猜测或重复已有内容。**\n"
+    "请把本次标记为待压缩的**原始对话**压缩为结构化 JSON（只输出 JSON，不要输出其他文字）。\n"
+    "**范围**：标有 {marker} 的节点是更早内容的已有摘要，**不要重新压缩、不要合并进结果**；"
+    "没有该标记的普通对话消息（第 {start}-{end} 条）才是本次要压缩的内容。\n"
+    "{cwd_line}"
+    "**各字段按实际内容填写：某个字段没有相关内容时——整个字段可以直接省略（省略即空），"
+    "不要写「无 / 暂无 / 没有相关信息」这类占位词，更不要为了填充而编造或硬凑空话："
+    "字段少而实，好过看起来齐全。**\n"
     "字段说明：\n"
-    "1. summary：内容摘要——只总结事件、决定、对话进程；不要包含用户画像信息。\n"
-    "   **工具结果要高度压缩**：待压缩内容里的「工具结果」往往是工具返回的原文"
-    "（如探索记忆树返回的旧对话、读取文件返回的内容），summary 只需提炼其中对"
-    "后续对话有实际价值的信息（关键结论、数据、决定、用户原话要点），一两句话概括"
-    "「小助从中获得了什么」，**不要转述、复述或浓缩工具返回的原文细节**——"
-    "原文已随节点保存，摘要里不需要承载它。\n"
-    "2. profile：用户画像——从这段对话中提炼用户特征，没有相关信息则对应维度留空数组：\n"
-    "   preferences 喜好偏好 / personality 性格特点 / habits 习惯作息 / goals 目标动机\n"
-    "   可参考上下文里已有节点的画像：延续已有认知、补充新观察，不重复不矛盾\n"
-    "3. future_notes：后续说明——查看待压缩区域之后的原始消息，仅当后续消息直接解释/"
-    "澄清/修正/补全了本段内容时填写（注明对应本段的哪个点 + 后续消息怎么说）；"
-    "无关的未来消息不填；本段之后没有原始消息则留空\n\n"
-    "待压缩内容：\n"
-    "{original_text}\n"
-    "请给出压缩结果："
+    "1. summary：这段时间发生了什么——事件、进展、决定与对话进程（叙述；不要写成清单）。\n"
+    "2. task：目标 goal / 当前状态 status / 未完成待办 todo / 下一步 next_steps / 阻塞 blockers。\n"
+    "3. decisions：本段做出的关键决定；**每项都要写 why（为什么这样定）**。\n"
+    "4. lessons：errors（症状 symptom / 原因 cause / 修法 fix）+ patterns（可复用的成功做法）。\n"
+    "5. context：env 环境与配置、commands 关键命令（可逐字）、artifacts 文件/符号引用、"
+    "constraints 必须遵守的约束。\n"
+    "6. user：用户性格/偏好/习惯（含工作偏好：常用工具、代码风格、沟通习惯）；没有就留空数组。\n"
+    "**工具结果要高度压缩**：只提炼对后续有实际价值的结论/命令/报错/决定，"
+    "不要转述工具返回的原文细节（原文已随节点保存）。\n\n"
+    "请按以上要求给出压缩结果（JSON）："
 )
 
 _PARENT_INSTRUCTION = (
-    "请把以下 {n} 个节点压缩为结构化 JSON（只输出 JSON，不要输出其他文字）。\n"
-    "**各字段按实际内容填写：没有相关信息的字段保持空（profile 各维度留空数组、"
-    "future_notes 留空数组），不要为了填充而编造、猜测或重复已有内容。**\n"
-    "字段说明：\n"
-    "1. summary：对子节点摘要的提炼\n"
-    "2. profile：对子节点画像的提炼上卷（同维度合并归纳，没有相关信息则对应维度留空数组）：\n"
-    "   preferences 喜好偏好 / personality 性格特点 / habits 习惯作息 / goals 目标动机\n"
-    "3. future_notes：子节点的后续说明若已被父级摘要/画像吸收则不必重复；"
-    "若有新的、未被吸收的澄清再填写\n\n"
-    "节点信息：\n"
-    "{child_summaries}\n"
-    "请给出压缩结果："
+    "请把以下 {n} 个节点（{ids}）压缩合并为**上一层节点**的结构化 JSON（只输出 JSON）。\n"
+    "**范围**：这些节点已去掉保护标记，是本次要合并的目标；若输入里还有其他带 "
+    "{marker} 标记的节点，**不要动它们**。\n"
+    "**合并规则（逐字段）**：\n"
+    "- summary：把子节点叙述整合成一条阶段经过（保留主线与因果，不逐条罗列子事件）。\n"
+    "- task：以**最新状态**为准（覆盖旧的）；未完成的 todo/blocker 保留，已完成的坍缩为「已完成」。\n"
+    "- decisions：**累积去重**；保留仍然有效的 + 已被推翻的（注明被什么推翻）；why 不能丢。\n"
+    "- lessons：**抽象**——把具体错误/修法归纳为可复用规则/模式；重复出现的重要错误保留。\n"
+    "- context：并集去重，冲突取最新；**constraints 必须保留**（不随层级丢弃）。\n"
+    "- user：合并归纳，不重复不矛盾。\n"
+    "**没有相关信息的字段留空（也可以整个省略不写）；不要写「无 / 暂无」类占位词，"
+    "不要为了填充而编造、猜测或重复已有内容。**\n\n"
+    "请按以上要求给出压缩结果（JSON）："
 )
 
 # ── 英文压缩指令（评测用：LoCoMo-Refined 英文对话，session.summary_language="en"）──
 
 _LEAF_INSTRUCTION_EN = (
-    "Please compress the content below into structured JSON (output ONLY JSON, no other text).\n"
-    "**Always write the summary, profile, and future_notes in English.**\n"
-    "**Fill each field according to actual content: keep fields with no relevant information empty "
-    "(profile dimensions as empty arrays, future_notes as empty array); do not fabricate, guess, "
-    "or repeat existing content just to fill them.**\n"
-    "Field description:\n"
-    "1. summary: content summary — summarize only events, decisions, and conversation progress; "
-    "do not include user profile information.\n"
-    "   **Compress tool results heavily**: tool results in the content are often verbatim tool output "
-    "(e.g., old conversations returned by memory tree exploration, file contents). The summary only "
-    "needs to distill what is of actual value to later conversation (key conclusions, data, decisions, "
-    "user's exact words), in one or two sentences about what was gained from it; "
-    "**do not paraphrase, repeat, or condense details of the tool-returned text** — "
-    "the original text is saved with the node, the summary need not carry it.\n"
-    "2. profile: user profile — extract the user's traits from this conversation; leave dimensions "
-    "with no relevant information as empty arrays:\n"
-    "   preferences likes and preferences / personality character and style / habits routine behavior / goals motives\n"
-    "   You may reference existing node profiles in context: continue known knowledge, add new observations, "
-    "do not repeat or contradict.\n"
-    "3. future_notes: later clarifications — look at the raw messages AFTER the region being compressed; "
-    "fill only when later messages directly explain/clarify/correct/supplement this region's content "
-    "(note which point of this region + what the later messages say); if unrelated, leave empty; "
-    "if there are no raw messages after this region, leave empty array\n\n"
-    "Content to compress:\n"
-    "{original_text}\n"
-    "Please give the compression result:"
+    "Compress the **raw conversation** marked for compaction into structured JSON "
+    "(output ONLY JSON, no other text).\n"
+    "**Always write all field values in English.**\n"
+    "**Scope**: entries marked {marker} are summaries of earlier content — do NOT "
+    "re-compress them and do NOT merge them into the result; the unmarked raw messages "
+    "(turns {start}-{end}) are what you compress.\n"
+    "{cwd_line}"
+    "**Fill each field from actual content: if a field has nothing relevant, omit it entirely "
+    "(an omitted field counts as empty). Never write placeholders like \"none\", \"N/A\" or "
+    "\"nothing to report\", and never fabricate or pad just to fill fields — fewer, real "
+    "fields beat complete-looking ones.**\n"
+    "Fields:\n"
+    "1. summary: what happened in this span — events, progress, decisions and the flow of the conversation (a narrative, not a list).\n"
+    "2. task: goal / status / todo (open items) / next_steps / blockers.\n"
+    "3. decisions: key decisions made here; **always include why for each**.\n"
+    "4. lessons: errors (symptom / cause / fix) + patterns (reusable things that worked).\n"
+    "5. context: env (environment/config), commands (verbatim is fine), artifacts (file/symbol refs), "
+    "constraints (rules that must be obeyed).\n"
+    "6. user: the user's traits/preferences/habits (incl. working preferences such as tools, code style, "
+    "communication habits); empty array if none.\n"
+    "**Compress tool results heavily**: keep only conclusions/commands/errors/decisions of lasting value; "
+    "do not paraphrase verbatim tool output (the raw text is stored with the node).\n\n"
+    "Please give the compression result (JSON):"
 )
 
 _PARENT_INSTRUCTION_EN = (
-    "Please compress the following {n} nodes into structured JSON (output ONLY JSON, no other text).\n"
-    "**Always write the summary, profile, and future_notes in English.**\n"
-    "**Fill each field according to actual content: keep fields with no relevant information empty "
-    "(profile dimensions as empty arrays, future_notes as empty array); do not fabricate, guess, "
-    "or repeat existing content just to fill them.**\n"
-    "Field description:\n"
-    "1. summary: a distillation of the child nodes' summaries\n"
-    "2. profile: a rolled-up distillation of the child nodes' profiles (merge same dimensions; "
-    "leave dimensions with no information as empty arrays):\n"
-    "   preferences likes and preferences / personality character and style / habits routine behavior / goals motives\n"
-    "3. future_notes: if a child's future_notes is already absorbed by the parent summary/profile, "
-    "do not repeat; only fill new clarifications that have not been absorbed\n\n"
-    "Node information:\n"
-    "{child_summaries}\n"
-    "Please give the compression result:"
+    "Merge the following {n} nodes ({ids}) into ONE **parent node** as structured JSON "
+    "(output ONLY JSON).\n"
+    "**Always write all field values in English.**\n"
+    "**Scope**: these nodes have no protection marker — they are the merge targets; if any other node "
+    "in the input carries the {marker} marker, do NOT touch it.\n"
+    "**Merge rules (per field)**:\n"
+    "- summary: integrate the child narratives into one phase narrative (keep the through-line and causality, "
+    "do not list child events one by one).\n"
+    "- task: the LATEST state wins (supersede); keep unresolved todos/blockers, collapse completed ones to \"done\".\n"
+    "- decisions: accumulate and dedupe; keep both still-valid and overturned decisions (note what overturned them); never drop the why.\n"
+    "- lessons: abstract concrete errors/fixes into reusable rules/patterns; keep recurring important errors.\n"
+    "- context: union and dedupe, newest wins on conflicts; **constraints MUST be preserved** (never dropped by level).\n"
+    "- user: merge and consolidate; no duplicates or contradictions.\n"
+    "**Leave fields empty when there is nothing relevant (omitting the field is fine); no "
+    "placeholders like \"none\"/\"N/A\", no fabrication, guessing or repetition just to fill them.**\n\n"
+    "Please give the compression result (JSON):"
 )
 
 
 class SummarizationMiddleware(AgentMiddleware):
-    """压缩 + 记忆树一体化（移植自 yaya YayaSummarizationMiddleware，扩展画像字段）。
+    """压缩 + 记忆树一体化（任务型 schema；见 docs/代码Agent-实施计划.md 六、七节）。
 
-    触发（before_model，每轮模型调用前，一次 invoke 最多一个压缩周期）：
-      1) 原始消息数 ≥ SUMMARIZE_TRIGGER_MESSAGES → 叶子压缩（对话 → level0 节点）
-      2) 树 level L 活跃节点 ≥ LEVEL_COMPACT_THRESHOLD → 向上压缩一层（递归）
+    触发（后台压缩线程调用 compress_snapshot）：
+      1) 原始消息数 ≥ trigger → 叶子压缩（原文 → level0 节点）
+      2) 树 level L 活跃节点 ≥ threshold → 向上合并一层（递归）
 
-    压缩请求（独立压缩模型执行，不污染主会话上下文）：
-      [SystemMessage(角色卡)] + [主会话 buffer 快照原样] + [压缩提示 + 待压缩内容]
-      ——前缀与主对话一致 → 服务端 prompt caching 命中；快照含"未来"原始消息，
-      future_notes 字段据此对摘要/画像做澄清。
+    压缩输入（「未来信息」不发送：保留的尾部原始消息不进输入）：
+      叶子：[SystemMessage(角色卡)] + [带保护标记的已有节点] + [待压原始消息] + [指令]
+      父层：[SystemMessage(角色卡)] + [节点消息：目标去标记、其他保留] + [指令]
+      —— 目标 = 输入里唯一没有 NODE_MARKER 保护的内容；指令里同时点名（双保险）。
 
-    输出：MemoryNodeOutput（summary + profile + future_notes），经
-    with_structured_output(json_mode) 主通道 / model_validate_json 降级解析。
+    输出：MemoryNodeOutput（summary + task/decisions/lessons/context/user），经
+    with_structured_output(json_mode) 主通道 / model_validate_json 降级解析；
+    按 node_token_budget 做软裁剪（硬上限由压缩模型 max_tokens 承担）。
 
-    落树：叶子 add_leaf（details 存原文 + future_notes；profile 存画像）/ 父节点
-    compact（profile 上卷；子节点 is_active=0）；buffer：RemoveMessage 删被压缩
-    消息 + 追加全字段节点消息（metadata["node_id"]，随 buffer 持久化）。
+    落树：叶子 add_leaf（details 存原文；字段载荷存 meta.fields）/ 父节点 compact
+    （子节点 is_active=0）；buffer：RemoveMessage 删被压缩消息 + 追加带保护标记的
+    节点消息（metadata["node_id"]/["node_start"]，随 buffer 持久化）。
     """
 
     def __init__(self, session) -> None:
@@ -431,13 +735,45 @@ class SummarizationMiddleware(AgentMiddleware):
         # 压缩摘要语言（评测用）：session.summary_language="en" → 英文指令
         self.language: str = (getattr(session, "summary_language", None) or "zh").lower()
 
-    def _leaf_instruction(self, original_text: str) -> str:
+    def _leaf_instruction(self, start: int, end: int) -> str:
         tpl = _LEAF_INSTRUCTION_EN if self.language == "en" else _LEAF_INSTRUCTION
-        return tpl.format(original_text=original_text)
+        cwd = self._current_cwd()
+        if not cwd:
+            cwd_line = ""
+        elif self.language == "en":
+            cwd_line = ("- Current working directory (the system fills context.cwd; "
+                        f"you don't need to): {cwd}\n")
+        else:
+            cwd_line = f"- 当前工作目录（系统会填进 context.cwd，你不用填）：{cwd}\n"
+        return tpl.format(marker=NODE_MARKER, start=start, end=end, cwd_line=cwd_line)
 
-    def _parent_instruction(self, n: int, child_summaries: str) -> str:
+    def _current_cwd(self) -> str:
+        """当前工作目录字符串（无工作区时为空；节点记录用，代码填写防幻觉）。"""
+        try:
+            cwd = self.session.effective_cwd()
+        except Exception:
+            cwd = None
+        return str(cwd) if cwd is not None else ""
+
+    @staticmethod
+    def _merge_cwd(children: list[dict]) -> str:
+        """父节点工作目录 = 子节点 context.cwd 去重合并（≤3 个，多则省略）。"""
+        vals: list[str] = []
+        for n in children:
+            meta = n.get("meta") if isinstance(n.get("meta"), dict) else {}
+            fields = meta.get("fields") or {}
+            c = str((fields.get("context") or {}).get("cwd") or "").strip()
+            if c and c not in vals:
+                vals.append(c)
+        if not vals:
+            return ""
+        if len(vals) <= 3:
+            return "；".join(vals)
+        return "；".join(vals[:3]) + "…"
+
+    def _parent_instruction(self, ids: list[str]) -> str:
         tpl = _PARENT_INSTRUCTION_EN if self.language == "en" else _PARENT_INSTRUCTION
-        return tpl.format(n=n, child_summaries=child_summaries)
+        return tpl.format(marker=NODE_MARKER, n=len(ids), ids="、".join(ids))
 
     def before_model(self, state: PlannerState, runtime: Runtime) -> dict | None:
         # 压缩已改为异步线程（session._maybe_compress_async / _run_async_compression）：
@@ -457,19 +793,22 @@ class SummarizationMiddleware(AgentMiddleware):
         adds: list[HumanMessage] = []
 
         st = getattr(self.session, "settings", None) or {}
-        trigger = int(st.get("compress_trigger", SUMMARIZE_TRIGGER_MESSAGES))
         keep = int(st.get("compress_keep", SUMMARIZE_KEEP_MESSAGES))
+        token_budget = int(st.get("compress_token_budget", SUMMARIZE_TOKEN_BUDGET))
         threshold = int(st.get("compact_threshold", LEVEL_COMPACT_THRESHOLD))
         factor = int(st.get("compact_factor", BRANCHING_FACTOR))
 
         raw = [m for m in msgs if "node_id" not in (getattr(m, "metadata", None) or {})]
-        if len(raw) >= trigger:
-            batch = raw[:len(raw) - keep]
+        if should_compress_raw(raw, keep, token_budget):
+            # 正常保留 keep 条；若连 keep 条都超预算（单条超大工具输出场景），
+            # 只保留最后 1 条——否则永远圈不出批次（"超预算却不压缩"卡死）
+            keep_n = keep if len(raw) > keep else 1
+            batch = raw[:len(raw) - keep_n]
             if batch:
                 # 扩展 batch：batch 末尾 ai(tool_calls) 的配套 tool 消息也纳入
                 # （否则删 ai 留 tool → 孤儿 ToolMessage → DeepSeek 400）
                 batch = self._extend_batch_for_tool_pairs(msgs, batch)
-                self._summarize_leaf(msgs, batch, removes, adds)
+                self._compress_batch(msgs, batch, removes, adds)
 
         tree = self.session.get_memory_tree()
         level = 0
@@ -504,6 +843,75 @@ class SummarizationMiddleware(AgentMiddleware):
                 extended.append(m)
         return extended
 
+    def _compress_batch(self, msgs, batch, removes, adds) -> None:
+        """压缩一个批次 → 节点（**默认整批一次调用 = 一个节点**）。
+
+        只有两种例外才回退分片（每片 ≤3 万 token，逐片各落一个节点）：
+        ① 批次估算超过 `_ONE_SHOT_MAX_TOKENS`（超大积压，防单次调用超窗）；
+        ② 整批调用失败（如端点上下文超限）——失败不落任何东西，分片重试。
+        （分片最初是无条件启用的，用户反馈"一次压缩冒出好几个 L0 节点、感觉
+        不是 15 万压一次"后改为"整批优先"——2026-10-18。）
+        """
+        est = self._estimate_messages_tokens(batch)
+        if est <= _ONE_SHOT_MAX_TOKENS:
+            if self._summarize_leaf(msgs, batch, removes, adds):
+                return
+            _logger.warning("[compress] 整批压缩失败，回退分片重试（估算 %d token）", est)
+        chunks = self._split_batch_by_tokens(batch)
+        if len(chunks) <= 1:
+            return   # 只有一片（且已失败）：本轮放弃，下次触发再试
+        for chunk in chunks:
+            if not self._summarize_leaf(msgs, chunk, removes, adds):
+                break   # 本片失败：停手（后续片的全局序号会错位）
+
+    @staticmethod
+    def _estimate_message_tokens(m) -> int:
+        """单条消息的估算 token（字符 × 1.2，与压缩触发同口径）。"""
+        content = getattr(m, "content", "") or ""
+        if isinstance(content, list):
+            text = "".join(str(b.get("text") or "") for b in content
+                           if isinstance(b, dict))
+        else:
+            text = str(content)
+        return int(len(text) * 1.2)
+
+    @classmethod
+    def _estimate_messages_tokens(cls, msgs: list) -> int:
+        return sum(cls._estimate_message_tokens(m) for m in msgs)
+
+    @staticmethod
+    def _split_batch_by_tokens(batch: list, max_tokens: int = 30000,
+                               max_chunks: int = 12) -> list[list]:
+        """按估算 token 把叶子批次切成分片（每次摘要调用输入别超 ~3 万 token）。
+
+        只在**安全边界**切：下一段不能以 tool 消息开头、本段不能以带 tool_calls
+        的 ai 结尾——批次是作为消息发给模型的，tool 配对断裂会直接 400。
+        一次最多切 max_chunks 片（剩下的留给下一轮压缩），避免超大积压把一轮
+        压缩拖成几十分钟。**注意：分片是兜底路径**（整批优先，见 _compress_batch）。
+        """
+        est = SummarizationMiddleware._estimate_message_tokens
+
+        chunks: list[list] = []
+        cur: list = []
+        cur_tokens = 0
+        for i, m in enumerate(batch):
+            cur.append(m)
+            cur_tokens += est(m)
+            if cur_tokens < max_tokens or i == len(batch) - 1:
+                continue
+            nxt = batch[i + 1]
+            if (getattr(nxt, "type", None) == "tool"
+                    or getattr(m, "tool_calls", None)):
+                continue   # 不安全边界：继续累积到配对完整再切
+            chunks.append(cur)
+            cur = []
+            cur_tokens = 0
+            if len(chunks) >= max_chunks:
+                break
+        if cur:
+            chunks.append(cur)
+        return chunks
+
     def _maybe_compress(self, state: PlannerState) -> dict | None:
         """保留：与 compress_snapshot 等价（兼容旧调用/测试），before_model 不再调用。"""
         removes, adds = self.compress_snapshot(list(state.get("messages") or []))
@@ -526,43 +934,126 @@ class SummarizationMiddleware(AgentMiddleware):
         return f"{full(start)} ~ {full(end)}"
 
     @staticmethod
+    def _node_level(node_id: str) -> int:
+        """从节点 id 解析层级：node{level}_{seq} → level。"""
+        try:
+            return int(str(node_id).split("_", 1)[0][4:])
+        except (ValueError, IndexError):
+            return 0
+
+    @staticmethod
+    def _render_fields_lines(fields: dict) -> list[str]:
+        """任务型字段载荷（dict）→ 文本行（空字段省略）。"""
+        lines: list[str] = []
+        t = fields.get("task") or {}
+        parts = []
+        if t.get("goal"):
+            parts.append(f"目标：{t['goal']}")
+        if t.get("status"):
+            parts.append(f"状态：{t['status']}")
+        if t.get("todo"):
+            parts.append("待办：" + "、".join(t["todo"]))
+        if t.get("next_steps"):
+            parts.append("下一步：" + "、".join(t["next_steps"]))
+        if t.get("blockers"):
+            parts.append("阻塞：" + "、".join(t["blockers"]))
+        if parts:
+            lines.append("[任务] " + "；".join(parts))
+        decisions = fields.get("decisions") or []
+        items = []
+        for d in decisions:
+            what, why = d.get("what") or "", d.get("why") or ""
+            if what:
+                items.append(f"{what}（因为 {why}）" if why else what)
+        if items:
+            lines.append("[决策] " + "；".join(items))
+        lessons = fields.get("lessons") or {}
+        parts = []
+        for e in (lessons.get("errors") or []):
+            seg = f"{e.get('symptom', '')}→{e.get('fix', '')}".strip("→")
+            if e.get("cause"):
+                seg += f"（原因：{e['cause']}）"
+            if seg:
+                parts.append(seg)
+        parts.extend(str(x) for x in (lessons.get("patterns") or []) if x)
+        if parts:
+            lines.append("[经验] " + "；".join(parts))
+        c = fields.get("context") or {}
+        parts = []
+        if c.get("cwd"):
+            parts.append(f"目录：{c['cwd']}")
+        if c.get("env"):
+            parts.append("环境：" + "、".join(c["env"]))
+        if c.get("commands"):
+            parts.append("命令：" + "、".join(c["commands"]))
+        if c.get("artifacts"):
+            parts.append("引用：" + "、".join(c["artifacts"]))
+        if c.get("constraints"):
+            parts.append("约束：" + "、".join(c["constraints"]))
+        if parts:
+            lines.append("[环境] " + "；".join(parts))
+        user = fields.get("user") or []
+        if user:
+            lines.append("[用户] " + "、".join(user))
+        return lines
+
+    @staticmethod
     def _render_node_text(node_id: str, start, end, out: MemoryNodeOutput,
-                          time_range: tuple[str, str] | None = None) -> str:
-        lines = [f"[{node_id}] 第{start}-{end}条", f"[摘要] {out.summary}"]
+                          time_range: tuple[str, str] | None = None,
+                          marker: bool = True) -> str:
+        """节点消息文本（进对话上下文）。
+
+        marker=True：带「已压缩 · 不需要压缩」保护标记（常驻上下文）；
+        marker=False：去掉标记（节点压缩时目标节点的输入版本）。
+        """
+        lvl = SummarizationMiddleware._node_level(node_id)
+        head = f"[{node_id} · L{lvl} · 第{start}-{end}条]"
+        if marker:
+            head += f" {NODE_MARKER}"
+        lines = [head, f"[摘要] {clean_wrapped_summary(out.summary)}"]
         if time_range and time_range[0] and time_range[1]:
             lines.append(f"[时间] {SummarizationMiddleware._fmt_time_range(*time_range)}")
-        p = out.profile
-        for label, items in (("喜好", p.preferences), ("性格", p.personality),
-                             ("习惯", p.habits), ("目标", p.goals)):
-            if items:
-                lines.append(f"[{label}] " + "、".join(items))
-        if out.future_notes:
-            lines.append("[后续说明] " + "；".join(out.future_notes))
+        lines.extend(SummarizationMiddleware._render_fields_lines(out.fields_payload()))
         return "\n".join(lines)
 
     @staticmethod
     def _node_full_text(n: dict) -> str:
-        """把树节点 dict（get_nodes_at_level 返回）渲染为全字段文本。"""
+        """树节点 dict（get_nodes_at_level 返回）→ 全字段文本（无保护标记）。
+
+        新节点渲染 meta.fields（任务型）；旧节点兼容渲染 profile/future_notes（画像型）。
+        """
         rr = n.get("round_range") or ["?", "?"]
-        lines = [f"节点 {n['id']}（第{rr[0]}-{rr[1]}轮）", f"摘要：{n.get('summary', '')}"]
+        nid = n.get("id") or "?"
+        lvl = n.get("level")
+        if lvl is None:
+            lvl = SummarizationMiddleware._node_level(nid)
+        lines = [f"[{nid} · L{lvl} · 第{rr[0]}-{rr[1]}条]",
+                 f"[摘要] {clean_wrapped_summary(str(n.get('summary', '')))}"]
         tr = SummarizationMiddleware._fmt_time_range(
             n.get("time_start") or "", n.get("time_end") or "")
         if tr:
-            lines.append(f"时间：{tr}")
-        p = n.get("profile") or {}
-        for label, key in (("喜好", "preferences"), ("性格", "personality"),
-                           ("习惯", "habits"), ("目标", "goals")):
-            items = p.get(key) or []
-            if items:
-                lines.append(f"{label}：{'、'.join(items)}")
-        details = n.get("details")
-        if isinstance(details, dict) and details.get("future_notes"):
-            lines.append("后续说明：" + "；".join(details["future_notes"]))
+            lines.append(f"[时间] {tr}")
+        meta = n.get("meta") if isinstance(n.get("meta"), dict) else {}
+        fields = meta.get("fields")
+        if isinstance(fields, dict):
+            lines.extend(SummarizationMiddleware._render_fields_lines(fields))
+        else:
+            # 兼容旧节点（schema v1：画像四维度 / future_notes）
+            p = n.get("profile") or {}
+            for label, key in (("喜好", "preferences"), ("性格", "personality"),
+                               ("习惯", "habits"), ("目标", "goals")):
+                items = p.get(key) or []
+                if items:
+                    lines.append(f"[{label}] " + "、".join(items))
+            details = n.get("details")
+            if isinstance(details, dict) and details.get("future_notes"):
+                lines.append("[后续说明] " + "；".join(details["future_notes"]))
         return "\n".join(lines)
 
     # ── 叶子压缩（对话 → level0 节点）────────────────────────
 
-    def _summarize_leaf(self, msgs, batch, removes, adds) -> None:
+    def _summarize_leaf(self, msgs, batch, removes, adds) -> bool:
+        """压缩一个叶子分片 → level0 节点；成功返回 True（失败时调用方停手）。"""
         tree = self.session.get_memory_tree()
         # 全局序号（对齐小B _span 机制）：节点范围 = 已压缩累计条数起，
         # 连续不重叠——不能用 enumerate(msgs) 相对索引（每次从 0 附近开始，
@@ -570,12 +1061,16 @@ class SummarizationMiddleware(AgentMiddleware):
         start_pos = self.session._compressed_total
         end_pos = start_pos + len(batch) - 1
 
-        original_text = "\n".join(self._speaker_text(m) for m in batch)
-        instruction = HumanMessage(content=self._leaf_instruction(original_text))
-        out = self._call_compress(msgs, instruction)
+        # 压缩输入边界（计划 7.2）：保留的尾部原始消息不进输入（"未来信息"不发送）；
+        # 已有节点带保护标记作为上下文（模型据此知道"这些不要动"）
+        node_msgs = [m for m in msgs
+                     if (getattr(m, "metadata", None) or {}).get("node_id")]
+        instruction = HumanMessage(content=self._leaf_instruction(start_pos, end_pos))
+        out = self._call_compress(node_msgs + list(batch), instruction)
         if not out or not out.summary or not out.summary.strip():
             _logger.warning("[compress] 叶子摘要为空，跳过")
-            return
+            return False
+        out.context.cwd = self._current_cwd()[:300]   # 工作目录由代码填写（防幻觉）
 
         from langchain_core.messages import messages_to_dict
         # 覆盖时间范围：batch 首/末消息的 metadata.ts（秒级 ISO，UTC+8）
@@ -600,14 +1095,16 @@ class SummarizationMiddleware(AgentMiddleware):
                     d["content"] = cleaned
                 else:
                     d["data"]["content"] = cleaned
+        meta = dict(out.meta)
+        meta["schema_version"] = SCHEMA_VERSION
+        meta["fields"] = out.fields_payload()
         node_id = tree.add_leaf(
             out.summary,
             (start_pos, end_pos),
             None,
             details=details,
-            profile=self._profile_or_none(out),
-            future_notes=out.future_notes or None,
-            meta={"schema_version": 1, **out.meta},
+            profile=None,
+            meta=meta,
             time_range=time_range,
         )
         self.session._compressed_total = end_pos + 1   # 累加已压缩条数
@@ -619,9 +1116,10 @@ class SummarizationMiddleware(AgentMiddleware):
             metadata={"node_id": node_id, "node_start": start_pos})
         removes.extend(RemoveMessage(id=m.id) for m in batch)
         adds.append(summary_msg)
-        _logger.info("[compress] 叶子 %s 第%d-%d条（%d 条消息落树，画像维度=%s）",
+        _logger.info("[compress] 叶子 %s 第%d-%d条（%d 条消息落树，字段=%s）",
                      node_id, start_pos, end_pos, len(batch),
-                     len(out.profile.model_dump(exclude_none=True)))
+                     "、".join(k for k, v in out.fields_payload().items() if v))
+        return True
 
     # ── 向上压缩（递归：摘要还能再被摘要）────────────────────
 
@@ -643,29 +1141,46 @@ class SummarizationMiddleware(AgentMiddleware):
             nid = (getattr(m, "metadata", None) or {}).get("node_id")
             if nid:
                 by_id[nid] = m
-        child_msgs = []
+        target_ids = {n["id"] for n in to_compact}
+        # 压缩输入边界（计划 7.2）：只放节点消息（原始消息不进）；目标节点从树渲染
+        # → 去掉保护标记（模型据此知道"这几条要压"）；其他节点保留标记 = 别动
+        context_msgs = []
         removable = []
-        for n in to_compact:
-            m = by_id.get(n["id"])
-            if m is not None:
-                child_msgs.append(m)
+        seen_ids = set()
+        for m in msgs:
+            nid = (getattr(m, "metadata", None) or {}).get("node_id")
+            if not nid:
+                continue
+            seen_ids.add(nid)
+            if nid in target_ids:
+                n = next((x for x in to_compact if x["id"] == nid), None)
+                text = self._node_full_text(n) if n else (m.content or "")
+                context_msgs.append(HumanMessage(content=text, metadata={"node_id": nid}))
                 removable.append(m)
             else:
-                child_msgs.append(HumanMessage(
-                    content=self._node_full_text(n),
-                    metadata={"node_id": n["id"]}))
+                context_msgs.append(m)          # 其他节点：原样（带保护标记）
+        for n in to_compact:                    # 目标不在 buffer（异常）→ 补上
+            if n["id"] not in seen_ids:
+                context_msgs.append(HumanMessage(content=self._node_full_text(n),
+                                                 metadata={"node_id": n["id"]}))
 
-        child_summaries = "\n".join(self._node_full_text(n) for n in to_compact)
-        instruction = HumanMessage(content=self._parent_instruction(len(to_compact), child_summaries))
-        out = self._call_compress(child_msgs, instruction)
+        instruction = HumanMessage(
+            content=self._parent_instruction([n["id"] for n in to_compact]))
+        out = self._call_compress(context_msgs, instruction)
         if not out or not out.summary or not out.summary.strip():
             _logger.warning("[compress] 父节点摘要为空，停止向上压缩")
             return False
+        merged_cwd = self._merge_cwd(to_compact)
+        if merged_cwd:
+            out.context.cwd = merged_cwd[:300]        # 工作目录从子节点合并
 
+        meta = dict(out.meta)
+        meta["schema_version"] = SCHEMA_VERSION
+        meta["fields"] = out.fields_payload()
         parent_id = tree.compact(
             [n["id"] for n in to_compact], out.summary,
-            profile=self._profile_or_none(out),
-            meta={"schema_version": 1, **out.meta})
+            profile=None,
+            meta=meta)
         rr0 = to_compact[0].get("round_range") or ["?", "?"]
         rr1 = to_compact[-1].get("round_range") or ["?", "?"]
         # 父节点 node_start：子节点覆盖区间的最小起点（优先取 buffer 节点消息
@@ -699,17 +1214,54 @@ class SummarizationMiddleware(AgentMiddleware):
         return True
 
     @staticmethod
-    def _profile_or_none(out: MemoryNodeOutput) -> dict | None:
-        profile = out.profile.model_dump()
-        return profile if any(profile.values()) else None
+    def _apply_budget(out: MemoryNodeOutput, budget: int) -> MemoryNodeOutput:
+        """节点预算软裁剪（硬上限由压缩模型 max_tokens 承担）。
+
+        弱模型偶尔写超长；这里对 summary 与各列表做兜底截断，避免单节点膨胀。
+        """
+        cap = max(200, int(budget or 1000))
+        if len(out.summary) > cap * 2:
+            out.summary = out.summary[: cap * 2].rstrip() + "…"
+
+        def _clip(items, n: int = 8, width: int = 200) -> list[str]:
+            return [str(x)[:width] for x in list(items or [])[:n] if x]
+
+        t = out.task
+        t.goal, t.status = t.goal[:300], t.status[:300]
+        t.todo, t.next_steps = _clip(t.todo), _clip(t.next_steps)
+        t.blockers = _clip(t.blockers)
+        out.decisions = [DecisionInfo(what=d.what[:200], why=d.why[:300])
+                         for d in out.decisions[:8]]
+        out.lessons.errors = [LessonError(symptom=e.symptom[:200], cause=e.cause[:200],
+                                          fix=e.fix[:300])
+                              for e in out.lessons.errors[:8]]
+        out.lessons.patterns = _clip(out.lessons.patterns)
+        c = out.context
+        c.cwd = str(c.cwd or "")[:300]
+        c.env, c.commands = _clip(c.env), _clip(c.commands)
+        c.artifacts, c.constraints = _clip(c.artifacts), _clip(c.constraints)
+        out.user = _clip(out.user, n=12)
+        return out
 
     # ── 压缩请求 ────────────────────────────────────────────
 
     def _call_compress(self, context_msgs, instruction) -> MemoryNodeOutput | None:
-        """独立压缩模型调用：system(角色卡) + 上下文原样 + 指令（唯一新增）。
+        """压缩调用入口：解析结果后按 node_token_budget 做软裁剪。"""
+        out = self._invoke_compress(context_msgs, instruction)
+        if out is None:
+            return None
+        budget = int((getattr(self.session, "settings", None) or {})
+                     .get("node_token_budget", 1000) or 1000)
+        return self._apply_budget(out, budget)
+
+    def _invoke_compress(self, context_msgs, instruction) -> MemoryNodeOutput | None:
+        """独立压缩模型调用：system(角色卡) + 上下文 + 指令。
 
         主通道：with_structured_output(json_mode)——JSON Schema 保证输出可解析；
         降级 1：文本 JSON model_validate_json；降级 2：纯摘要兜底。
+        某些端点不支持 structured/json_mode（实测 OpenCode Go 每次都失败）：
+        首次失败后在 session 上打标，本进程内直接走降级通道——省掉每次注定
+        失败的结构化调用（每次要等 ~15s）。
         """
         from langchain_core.messages import SystemMessage
         model = self.session._get_summary_model()
@@ -720,34 +1272,45 @@ class SummarizationMiddleware(AgentMiddleware):
         request = [SystemMessage(content=sys_prompt)]
         request.extend(context_msgs)
         request.append(instruction)
-        try:
-            structured = model.with_structured_output(MemoryNodeOutput, method="json_mode")
-            out = structured.invoke(request)
-            if isinstance(out, MemoryNodeOutput):
-                return out
-            if isinstance(out, dict):
-                return MemoryNodeOutput.model_validate(out)
-        except Exception:
-            _logger.warning("[compress] with_structured_output 失败，降级解析")
+        if not getattr(self.session, "_compress_no_structured", False):
+            try:
+                structured = model.with_structured_output(MemoryNodeOutput, method="json_mode")
+                out = structured.invoke(request)
+                if isinstance(out, MemoryNodeOutput):
+                    return out
+                if isinstance(out, dict):
+                    return MemoryNodeOutput.model_validate(out)
+            except Exception as exc:
+                self.session._compress_no_structured = True   # 端点不支持：别再试
+                _logger.warning("[compress] with_structured_output 失败，"
+                                "后续直接降级解析：%s", exc)
         try:
             r = model.invoke(request)
             text = _strip_json_fence((r.content or "").strip())
             return MemoryNodeOutput.model_validate_json(text)
-        except Exception:
-            _logger.warning("[compress] JSON 解析失败，降级为纯摘要")
+        except Exception as exc:
+            _logger.warning("[compress] JSON 解析失败，重试一次：%s", exc)
             try:
                 r = model.invoke(request)
-                text = (r.content or "").strip()
-            except Exception:
+                text = _strip_json_fence((r.content or "").strip())
+            except Exception as exc2:
+                _logger.warning("[compress] 压缩调用失败：%s", exc2)
                 return None
-            return MemoryNodeOutput(summary=text) if text else None
-
-    @staticmethod
-    def _speaker_text(m) -> str:
-        from .content import content_text
-        role = {"human": "用户", "ai": "小助", "tool": "工具结果"}.get(m.type, m.type)
-        return f"{role}: {content_text(getattr(m, 'content', ''))}"
-
+            # 第二次也先按 JSON 解析（模型输出有随机性，这次可能完整——
+            # 曾漏了这步：整段 JSON 被当纯摘要存进节点，2026-10-18 事故）
+            try:
+                return MemoryNodeOutput.model_validate_json(text)
+            except Exception:
+                pass
+            # 截断/坏 JSON → 抠出 summary 字符串（远好于把 JSON 整段存成摘要）
+            cleaned = clean_wrapped_summary(text)
+            if cleaned and cleaned != text:
+                _logger.warning("[compress] JSON 不完整，已抠出 summary 存为纯摘要")
+                return MemoryNodeOutput(summary=cleaned)
+            if not text:
+                _logger.warning("[compress] 纯摘要调用返回空内容")
+                return None
+            return MemoryNodeOutput(summary=text)
 
 def _strip_json_fence(text: str) -> str:
     """剥掉模型输出的 markdown ```json 代码块围栏（降级解析前清洗）。"""
@@ -760,3 +1323,37 @@ def _strip_json_fence(text: str) -> str:
             s = s.rstrip()[:-3]
         s = s.strip()
     return s
+
+
+def clean_wrapped_summary(text: str) -> str:
+    """把"JSON 外壳"摘要剥成纯文本（2026-10-18 降级路径事故的兜底）。
+
+    事故背景：max_tokens 截断导致 JSON 解析失败时，降级路径把整段 JSON 原样
+    存成了摘要（节点/节点消息里全是 `{"summary": ...}`）。这里：
+    - 完整 JSON → json.loads 取 summary 字段；
+    - 被截断的 JSON → 正则抠出 summary 字符串；
+    - 本来就不是 JSON → 原样返回。
+    用于渲染层（节点消息/树渲染）与压缩降级路径，历史坏数据在展示时自动剥壳。
+    """
+    import re as _re
+
+    s = str(text or "").strip()
+    if not s.startswith("{"):
+        return text
+    try:
+        d = json.loads(s)
+        if isinstance(d, dict) and isinstance(d.get("summary"), str) and d["summary"].strip():
+            return d["summary"].strip()
+    except Exception:
+        pass
+    m = _re.search(r'"summary"\s*:\s*"((?:[^"\\]|\\.)*)', s)
+    if m:
+        raw = m.group(1)
+        try:
+            val = json.loads('"' + raw + '"')   # 正常闭合时按 JSON 反转义
+        except Exception:
+            # 断在字符串中间（无闭合引号）：做基本反转义
+            val = raw.replace("\\n", "\n").replace('\\"', '"')
+        if str(val).strip():
+            return str(val).strip()
+    return text

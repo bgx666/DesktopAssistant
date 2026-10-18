@@ -20,37 +20,40 @@
   - `memory_tree.db` — 对话 buffer 持久化 + 分层记忆树（`memory/sqlite_memory_tree.py`）
   - `assistant/YYYY-MM-DD.jsonl` — 对话/工具日志
   - `tts/` — 合成音频缓存；`settings.json` — 用户设置
-- **大脑**：DeepSeek（默认 `deepseek-v4-flash-vision-exp`，视觉模型）+ LangChain `create_agent`（LangGraph 原生 ReAct：model → tools → model → …）
+- **大脑**：DeepSeek（默认 `deepseek-flash`，DeepSeek-V4.1-Flash 多模态）+ LangChain `create_agent`（LangGraph 原生 ReAct：model → tools → model → …）
 
 ---
 
 ## 1. 代码地图
 
-### 后端 `src/planner/`（约 5,900 行）
+### 后端 `src/planner/`（约 8,000 行）
 
 | 文件 | 规模 | 职责 |
 |---|---|---|
-| `session.py` | 1459 行 | **核心**：并发锁、消息收发、生成调度、心跳/日历调度线程、异步压缩、事件队列、状态 |
-| `tools.py` | 821 行 | 13 个 function calling 工具（日历×4、心跳、分段说话、DND、记忆树、文件×2、截屏、搜索×2） |
-| `middleware.py` | 762 行 | 10 个业务中间件 + 记忆树压缩实现（`SummarizationMiddleware`） |
-| `server.py` | 572 行 | ThreadingHTTPServer + JSON 端点 + 启动自检（端口清理） |
+| `session.py` | 2003 行 | **核心**：并发锁、消息收发、生成调度、心跳/日历调度线程、异步压缩、审批挂起、事件队列、状态 |
+| `tools.py` | 1864 行 | 14 个基础工具（日历×4、心跳、分段说话、ask_user 提问、DND、记忆树、文件×2、截屏、**view_image 读图**、搜索×2）+ **代码工作区工具**（`get_cwd`、`apply_patch` 多文件补丁、读写/检索、`run_command`、`show_image`，仅 `workspace_root` 非空时注册） |
+| `middleware.py` | 1217 行 | 11 个业务中间件（含 `ApprovalMiddleware` 审批、截屏/读图注入）+ 记忆树压缩实现（`SummarizationMiddleware`） |
+| `server.py` | 904 行 | ThreadingHTTPServer + JSON 端点（`/workspace` `/approval` `/permissions` `/changes` `/llm` `/file` 等）+ 启动自检（端口清理） |
+| `workspace.py` | 299 行 | 代码工作区：路径校验 / 黑名单 / 命令黑名单 / 权限规则存储（`data/permissions.json`） |
+| `changes.py` | 222 行 | 变更留底/回退（`data/changes.db`：写操作前后快照、回退到某条之前、before→after diff 文本） |
+| `llm_stats.py` | 98 行 | 用量/缓存命中统计（`data/llm_stats.json` 环形 50 条：命中率、TPS、平均 token） |
 | `memory/sqlite_memory_tree.py` | 493 行 | 分层摘要树：add_leaf / compact / 查询 / buffer_state 持久化 |
-| `tts.py` / `asr.py` / `ocr.py` | 407 / 186 / 125 行 | 本地语音合成（Kokoro）/ 识别（SenseVoice）/ OCR（RapidOCR） |
+| `tts.py` / `asr.py` / `ocr.py` | 453 / 208 / 132 行 | 本地语音合成（Kokoro）/ 识别（SenseVoice）/ OCR（RapidOCR） |
 | `store/calendar_db.py` | 363 行 | 日历库（SQLite，WAL） |
-| `llm.py` / `agent.py` | 225 / 75 行 | 模型构建（mock/真实、视觉判定）/ create_agent 装配 |
-| `config.py` / `settings.py` | 94 / 85 行 | 环境变量 / 运行时用户设置 |
+| `llm.py` / `agent.py` | 461 / 81 行 | 模型构建（mock/真实、多服务商预设、视觉判定、reasoning/usage shim）/ create_agent 装配（含单轮调用上限） |
+| `config.py` / `settings.py` | 95 / 168 行 | 环境变量 / 运行时用户设置 |
 | `imageutil.py` / `content.py` | 77 / 32 行 | 图片→data URL / 内容块（含图片）→纯文本 |
 
-### 前端 `frontend/`（约 5,100 行）
+### 前端 `frontend/`（约 6,600 行）
 
 | 文件 | 规模 | 职责 |
 |---|---|---|
-| `main.js` | 1176 行 | 主进程：后端生命周期、窗口/托盘、`/dequeue` 唯一消费者、日志、播放上报 |
-| `renderer/app.js` | 877 行 | 面板 UI：聊天区渲染、工具卡片、心跳倒计时、设置入口 |
-| `renderer/voiceMode.js` | 489 行 | 语音对话模式：VAD 驱动录音、流式 TTS（预取/打断/括号过滤） |
-| `renderer/bubble.js` + `morph.js` | 417 + 164 行 | 悬浮球交互（单击/长按/拖拽）与窗口变形动画 |
-| `renderer/mic.js` | 151 行 | 麦克风采集 + VAD（自适应噪声底噪） |
-| `renderer/settings.js` | 292 行 | 设置窗口（TTS 引擎/音色、模型、压缩参数） |
+| `main.js` | 1391 行 | 主进程：后端生命周期、窗口/托盘、`/dequeue` 唯一消费者、面板 resize、音频/图片落地代理、日志 |
+| `renderer/app.js` | 2118 行 | 面板 UI：聊天区渲染、工具组/思考行（单行式）、审批与提问弹窗、图片气泡、状态条与统计面板、`@` 补全、变更 tab、心跳倒计时 |
+| `renderer/voiceMode.js` | 526 行 | 语音对话模式：VAD 驱动录音、流式 TTS（预取/打断/括号过滤） |
+| `renderer/bubble.js` + `morph.js` | 417 + 178 行 | 悬浮球交互（单击=放大 / 长按=语音输入 / 拖拽移动 / 拖文件挂载 / 右键菜单：放大、显示最近的气泡…）与窗口变形动画 |
+| `renderer/mic.js` | 160 行 | 麦克风采集 + VAD（自适应噪声底噪） |
+| `renderer/settings.js` | 438 行 | 设置窗口（TTS 引擎/音色、模型与服务商、压缩参数、代码工作区与授权规则） |
 
 ### 推荐先读顺序
 
@@ -107,7 +110,7 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    B["recent_buffer 原始消息 ≥60"] --> M["_maybe_compress_async（调度线程）"]
+    B["recent_buffer 原始消息估算 token ≥ 预算"] --> M["_maybe_compress_async（调度线程）"]
     M --> W["后台线程 _run_async_compression"]
     W --> S["compress_snapshot：对快照压缩"]
     S --> L["_summarize_leaf：最早 40 条 → node0_xxx"]
@@ -118,10 +121,29 @@ flowchart LR
 ```
 
 关键点：
-- 压缩在**后台线程**完成（LLM 压缩需 10~30 秒，不阻塞回复）；替换是毫秒级：按消息 id 删旧 + 插节点消息 + 重排序 + 落盘 + 推 `memory_update` 事件。
-- 节点消息带 `metadata.node_id` 常驻 buffer（可持久化、可被后续压缩合并）；`/history` 里作为 `role=memory` 显示在对话顶部。
-- 压缩请求 = system(角色卡) + **完整 buffer 快照** + 压缩指令——模型能看到待压缩区域之后的消息，`future_notes` 字段据此对摘要/画像做事后校正。
-- `explore_memory_tree` 工具让模型按需展开任意节点（`get_node_children_info` / `get_nodes_at_level`）。
+- 阈值（`middleware.py`）：**叶子压缩只看 token 预算**——原始消息估算 token ≥ `compress_token_budget`（默认 10 万，
+  估算 = 字符 × 1.2）触发；**保留最近 20 条**原文，批次 = `raw[:len(raw)-keep]`（连 keep 条都超预算时只保留最后 1 条）；
+  节点**向上合并保持条数判定**：同层活跃节点 ≥ **8** → 取最早 **4** 个合并为父节点，递归向上。
+  ⚠️ `memory/sqlite_memory_tree.py:21` 的 `LEAF_SIZE=20` 是**未被引用的遗留常量**，
+  真正生效的是 `SUMMARIZE_KEEP_MESSAGES`，别当成两个阈值。
+  四个值全部走 `settings`（`compress_token_budget`/`compress_keep`/`compact_threshold`/`compact_factor`），设置页可调。
+- 压缩在**后台线程**完成（LLM 压缩需 10~30 秒，不阻塞回复）：调度线程只做阈值检查 →
+  `threading.Thread` 跑 `compress_snapshot(snapshot)`（**只碰快照不碰真实 buffer**）→
+  轮询等空闲窗口（`not _generating and not pending_response and not _inbox`）→
+  毫秒级原子替换。替换**按消息 id 删**而非下标——压缩期间新到的消息位置全错位，
+  id 不在删除集里自然保留；替换后调 `_strip_orphan_tool_messages()` 防御切段产生的孤儿 tool 消息。
+- 节点消息带 `metadata.node_id` 常驻 buffer（可持久化、可被后续压缩合并）；`/history` 里作为 `role=memory` 显示在对话顶部；
+  文本带层级与保护标记：`[node0_001 · L0 · 第a-b条] [已压缩 · 不需要压缩]`。
+- 压缩输入边界：叶子 = **带标记的已有节点 + 待压原文**（保留的尾部不进输入）；
+  节点压缩 = 目标节点去保护标记（从树渲染）+ 指令点名目标；不再把正文复制进指令。
+- 输出为**任务型 schema v2**（`summary` + `task/decisions/lessons/context/user`，落 `meta.fields`）；
+  旧画像节点走兼容渲染；`future_notes` 已移除。
+- `explore_memory_tree` 工具让模型按需展开任意节点（`get_node_children_info` / `get_nodes_at_level`）；
+  展开输出过大时落盘 `data/tool_results/`（读该目录免审批）。
+- 叶子节点的 `details` 存**原始消息全文**（清洗掉 `image_url`，否则 base64 落盘纯浪费且会被当垃圾灌回上下文），
+  摘要丢信息时可回溯原文。
+- **量化效果**：LoCoMo 评测 138 条真实长对话，`llm_judge`（refined）= **0.688**，
+  数据在 `research/locomo/outputs/`。谈"效果怎么量化"时用这个，别空谈。
 
 ---
 
@@ -137,6 +159,7 @@ flowchart LR
 | `StopRequestMiddleware` | before_model | `_stop_requested` → 跳 end（工具执行中不跳） |
 | `NudgeMiddleware` | before + after_model | 第 5 轮注入「收尾提示」；`model_call_count` 计数 |
 | `HeartbeatTrackMiddleware` | wrap_tool_call + before_model | 调过 heartbeat → 跳 end；ToolMessage 必须随 Command 带回 |
+| `ApprovalMiddleware` | wrap_tool_call | 代码工作区审批：写/区外读挂起（超时拒绝），黑名单硬拒；拒绝时返回对齐 tool_call_id 的 ToolMessage |
 | `LoggingMiddleware` | wrap_model_call / wrap_tool_call | 每轮 LLM/工具调用写 jsonl 日志（耗时一眼可见） |
 | `SummarizationMiddleware` | before_model | **空壳**——压缩已异步化（`session._maybe_compress_async`） |
 | `ModelCallLimitMiddleware` | 内建 | `run_limit=10` 硬保险（别改成 1，会被框架错误消息污染 buffer） |
@@ -151,7 +174,7 @@ flowchart LR
 - **`_inbox`**：生成期间用户消息的暂存区；`_generate_response` 的 finally 里消费（并入 buffer → `pending_response=True` → 下一轮生成）。
 - **`_stop_requested`**：只对当前生成有效，每次生成开始重置；流消费循环里也会立即 break（半句不落 buffer）。
 - **`current_trigger`**：`player` / `heartbeat` / `scheduled` / `nudge`——决定 DND 是否拦截、是否算自主学习。
-- **模型解析链**（`llm.py::resolve_model_name`）：`settings.llm_model` > env `PLANNER_LLM_MODEL` > `deepseek-v4-flash-vision-exp`。共享 `.env` 的 `LLM_MODEL` 是 xiaob 游戏的，**不影响 planner**。
+- **模型解析链**（`llm.py::resolve_model_name`）：`settings.llm_model` > env `PLANNER_LLM_MODEL` > `deepseek-flash`。共享 `.env` 的 `LLM_MODEL` 是 xiaob 游戏的，**不影响 planner**。
 - **视觉**：图片以 `image_url` 块随 user 消息**常驻 buffer**（每张 ≤384 token，每轮重发计费）；`/history` 与压缩摘要只取文本块。
 - **数据隔离**：dev（18771 + 开发 `data/`）与 release（18772 + `planner-release/data`）互不触碰；测试一律 mock + `tmp_path`。
 - **内部注入消息**：人类不可见的系统提示以 `（…）` 或 `[HH:MM]` / `[当前议程]` 开头，`/history` 会过滤，气泡/面板不显示。

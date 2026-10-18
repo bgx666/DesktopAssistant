@@ -491,9 +491,9 @@ def test_settings_endpoint(backend):
     session, base = backend
     d = _get(base, "/settings")
     assert d["ok"] and d["settings"]["press_ms"] == 200
-    r = _post(base, "/settings", {"updates": {"press_ms": 300, "compress_trigger": 80}})
+    r = _post(base, "/settings", {"updates": {"press_ms": 300, "compress_token_budget": 20000}})
     assert r["ok"] and r["settings"]["press_ms"] == 300
-    assert session.settings["compress_trigger"] == 80
+    assert session.settings["compress_token_budget"] == 20000
     from urllib.error import HTTPError
     try:
         _post(base, "/settings", {"updates": {"press_ms": 1}})
@@ -508,6 +508,136 @@ def test_toggle_mock(backend):
     assert r["mode"] == "llm"
     r2 = _post(base, "/toggle_mock")
     assert r2["mode"] == "mock"
+
+
+def test_llm_providers_endpoint(backend, monkeypatch):
+    """模型服务商端点：预设清单 + 当前配置；未知 provider → 400；无 key 时回退预设。"""
+    from urllib.error import HTTPError
+
+    _, base = backend
+    r = _get(base, "/llm/providers")
+    assert r["ok"]
+    assert {p["id"] for p in r["providers"]} == {"deepseek", "opencode"}
+    assert all("has_key" in p for p in r["providers"])
+    assert r["current"]["provider"] == "deepseek"
+    assert r["current"]["model"] == "deepseek-flash"
+    assert r["current"]["base_url"] == "https://api.deepseek.com"
+
+    try:
+        _get(base, "/llm/models?provider=anthropic")
+        assert False, "未知 provider 应 400"
+    except HTTPError as e:
+        assert e.code == 400
+
+    # 无 key（环境变量也清掉）→ 不发起网络，回退预设清单
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    r = _get(base, "/llm/models?provider=opencode")
+    assert r["ok"] and r["source"] == "preset"
+    assert "deepseek-v4.1-flash" in r["models"]
+
+
+def test_workspace_cwd_dirs_files_endpoints(backend, tmp_path):
+    """第二轮端点：/workspace/cwd 切换、/workspace/dirs 列子目录、/workspace/files 补全。"""
+    from urllib.error import HTTPError
+
+    session, base = backend
+    ws = tmp_path / "ws"
+    (ws / "src" / "pkg").mkdir(parents=True)
+    (ws / "src" / "main.py").write_text("print(1)\n", encoding="utf-8")
+    (ws / "README.md").write_text("hi\n", encoding="utf-8")
+
+    r = _post(base, "/workspace", {"path": str(ws)})
+    assert r["ok"] and r["cwd"] == str(ws.resolve())
+
+    # 切到子目录
+    r = _post(base, "/workspace/cwd", {"path": str(ws / "src")})
+    assert r["ok"] and r["cwd"] == str((ws / "src").resolve())
+    assert r["recent"][0] == str((ws / "src").resolve())
+
+    # 越界 → 400
+    try:
+        _post(base, "/workspace/cwd", {"path": str(tmp_path)})
+        assert False, "工作区外目录应 400"
+    except HTTPError as e:
+        assert e.code == 400
+
+    # GET /workspace 带 cwd/mode/recent
+    r = _get(base, "/workspace")
+    assert r["cwd"] == str((ws / "src").resolve())
+    assert r["permission_mode"] == "ask"
+    assert r["recent"]
+
+    # 子目录列表
+    r = _get(base, "/workspace/dirs")
+    assert r["ok"] and r["dirs"] == ["pkg"]
+    # 列工作区根（相对当前目录用 ..）
+    r = _get(base, "/workspace/dirs?path=" + str(ws))
+    assert "src" in r["dirs"]
+
+    # @ 补全：列出当前目录（含子目录）的文件，q 过滤
+    r = _get(base, "/workspace/files")
+    assert "main.py" in r["files"] and "pkg/main.py" not in r["files"]
+    r = _get(base, "/workspace/files?q=main")
+    assert r["files"] == ["main.py"]
+
+    # 权限模式：走 /settings 枚举校验
+    r = _post(base, "/settings", {"updates": {"permission_mode": "auto"}})
+    assert r["ok"] and r["settings"]["permission_mode"] == "auto"
+    assert _get(base, "/workspace")["permission_mode"] == "auto"
+    try:
+        _post(base, "/settings", {"updates": {"permission_mode": "yolo"}})
+        assert False, "非法权限模式应 400"
+    except HTTPError as e:
+        assert e.code == 400
+
+
+def test_workspace_and_approval_endpoints(backend, tmp_path):
+    """代码工作区端点：GET/POST /workspace（含非法目录 400）+ POST /approval。"""
+    from urllib.error import HTTPError
+
+    session, base = backend
+    ws = tmp_path / "ws"
+    ws.mkdir()
+
+    r = _get(base, "/workspace")
+    assert r["ok"] and r["enabled"] is False and r["workspace"] == ""
+
+    r = _post(base, "/workspace", {"path": str(ws)})
+    assert r["ok"] and r["enabled"] is True
+    assert Path(r["workspace"]) == ws.resolve()
+    assert session.settings["workspace_root"] == str(ws.resolve())
+
+    # 非法目录 → 400
+    try:
+        _post(base, "/workspace", {"path": str(tmp_path / "nope")})
+        assert False, "不存在的目录应 400"
+    except HTTPError as e:
+        assert e.code == 400
+
+    # 清空 = 关闭
+    r = _post(base, "/workspace", {"path": ""})
+    assert r["ok"] and r["enabled"] is False
+
+    # /approval：未知 id → 404；回填命中挂起请求 → 200
+    try:
+        _post(base, "/approval", {"id": "no-such", "decision": "deny"})
+        assert False, "未知审批 id 应 404"
+    except HTTPError as e:
+        assert e.code == 404
+
+    result = {}
+
+    def worker():
+        result["decision"] = session.request_approval("write_file", ["D:/x/a.py"])
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+    req = _wait_events(base, lambda ev: ev.get("type") == "approval_request", timeout=5)
+    assert req and req["tool"] == "write_file"
+    r = _post(base, "/approval", {"id": req["id"], "decision": "allow_once"})
+    assert r["ok"] is True
+    t.join(timeout=3)
+    assert result.get("decision") == "allow_once"
 
 
 # ── 启动自检：残留后端识别（纯函数）──────────────────────────
@@ -530,3 +660,90 @@ def test_should_kill_stale_decision():
     assert not should_kill_stale(123, 456, "notepad.exe")        # 无关进程不误杀
     assert not should_kill_stale(None, 456, "python -m planner")  # 无记录不动
     assert not should_kill_stale(123, 123, "python -m planner")   # 自己不动
+
+
+def test_changes_and_permissions_endpoints(backend, tmp_path):
+    """/changes 列表 + /changes/rollback 回退 + 规则管理端点（删除/清空）。"""
+    from planner.workspace import PermissionStore
+
+    session, base = backend
+    ws = tmp_path / "wsc"
+    ws.mkdir()
+    _post(base, "/workspace", {"path": str(ws)})
+    tools = {t.name: t for t in __import__(
+        "planner.tools", fromlist=["build_tools"]).build_tools(session)}
+    tools["write_file"].invoke({"path": "x.txt", "content": "abc"})
+    r = _get(base, "/changes")
+    assert r["ok"] and r["changes"] and r["changes"][0]["rel"] == "x.txt"
+    cid = r["changes"][0]["id"]
+    r2 = _post(base, "/changes/rollback", {"id": cid})
+    assert r2["ok"] and r2["reverted"] == [cid]
+    assert not (ws / "x.txt").exists()
+    assert _post(base, "/changes/clear")["ok"]
+
+    # 规则管理：加规则 → 列表可见 → 删除 → 清空
+    PermissionStore(session.data_root).add("write_file", "src/**")
+    r = _get(base, "/workspace")
+    assert any(x.get("path_glob") == "src/**" for x in r["rules"])
+    r = _post(base, "/permissions/delete", {"index": 0})
+    assert r["ok"] and r["rules"] == []
+    PermissionStore(session.data_root).add("run_command", "pytest *")
+    r = _post(base, "/permissions/clear")
+    assert r["ok"] and r["rules"] == []
+    r = _get(base, "/workspace")
+    assert r["rules"] == []
+
+
+def test_approval_scope_through_http(backend):
+    """/approval 回填 scope → resolve_approval 归一成 always_dir（曾经漏传 scope）。"""
+    session, base = backend
+    result = {}
+
+    def worker():
+        result["d"] = session.request_approval("write_file", ["/x/a.py"])
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+    req = _wait_events(base, lambda ev: ev.get("type") == "approval_request", timeout=5)
+    assert req
+    r = _post(base, "/approval", {"id": req["id"], "decision": "always", "scope": "dir"})
+    assert r["ok"]
+    t.join(timeout=3)
+    assert result.get("d") == "always_dir"
+
+
+def test_preview_endpoints(backend):
+    """POST /preview 寄存 + GET 注入收紧版 CSP；404/400/413 分支。"""
+    import urllib.error
+
+    _, base = backend
+    html = ("<!doctype html><html><head><title>t</title></head>"
+            "<body><button id='b'>x</button></body></html>")
+    r = _post(base, "/preview", {"html": html})
+    assert r["ok"] and r["url"].startswith("/preview/")
+    with urllib.request.urlopen(base + r["url"], timeout=5) as resp:
+        body = resp.read().decode("utf-8")
+        assert resp.headers["Content-Type"].startswith("text/html")
+    assert "Content-Security-Policy" in body
+    assert "connect-src 'none'" in body, "必须断掉预览调后端 API 的路"
+    assert "<button id='b'>x</button>" in body, "正文原样保留"
+    assert body.index("Content-Security-Policy") < body.index("<title>"), "meta 应插在 head 前面"
+    # 未知 id → 404
+    with pytest.raises(urllib.error.HTTPError) as e1:
+        urllib.request.urlopen(base + "/preview/deadbeef", timeout=5)
+    assert e1.value.code == 404
+    # 空 html → 400
+    with pytest.raises(urllib.error.HTTPError) as e2:
+        _post(base, "/preview", {"html": "   "})
+    assert e2.value.code == 400
+
+
+def test_preview_wrap_without_head():
+    """没有 <head> 的片段：包一层壳也要带上收紧 CSP。"""
+    from planner.server import _wrap_preview_html
+
+    doc = _wrap_preview_html("<div>hi</div>")
+    assert doc.startswith("<!doctype html>")
+    assert "Content-Security-Policy" in doc and "<div>hi</div>" in doc
+    doc2 = _wrap_preview_html("<html><body><div>y</div></body></html>")
+    assert "Content-Security-Policy" in doc2 and "<div>y</div>" in doc2

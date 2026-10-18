@@ -1,8 +1,8 @@
 """图片预处理：任意常见格式 → 视觉模型可用的 base64 data URL。
 
-DeepSeek vision-exp 支持 JPEG/PNG/GIF/WebP（bmp/tiff/ico 等需转换），
-单图 ≤32MiB、请求体 ≤48MiB。统一转 PNG + 超长边缩放，控制体积与 token。
-GIF 只取首帧（cv2.imdecode 默认行为）。
+DeepSeek 多模态模型（`deepseek-flash` / 旧 vision-exp）支持 JPEG/PNG/GIF/WebP
+（bmp/tiff/ico 等需转换），单图 ≤32MiB、请求体 ≤48MiB。统一转 PNG + 超长边缩放，
+控制体积与 token。GIF 只取首帧（cv2.imdecode 默认行为）。
 """
 
 from __future__ import annotations

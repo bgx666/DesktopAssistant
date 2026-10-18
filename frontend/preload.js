@@ -7,8 +7,23 @@ contextBridge.exposeInMainWorld('planner', {
   apiBase: process.env.PLANNER_URL || 'http://127.0.0.1:18771',
   // HTTP 代理：file:// 页面直连被 CORS/PNA 拦，全部走主进程转发
   apiFetch: (path, opts) => ipcRenderer.invoke('api-fetch', path, opts || {}),
+  // 选择目录（代码工作区）
+  pickDirectory: () => ipcRenderer.invoke('pick-directory'),
+  // 在系统文件管理器中打开目录
+  openInExplorer: (p) => ipcRenderer.invoke('open-path', String(p || '')),
+  // 面板置前 + 聚焦（Windows 键盘焦点被抢走时的兜底）
+  focusPanel: () => ipcRenderer.send('focus-panel'),
+  // 把键盘焦点还给本窗口（原生对话框后遗症兜底；双窗口共用）
+  refocusWindow: () => ipcRenderer.send('refocus-window'),
+  // 面板尺寸：get 当前值 / set 程序化调整（拖拽调整走 beginResize/endResize）
+  getPanelSize: () => ipcRenderer.invoke('panel-size-get'),
+  setPanelSize: (w, h) => ipcRenderer.send('panel-size-set', { w, h }),
+  beginResize: (edge) => ipcRenderer.send('panel-resize-start', edge),
+  endResize: () => ipcRenderer.send('panel-resize-end'),
   // 语音下载代理：/tts/x.wav → 本地 file:// 路径（audio 元素直接播放）
   audioFile: (path) => ipcRenderer.invoke('api-audio', path),
+  // 图片下载代理：/file?path=… → 本地 file:// 路径（img 元素直接显示）
+  imageFile: (url) => ipcRenderer.invoke('api-image', url),
   // 渲染进程日志上报（播放链路诊断，输出到 start.bat 窗口）
   reportLog: (msg) => ipcRenderer.send('renderer-log', msg),
   // TTS 播放结果上报：主进程统计连续失败（只告警不自动恢复）
@@ -48,6 +63,7 @@ contextBridge.exposeInMainWorld('planner', {
   toastClick: () => ipcRenderer.send('toast-click'),
   toastResize: (h) => ipcRenderer.send('toast-resize', h),
   onToastsCleared: (cb) => ipcRenderer.on('toasts-cleared', () => cb()),
+  onShowReply: (cb) => ipcRenderer.on('show-reply', () => cb()),
   onAudio: (cb) => ipcRenderer.on('audio', (e, url) => cb(url)),
   // 变形面板
   setPanelBounds: (b) => ipcRenderer.send('set-panel-bounds', b),

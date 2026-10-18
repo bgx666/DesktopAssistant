@@ -2,16 +2,14 @@
 // 窗口本身只 resize 两次（动画前后各一次，由主进程执行）；本文件只驱动
 // #morph-stage 的 transform（scale + translate）与两层 opacity——
 // 全部是合成器属性，由 GPU 合成器完成动画，主线程零开销、零 IPC。
-// 内容固定 350×520 布局，文字全程不 reflow。
+// 舞台尺寸由 CSS 变量 --stage-w/h 控制（普通 350×520 / 宽模式 680×760），
+// 球形态的起始 scale 按面板实际宽度动态计算（BUBBLE_SIZE / 面板宽）。
 
 (() => {
   'use strict';
 
-  // 动画参数（与主进程 PANEL_W/H、BUBBLE_SIZE 对应）
-  const STAGE_W = 350;
-  const STAGE_H = 520;
+  // 动画参数（与主进程 panelW/H、BUBBLE_SIZE 对应）
   const BUBBLE_SIZE = 100;   // 球形态窗口尺寸（辉光留白）
-  const SCALE0 = BUBBLE_SIZE / STAGE_W;   // 球形态 scale ≈ 0.29
 
   const stage = document.getElementById('morph-stage');
   const ball = document.getElementById('morph-ball');
@@ -19,6 +17,13 @@
   const ballInner = ball.querySelector('.morph-inner');
 
   let animating = false;
+  // 每次 runMorph 递增的"代"：旧动画的兜底定时器 / transitionend 监听器一律失效。
+  // 历史 bug：morph-out 已在 transitionend 完成，但它的 590ms 兜底定时器还在——
+  // 若 590ms 内又开始 morph-in（收起后马上弹审批/提问），旧定时器会把"out 完成"
+  // 再发一次 → 主进程把刚展开的面板又隐藏（状态机错乱）。
+  let morphGen = 0;
+  let morphTimer = null;
+  let morphOnEnd = null;
 
   function baseTransform() {
     // 舞台居中于窗口的基准 transform
@@ -26,47 +31,41 @@
   }
 
   // 展开起始态：内容中心对齐球位置，尺寸 = 球尺寸
-  function startTransform(from, to) {
+  // panelRect：舞台当前布局对应的面板矩形（展开时=to，收回时=from）
+  function startTransform(from, to, panelRect) {
     const cx = (to.x + to.w / 2) - (from.x + from.w / 2);   // 球中心相对面板中心偏移
     const cy = (to.y + to.h / 2) - (from.y + from.h / 2);
-    stage.style.transform = `${baseTransform()} translate(${cx}px, ${cy}px) scale(${SCALE0})`;
+    const w = (panelRect && panelRect.w) ? panelRect.w : 350;
+    const scale0 = BUBBLE_SIZE / w;
+    stage.style.transform = `${baseTransform()} translate(${cx}px, ${cy}px) scale(${scale0})`;
   }
 
   function finishTransform() {
     stage.style.transform = `${baseTransform()} scale(1)`;
   }
 
-  // 动画结束兜底（transitionend 可能因窗口隐藏/异常丢失）
-  function armTimeout(kind, done) {
-    const ms = kind === 'in' ? 420 : 340;
-    setTimeout(() => {
-      if (!animating) return;
-      animating = false;
-      finishTransform();
-      ball.style.opacity = kind === 'in' ? '0' : '1';
-      panelUI.style.opacity = kind === 'in' ? '1' : '0';
-      done();
-    }, ms + 250);
-  }
-
   function runMorph(kind, from, to, done) {
+    const gen = ++morphGen;
+    // 清掉上一次动画遗留的兜底定时器与监听器（见 morphGen 注释）
+    if (morphTimer) { clearTimeout(morphTimer); morphTimer = null; }
+    if (morphOnEnd) { stage.removeEventListener('transitionend', morphOnEnd); morphOnEnd = null; }
     animating = true;
     if (kind === 'in') {
       // 起始：球形态
       ball.style.display = '';
       ball.style.opacity = '1';
       panelUI.style.opacity = '0';
-      startTransform(from, to);
+      startTransform(from, to, to);   // 舞台已按面板尺寸布局 → scale = 球宽/面板宽
       // 下一帧应用目标 transform → CSS transition 自动动画
       requestAnimationFrame(() => requestAnimationFrame(() => {
-        if (!animating) return;
+        if (!animating || gen !== morphGen) return;
         stage.classList.add('ready');
         stage.classList.remove('folding');
         finishTransform();
         // 动画中段：球渐隐、面板渐入（opacity transition 渐变衔接，
         // 避免"放大后瞬间刷成面板"的突兀感）
         setTimeout(() => {
-          if (!animating) return;
+          if (!animating || gen !== morphGen) return;
           ball.style.opacity = '0';
           panelUI.style.opacity = '1';
         }, 190);
@@ -79,20 +78,17 @@
       panelUI.style.opacity = '1';
       panelUI.classList.remove('ready');
       panelUI.style.pointerEvents = 'none';
-      startTransform(from, to);   // from=面板, to=球：内容中心滑向球位置并缩小
+      startTransform(from, to, from);   // from=面板（舞台当前布局尺寸）
       // 动画中段：面板渐隐、球渐显
       setTimeout(() => {
-        if (!animating) return;
+        if (!animating || gen !== morphGen) return;
         ball.style.opacity = '1';
         panelUI.style.opacity = '0';
       }, 140);
     }
 
-    const onEnd = (ev) => {
-      if (!animating) return;
-      if (ev && ev.propertyName !== 'transform') return;
-      animating = false;
-      stage.removeEventListener('transitionend', onEnd);
+    // UI 到终点形态（transitionend 与兜底超时共用；只允许执行一次）
+    const finalize = () => {
       if (kind === 'in') {
         ball.style.opacity = '0';
         ball.style.display = 'none';
@@ -107,23 +103,27 @@
       }
       done();
     };
-    stage.addEventListener('transitionend', onEnd);
-    armTimeout(kind, () => {
-      stage.removeEventListener('transitionend', onEnd);
-      if (kind === 'in') {
-        ball.style.opacity = '0';
-        ball.style.display = 'none';
-        panelUI.style.opacity = '1';
-        panelUI.classList.add('ready');
-        panelUI.style.pointerEvents = 'auto';
-      } else {
-        panelUI.style.opacity = '0';
-        panelUI.style.pointerEvents = 'none';
-        ball.style.display = '';
-        ball.style.opacity = '1';
-      }
-      done();
-    });
+
+    morphOnEnd = (ev) => {
+      if (!animating || gen !== morphGen) return;
+      if (ev && ev.propertyName !== 'transform') return;
+      animating = false;
+      stage.removeEventListener('transitionend', morphOnEnd);
+      morphOnEnd = null;
+      if (morphTimer) { clearTimeout(morphTimer); morphTimer = null; }
+      finalize();
+    };
+    stage.addEventListener('transitionend', morphOnEnd);
+
+    const ms = kind === 'in' ? 420 : 340;
+    morphTimer = setTimeout(() => {
+      morphTimer = null;
+      if (!animating || gen !== morphGen) return;   // 已被下一次动画/force-finish 取代
+      animating = false;
+      stage.removeEventListener('transitionend', morphOnEnd);
+      morphOnEnd = null;
+      finalize();
+    }, ms + 250);
   }
 
   // 主进程强制完成（异常/超时）→ 同步 UI 到终点形态
@@ -161,6 +161,22 @@
   window.planner.onMorphOut(({ from, to }) => {
     runMorph('out', from, to, () => window.planner.morphDone('out'));
   });
+
+  // 加载时按主进程状态自愈：面板若已是"展开"态（页面刷新/异常重载后 DOM 回到
+  // 初始的"不可见+不可交互"默认态），直接进入可交互，不必等下一次 morph 事件
+  // （历史问题：刷新后整个面板透明且点不动，只是想点输入框都点不进）。
+  window.planner.getPanelState().then((st) => {
+    if (st === 'shown') {
+      stage.classList.add('ready');
+      stage.classList.remove('folding');
+      ball.style.display = 'none';
+      ball.style.opacity = '0';
+      panelUI.classList.add('ready');
+      panelUI.style.opacity = '1';
+      panelUI.style.pointerEvents = 'auto';
+      finishTransform();
+    }
+  }).catch(() => { /* 主进程不可用：保持球形态默认 */ });
 
   // ── 球形态状态点（思考中 / 离线）——由主进程 state 推送 ──
   window.planner.onState((s) => {

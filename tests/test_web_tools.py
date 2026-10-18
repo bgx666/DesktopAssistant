@@ -1,9 +1,24 @@
-"""网页搜索工具测试：web_search / fetch_web（monkeypatch httpx，不真联网）。"""
+"""网页搜索工具测试：web_search / fetch_web（monkeypatch httpx，不真联网）。
+
+DeepSeek 官方 Search/Fetch 有 Key 时优先：本文件默认用 autouse fixture 关掉
+官方链路（否则 conftest 的 LLM_API_KEY=test-key 会让用例真发 POST），
+官方链路由文末显式用例单独覆盖（同样 monkeypatch httpx，不真联网）。
+"""
+
+import types
 
 import httpx as httpx_mod
+import pytest
 
 import planner.tools as tools_mod
 from planner.tools import build_tools
+
+
+@pytest.fixture(autouse=True)
+def _no_deepseek_official(monkeypatch):
+    """默认禁用 DeepSeek 官方链路：其余用例测的是内置爬虫链/解析，不应联网。"""
+    monkeypatch.setattr(tools_mod, "_deepseek_search_config", lambda session: ("", ""))
+
 
 BING_HTML = """
 <ol id="b_results">
@@ -260,3 +275,132 @@ def test_web_search_distinguishes_empty_from_error(monkeypatch):
 
     monkeypatch.setattr(httpx_mod, "get", boom)
     assert "搜索失败" in tools["web_search"].invoke({"query": "asdfghjkl"})
+
+
+# ------------------------------------------------------- DeepSeek 官方搜索/抓取
+# 有官方 Key 时 web_search/fetch_web 优先走 api.deepseek.com 的
+# /v1/tools/search 与 /v1/tools/fetch（自研引擎 + Markdown 正文），失败回退爬虫链。
+
+def _ds_session(settings=None):
+    return types.SimpleNamespace(settings=settings or {})
+
+
+DS_KEY_SETTINGS = {"llm_api_key_deepseek": "ds-test-key"}
+
+
+def test_deepseek_search_used_when_key_present(monkeypatch):
+    """带 Key 的 session → POST 官方 search（Bearer + query/count），不打爬虫。"""
+    calls = {}
+
+    class _Resp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"results": [
+                {"title": "DeepSeek V4 发布", "url": "https://example.com/v4",
+                 "summary": "DeepSeek 发布了 V4 模型，改进了工具调用与长上下文能力。",
+                 "snippet": "短摘要", "date": "2026-06-01T00:00:00+00:00",
+                 "site_name": "Example News", "rerank_score": 2.4},
+                {"title": "坏结果（无 url）", "url": "", "summary": "x"},
+            ]}
+
+    def fake_post(url, **kw):
+        calls["url"] = url
+        calls["headers"] = kw.get("headers") or {}
+        calls["json"] = kw.get("json") or {}
+        return _Resp()
+
+    def fake_get(*a, **k):
+        raise AssertionError("有官方结果时不该再打内置爬虫")
+
+    monkeypatch.setattr(httpx_mod, "post", fake_post)
+    monkeypatch.setattr(httpx_mod, "get", fake_get)
+    monkeypatch.setattr(tools_mod, "_deepseek_search_config",
+                        lambda session: ("https://api.deepseek.com", "ds-test-key"))
+    tools = {t.name: t for t in build_tools(_ds_session(DS_KEY_SETTINGS))}
+    res = tools["web_search"].invoke({"query": "DeepSeek V4 发布", "limit": 3})
+    assert "来源 DeepSeek" in res
+    assert "DeepSeek V4 发布" in res
+    assert "https://example.com/v4" in res
+    assert "（2026-06-01）" in res, "带日期的结果应显示日期"
+    assert "坏结果" not in res, "无 url 的脏结果应被过滤"
+    assert calls["url"] == "https://api.deepseek.com/v1/tools/search"
+    assert calls["headers"].get("Authorization") == "Bearer ds-test-key"
+    assert calls["json"]["query"] == "DeepSeek V4 发布"
+    assert calls["json"]["count"] == 3
+
+
+def test_deepseek_search_falls_back_to_scrapers(monkeypatch):
+    """官方搜索报错 → 回退 360（内置链不受影响）。"""
+
+    def boom_post(url, **kw):
+        raise RuntimeError("429 rate limited")
+
+    class _Resp:
+        text = SO_HTML
+
+        def raise_for_status(self):
+            pass
+
+    monkeypatch.setattr(httpx_mod, "post", boom_post)
+    monkeypatch.setattr(httpx_mod, "get", lambda url, **kw: _Resp())
+    monkeypatch.setattr(tools_mod, "_deepseek_search_config",
+                        lambda session: ("https://api.deepseek.com", "ds-test-key"))
+    tools = {t.name: t for t in build_tools(_ds_session(DS_KEY_SETTINGS))}
+    res = tools["web_search"].invoke({"query": "DeepSeek V3 技术报告"})
+    assert "来源 360" in res
+    assert "DeepSeek-V3 Technical Report" in res
+
+
+def test_deepseek_fetch_used_when_key_present(monkeypatch):
+    """带 Key → POST 官方 fetch，直接返回 Markdown 正文（不再自己解析 HTML）。"""
+    calls = {}
+
+    class _Resp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"title": "示例文章", "content": "# 标题\n\n正文内容段落。"}
+
+    def fake_post(url, **kw):
+        calls["url"] = url
+        calls["json"] = kw.get("json") or {}
+        return _Resp()
+
+    def fake_get(*a, **k):
+        raise AssertionError("官方 fetch 成功时不该再打内置抓取")
+
+    monkeypatch.setattr(httpx_mod, "post", fake_post)
+    monkeypatch.setattr(httpx_mod, "get", fake_get)
+    monkeypatch.setattr(tools_mod, "_deepseek_search_config",
+                        lambda session: ("https://api.deepseek.com", "ds-test-key"))
+    tools = {t.name: t for t in build_tools(_ds_session(DS_KEY_SETTINGS))}
+    res = tools["fetch_web"].invoke({"url": "https://example.com/page"})
+    assert "【示例文章】" in res and "正文内容段落" in res
+    assert calls["url"] == "https://api.deepseek.com/v1/tools/fetch"
+    assert calls["json"]["url"] == "https://example.com/page"
+
+
+def test_deepseek_fetch_falls_back_to_builtin(monkeypatch):
+    """官方 fetch 失败（如 404 无正文）→ 回退内置抓取（仍带【页面链接】）。"""
+
+    def boom_post(url, **kw):
+        raise RuntimeError("404 no content")
+
+    class _Resp:
+        text = ("<html><body><h1>标题</h1><p>正文内容段落。</p>"
+                '<a href="/xl.htm">校历</a></body></html>')
+
+        def raise_for_status(self):
+            pass
+
+    monkeypatch.setattr(httpx_mod, "post", boom_post)
+    monkeypatch.setattr(httpx_mod, "get", lambda url, **kw: _Resp())
+    monkeypatch.setattr(tools_mod, "_deepseek_search_config",
+                        lambda session: ("https://api.deepseek.com", "ds-test-key"))
+    tools = {t.name: t for t in build_tools(_ds_session(DS_KEY_SETTINGS))}
+    res = tools["fetch_web"].invoke({"url": "https://example.com/page"})
+    assert "正文内容段落" in res
+    assert "【页面链接】" in res and "xl.htm" in res

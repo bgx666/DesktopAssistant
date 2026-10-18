@@ -8,20 +8,37 @@ def _tools(session):
     return {t.name: t for t in build_tools(session)}
 
 
-def test_read_file_utf8_and_chunk(data_root):
+def test_read_file_utf8_and_line_chunks(data_root):
+    """按行读取 + 行号前缀 + 续读提示（不整文件硬读）。"""
     p = data_root / "note.txt"
-    p.write_text("一二三四五六七八九十" * 100, encoding="utf-8")
+    p.write_text("\n".join(f"第{i}行内容" for i in range(1, 101)), encoding="utf-8")
     s = PlannerSession(data_root, mock=True)
     try:
         tools = _tools(s)
-        r = tools["read_file"].invoke({"path": str(p), "start": 0, "limit": 20})
-        assert "共 1000 字符" in r
-        assert "本次显示 0-20" in r
-        assert "一二三四" in r
-        # 分段读取
-        r2 = tools["read_file"].invoke({"path": str(p), "start": 20, "limit": 20})
-        assert "本次显示 20-40" in r2
-        assert "如需继续" in r2
+        r = tools["read_file"].invoke({"path": str(p), "offset": 1, "limit": 5})
+        assert "共 100 行" in r and "本次显示第 1-5 行" in r
+        assert "1| 第1行内容" in r and "5| 第5行内容" in r
+        assert "如需继续可用 offset=6" in r
+        # 从第 50 行续读
+        r2 = tools["read_file"].invoke({"path": str(p), "offset": 50, "limit": 3})
+        assert "本次显示第 50-52 行" in r2
+        assert "50| 第50行内容" in r2 and "52| 第52行内容" in r2
+        # offset 超出末尾
+        r3 = tools["read_file"].invoke({"path": str(p), "offset": 999})
+        assert "超出文件行数 100" in r3
+    finally:
+        s.close()
+
+
+def test_read_file_long_line_truncated(data_root):
+    """单行超长（压缩过的 js/一行大数据）→ 该行截断且提示，不撑爆上下文。"""
+    p = data_root / "big-one-line.txt"
+    p.write_text("x" * 5000 + "\n第二行", encoding="utf-8")
+    s = PlannerSession(data_root, mock=True)
+    try:
+        r = _tools(s)["read_file"].invoke({"path": str(p)})
+        assert "本行共 5000 字符，已截断" in r
+        assert "2| 第二行" in r
     finally:
         s.close()
 
@@ -49,11 +66,16 @@ def test_read_file_rejections(data_root):
         binp.write_bytes(b"\x00\x01\x02\xffbinary")
         r2 = tools["read_file"].invoke({"path": str(binp)})
         assert "二进制" in r2 or "无法解码" in r2
-        # limit 越界钳制验证
+        # limit 越界钳制（行数上限 1500，钳制后正常返回）
         txt = data_root / "t.txt"
-        txt.write_text("内容" * 50, encoding="utf-8")
+        txt.write_text("内容\n" * 50, encoding="utf-8")
         r3 = tools["read_file"].invoke({"path": str(txt), "limit": 99999})
-        assert "共 " in r3
+        assert "共 50 行" in r3
+        # 空文件
+        empty = data_root / "empty.txt"
+        empty.write_text("", encoding="utf-8")
+        r4 = tools["read_file"].invoke({"path": str(empty)})
+        assert "空文件" in r4
     finally:
         s.close()
 

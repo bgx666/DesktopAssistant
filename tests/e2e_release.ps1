@@ -124,6 +124,21 @@ if ($apiBase -ne "http://127.0.0.1:$Port") {
 }
 Write-Host "[e2e] 前端 apiBase 指向 release 端口：$apiBase"
 
+# ── 面板页检查：加载无 JS 异常 + 事件已绑定（防「面板能显示但点不动」回归）──
+# 第三个参数 = 后端端口：面板检查里会走一遍 ask_user 弹窗全链路（mock「考考我」触发）
+& node (Join-Path $PSScriptRoot "cdp_panel_check.js") "$CdpPort" "$Port"
+if ($LASTEXITCODE -ne 0) {
+    throw "变形面板检查失败（渲染层异常或事件未绑定，见上方输出）"
+}
+Write-Host "[e2e] 面板 OK：无 JS 异常、日历/变更 tab 可点击、思考流与 ask_user 弹窗链路走通"
+
+# ── 悬浮球交互检查：单击=放大（展开面板）+ 右键菜单入口（show-reply）──
+& node (Join-Path $PSScriptRoot "cdp_bubble_check.js") "$CdpPort" "$Port"
+if ($LASTEXITCODE -ne 0) {
+    throw "悬浮球交互检查失败（单击放大 / 右键菜单入口，见上方输出）"
+}
+Write-Host "[e2e] 悬浮球 OK：单击=放大（展开面板）、右键菜单入口存在"
+
 # ── 隔离性断言 3：后端数据目录 + 隔离 user-data 均落在隔离路径 ──
 if (-not (Test-Path (Join-Path $IsolatedData "planner.db"))) { throw "后端未使用隔离数据目录！" }
 if (-not (Test-Path (Join-Path $IsolatedData "user-data"))) { throw "Electron 未使用隔离 user-data（PLANNER_USER_DATA 未生效，将与开发版共用！）" }

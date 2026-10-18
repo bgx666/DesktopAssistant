@@ -231,10 +231,10 @@
       return;
     }
     if (!longPress) {
-      // 单击：取消麦克风，显示模型最近回答的一条消息
+      // 单击：取消麦克风，放大（展开面板）
       if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
       cancelMic();
-      showLastReply();
+      window.planner.togglePanel();
       return;
     }
     // 长按结束：等麦克风就绪 → 结束录音 → 识别 → 直接发送
@@ -274,14 +274,17 @@
     } catch { /* 静默 */ }
   });
 
-  // 单击 → 依次显示历史回复（第 1 次最新、第 2 次倒数第二…，循环）
+  // 最近回复气泡：单击不再显示（单击=放大面板），改由右键菜单「显示最近的气泡」触发
+  // 依次显示历史回复（第 1 次最新、第 2 次倒数第二…，循环）
   // 历史气泡从顶部开始向下堆叠（先点的在顶，更久远依次落在下面）
   // 若上一批气泡已过期消失（>气泡生命周期），重新从最新一条开始翻
   let replyOffset = 0;       // 距最新的偏移：0=最新
-  let lastReplyAt = 0;       // 上次单击时间戳
+  let lastReplyAt = 0;       // 上次显示时间戳
   const REPLY_LIFE_MS = 30000;   // 与主进程 TOAST_MS 一致（气泡 30 秒生存）
-  // 气泡被清空（右键"清除气泡"等）→ 重置偏移，下次单击从最近一条开始
+  // 气泡被清空（右键"清除气泡"等）→ 重置偏移，下次重新从最近一条开始
   window.planner.onToastsCleared(() => { replyOffset = 0; });
+  // 右键菜单「显示最近的气泡」→ 主进程 send('show-reply') → 这里翻一条
+  window.planner.onShowReply(() => { showLastReply(); });
   async function showLastReply() {
     const now = Date.now();
     if (now - lastReplyAt > REPLY_LIFE_MS) replyOffset = 0;   // 旧气泡已过期 → 重新从最新
@@ -332,7 +335,7 @@
     fileBadge.textContent = n > 9 ? '9+' : n;
   });
 
-  // 右键 → 菜单（放大 / 免打扰 / 清除挂载文件 / 退出）
+  // 右键 → 菜单（放大 / 语音对话模式 / 免打扰 / 设置 / 显示最近的气泡 / 清除气泡 / 退出）
   core.addEventListener('contextmenu', (e) => {
     e.preventDefault();
     window.planner.bubbleMenu();

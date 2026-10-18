@@ -26,9 +26,18 @@ from langchain_core.messages import BaseMessage, HumanMessage, ToolMessage
 
 from . import config as _config
 from .asr import AsrClient
-from .llm import MockChatModel, build_chat_model, is_vision_model, resolve_model_name
+from .llm import (
+    MockChatModel,
+    build_chat_model,
+    is_vision_model,
+    resolve_llm_config,
+    resolve_model_name,
+)
 from .memory.sqlite_memory_tree import SQLiteMemoryTree
-from .middleware import SUMMARIZE_TRIGGER_MESSAGES as _SUMMARIZE_TRIGGER
+from .middleware import (
+    SUMMARIZE_KEEP_MESSAGES as _SUMMARIZE_KEEP,
+    SUMMARIZE_TOKEN_BUDGET as _SUMMARIZE_TOKEN_BUDGET,
+)
 from .store.calendar_db import CalendarDb
 from .tts import TtsClient
 
@@ -70,6 +79,12 @@ def _now() -> datetime:
     return datetime.now(_TZ)
 
 
+def image_url(path: str) -> str:
+    """图片展示 URL（`GET /file?path=`；路径整体 urlencode，防特殊字符/注入）。"""
+    from urllib.parse import quote
+    return "/file?path=" + quote(str(path), safe="")
+
+
 def _close_stream_bg(gen) -> None:
     """后台关闭 langgraph 同步流。
 
@@ -106,6 +121,22 @@ class PlannerSession:
         # 存储
         self.db = CalendarDb(self.data_root / "planner.db")
         self.memory_tree: SQLiteMemoryTree | None = None
+
+        # 代码工作区（settings.workspace_root；空 = 代码能力关闭）与审批挂起
+        self.workspace_root: str = str(self.settings.get("workspace_root") or "").strip()
+        self.pending_approvals: dict[str, dict] = {}
+        self.pending_questions: dict[str, dict] = {}   # ask_user 结构化提问挂起
+
+        # LLM 用量/缓存命中统计（最近 50 轮生成；设置页/状态条展示）
+        from .llm_stats import LlmStats
+        self.llm_stats = LlmStats(self.data_root)
+        self._last_prompt_tokens: int = 0   # 上一轮 API 实报输入 token（标题栏显示用）
+
+        # 写操作留底的待关联队列（tools._record_change 入队，_emit_tool_events 消费）：
+        # 把 change id 附到对应 tool_result（前端显示修改前后 diff、/history 重建）
+        self._pending_changes: list[dict] = []
+        # show_image 的待关联队列（tools.show_image 入队）：图片事件 + 历史重建
+        self._pending_images: list[dict] = []
 
         # 语音合成（本地 Kokoro / 小米 MiMo / DashScope，按 settings + env 创建）
         self.tts = self._create_tts()
@@ -155,9 +186,11 @@ class PlannerSession:
         # 停止请求（用户点"停止"打断当前生成）：after_model/before_model
         # 中间件检查后跳转 end；每次生成开始时重置
         self._stop_requested: bool = False
+        # 正在执行的 run_command 子进程（停止/关闭时杀整棵进程树，防留孤儿）
+        self._run_proc = None
         # 待注入的屏幕截图（capture_screen 工具写入 data URL，ScreenShotInjectMiddleware
         # 在下次模型调用前作为 user 消息注入并清空；生成开始前清残留防陈旧注入）
-        self._pending_screenshots: list[str] = []
+        self._pending_screenshots: list[dict] = []   # 待注入图片（截屏/读图：{url, text, viewed?}）
         # 本次生成调用过的工具名（用于识别“自主学习”心跳，决定是否朗读）
         self._generation_tool_names: set[str] = set()
         # 是否已向前端发送“自主学习静音”信号
@@ -183,10 +216,17 @@ class PlannerSession:
         self._summary_model = None
         self._agent_obj = None
         self._system_prompt: str = ""
+        self._changes_db = None   # 文件变更历史（代码工作区写操作留底）
 
         self._system_prompt = self._build_system_prompt()
         self.get_memory_tree()          # 确保 db 文件落盘
         self._load_buffer_state()
+        # 断点续聊：恢复的排队消息（上次生成中被强杀时排队的）立即续跑
+        # （用循环 worker：它会依次处理队列里的每一条）
+        if self._inbox:
+            _logger.info("[session] 续跑恢复的排队消息: %d 条", len(self._inbox))
+            threading.Thread(target=self._player_worker,
+                             name="planner-player", daemon=True).start()
         self._check_startup_heartbeat()
 
     # ── 懒加载 ────────────────────────────────────────────────
@@ -223,37 +263,66 @@ class PlannerSession:
             tts._enabled = bool(self.settings["tts_enabled"])
         return tts
 
+    def llm_session_id(self) -> str:
+        """LLM 会话稳定 ID（OpenCode Go 的 `x-opencode-session` 头；首次使用生成并持久化）。"""
+        sid = str(self.settings.get("llm_session_id") or "").strip()
+        if sid:
+            return sid
+        sid = uuid.uuid4().hex
+        try:
+            from .settings import save_settings
+            self.settings = save_settings(self.data_root, {"llm_session_id": sid})
+            _logger.info("[llm] 已生成会话 ID（OpenCode Go 路由/缓存用）")
+        except ValueError:
+            pass
+        return sid
+
     def _get_llm(self):
         if self._llm is None:
             if self.mock:
                 self._llm = MockChatModel(session=self)
             else:
                 s = self.settings
+                cfg = resolve_llm_config(s)
                 self._llm = build_chat_model(
-                    api_key=s.get("llm_api_key") or None,
-                    base_url=s.get("llm_base_url") or None,
-                    model_name=s.get("llm_model") or None,
+                    api_key=cfg["api_key"] or None,
+                    base_url=cfg["base_url"] or None,
+                    model_name=cfg["model"] or None,
                     # 思考开关与强度（设置页可改，见 settings.py 的 _ENUMS）
                     thinking_mode=s.get("thinking_mode"),
                     reasoning_effort=s.get("reasoning_effort"),
+                    provider=cfg["provider"],
+                    session_id=self.llm_session_id(),
                 )
         return self._llm
 
     def _get_summary_model(self):
-        """压缩用独立模型（与主对话同配置，服务端 prompt caching 命中）。"""
+        """压缩用独立模型（与主会话同一份配置）；max_tokens 按节点预算留余量。
+
+        节点预算 node_token_budget（默认 1000，整节点目标）→ max_tokens 设 1.5 倍，
+        避免 JSON 被硬截断（超出预算的软裁剪由 middleware._apply_budget 兜底）。
+        """
         if self._summary_model is None:
             if self.mock:
                 self._summary_model = MockChatModel()
             else:
                 s = self.settings
+                cfg = resolve_llm_config(s)
+                budget = int(s.get("node_token_budget", 1000) or 1000)
                 self._summary_model = build_chat_model(
-                    api_key=s.get("llm_api_key") or None,
-                    base_url=s.get("llm_base_url") or None,
-                    model_name=s.get("llm_model") or None,
-                    # 摘要也跟随同一套思考设置：压缩是后台任务，
-                    # 关掉思考能明显省时间，而摘要质量对档位不敏感
-                    thinking_mode=s.get("thinking_mode"),
+                    api_key=cfg["api_key"] or None,
+                    base_url=cfg["base_url"] or None,
+                    model_name=cfg["model"] or None,
+                    # 压缩是后台提取任务：**显式关思考**——开思考时推理 token 会吃掉
+                    # max_tokens 预算、返回空内容 → 摘要为空 → 压缩空转
+                    # （2026-10-18 实测：thinking 开启时每次触发、每次空转）
+                    thinking_mode="disabled",
                     reasoning_effort=s.get("reasoning_effort"),
+                    # 3× 余量：任务型 JSON（6 字段）比纯文本长得多，1.5× 会被
+                    # max_tokens 截断 → JSON 解析失败（2026-10-18 实测）
+                    max_tokens=int(budget * 3),
+                    provider=cfg["provider"],
+                    session_id=self.llm_session_id(),
                 )
         return self._summary_model
 
@@ -268,12 +337,12 @@ class PlannerSession:
     def vision_capable(self) -> bool:
         """当前模型是否具备图像输入能力（mock 或纯文本模型 → False）。
 
-        解析链与 build_chat_model 一致：settings.llm_model > PLANNER_LLM_MODEL
-        > LLM_MODEL > 默认 vision-exp。视觉注入只在视觉模型下启用。
+        解析链与 build_chat_model 一致（resolve_llm_config：分服务商模型 >
+        旧字段 > env > 预设默认）。视觉注入只在视觉模型下启用。
         """
         if self.mock:
             return False
-        model = resolve_model_name(str(self.settings.get("llm_model") or "").strip() or None)
+        model = resolve_llm_config(self.settings)["model"]
         return is_vision_model(model)
 
     def set_chat_model(self, model) -> None:
@@ -285,19 +354,66 @@ class PlannerSession:
         """保存并应用设置（应用即生效）：
         - 压缩参数：下次压缩时读取新值（运行时读 settings）
         - LLM 配置：重建模型实例（下次生成生效）
+        - 工作区 / 当前目录 / 权限模式：重建提示词与 agent（切换副作用见下）
         校验失败抛 ValueError。
         """
         from .settings import save_settings
-        old_llm = (self.settings.get("llm_api_key"), self.settings.get("llm_base_url"),
-                   self.settings.get("llm_model"))
+        from .workspace import PermissionStore, latest_recent
+        updates = dict(updates or {})
+        old_llm = resolve_llm_config(self.settings)   # 分服务商：provider/base_url/key/model
+        old_workspace = str(self.settings.get("workspace_root") or "").strip()
+        old_cwd = str(self.settings.get("workspace_cwd") or "").strip()
+        old_mode = str(self.settings.get("permission_mode") or "ask").strip().lower()
+        old_budget = int(self.settings.get("node_token_budget", 1000) or 1000)
+        old_call_limit = int(self.settings.get("model_call_limit", 100) or 100)
+        # 工作区**实际变化**时 → 当前目录归零（调用方想保留就显式带上 workspace_cwd）
+        if ("workspace_root" in updates and "workspace_cwd" not in updates
+                and str(updates.get("workspace_root") or "").strip() != old_workspace):
+            updates["workspace_cwd"] = ""
+        # 最近目录：切换工作区 / 工作目录时置顶记录（≤8 去重）
+        touched = []
+        if "workspace_root" in updates:
+            touched.append(str(updates.get("workspace_root") or "").strip())
+        if "workspace_cwd" in updates:
+            touched.append(str(updates.get("workspace_cwd") or "").strip())
+        if any(touched):
+            recent = list(self.settings.get("workspace_recent") or [])
+            for t in touched:
+                if t:
+                    recent = latest_recent(recent, t)
+            updates["workspace_recent"] = recent
         self.settings = save_settings(self.data_root, updates)
-        new_llm = (self.settings.get("llm_api_key"), self.settings.get("llm_base_url"),
-                   self.settings.get("llm_model"))
+        new_llm = resolve_llm_config(self.settings)
         if old_llm != new_llm:
             self._llm = None
             self._summary_model = None
             self._agent_obj = None
-            _logger.info("[settings] LLM 配置变更，已重建模型")
+            _logger.info("[settings] LLM 配置变更（provider=%s model=%s），已重建模型",
+                         new_llm.get("provider"), new_llm.get("model"))
+        if int(self.settings.get("node_token_budget", 1000) or 1000) != old_budget:
+            self._summary_model = None      # 节点预算变了 → 重建压缩模型（max_tokens 变）
+        # 单轮模型调用上限：ModelCallLimitMiddleware 在 agent 构建时读设置 → 重建
+        if int(self.settings.get("model_call_limit", 100) or 100) != old_call_limit:
+            self._agent_obj = None
+            _logger.info("[settings] 单轮调用上限 → %s，已重建 agent",
+                         self.settings.get("model_call_limit"))
+        # 工作区 / 当前目录 / 权限模式变更：规则、提示词、agent 都要跟上
+        new_workspace = str(self.settings.get("workspace_root") or "").strip()
+        new_cwd = str(self.settings.get("workspace_cwd") or "").strip()
+        new_mode = str(self.settings.get("permission_mode") or "ask").strip().lower()
+        if new_workspace != old_workspace:
+            PermissionStore(self.data_root).clear()
+            self.workspace_root = new_workspace
+            _logger.info("[settings] 工作区变更 → %s（已清空授权规则）",
+                         new_workspace or "(关闭)")
+        if (new_workspace != old_workspace or new_cwd != old_cwd
+                or new_mode != old_mode):
+            self._agent_obj = None
+            self._system_prompt = self._build_system_prompt()
+            self.push_event({"type": "workspace_changed", "workspace": new_workspace,
+                             "cwd": new_cwd, "permission_mode": new_mode})
+            _logger.info("[settings] 工作区/目录/权限模式变更 → ws=%s cwd=%s mode=%s",
+                         new_workspace or "(关)", new_cwd or "(根)", new_mode)
         # TTS 设置即时生效：引擎切换则重建客户端，否则只应用音色/开关
         new_engine = (self.settings.get("tts_engine") or _config.PLANNER_TTS_ENGINE).strip().lower()
         if new_engine != self.tts.engine:
@@ -332,9 +448,17 @@ class PlannerSession:
             self.memory_tree = SQLiteMemoryTree(CHARACTER_ID, self.data_root / "memory_tree.db")
         return self.memory_tree
 
+    def get_changes_db(self):
+        """文件变更历史库（代码工作区写操作留底；懒加载）。"""
+        if self._changes_db is None:
+            from .changes import ChangesDb
+            self._changes_db = ChangesDb(self.data_root)
+        return self._changes_db
+
     def close(self) -> None:
-        """优雅关闭：停调度 → 等生成中的 worker 结束 → 等后台压缩 → 落盘 → 关库。"""
+        """优雅关闭：停调度 → 杀执行中的命令 → 等生成中的 worker 结束 → 等后台压缩 → 落盘 → 关库。"""
         self.stop_heartbeat()
+        self.kill_run_proc()
         try:
             with self.chat_lock:  # 等待在途生成完成（worker 持锁期间）
                 pass
@@ -348,12 +472,74 @@ class PlannerSession:
         self._save_buffer_state()
         if self.memory_tree:
             self.memory_tree.close()
+        if self._changes_db is not None:
+            self._changes_db.close()
         self.db.close()
 
     # ── system prompt ─────────────────────────────────────────
 
+    def effective_cwd(self) -> Path | None:
+        """当前工作目录（Path）；未启用工作区时 None。
+
+        settings.workspace_cwd 无效（不存在/越界）时回退工作区根。
+        """
+        from .workspace import effective_cwd as _eff
+        ws_raw = str(self.settings.get("workspace_root") or "").strip()
+        if not ws_raw:
+            return None
+        try:
+            ws = Path(ws_raw).expanduser().resolve()
+        except OSError:
+            return None
+        return _eff(ws, str(self.settings.get("workspace_cwd") or ""))
+
     def _build_system_prompt(self) -> str:
-        return (_config.PROMPTS_DIR / "system.md").read_text(encoding="utf-8")
+        """角色卡 +（启用代码工作区时）工作区段 + 仓库 AGENTS.md + 当前目录内容。
+
+        工作区段占位符：{workspace} / {cwd} / {permission_mode}；
+        顶层文件树注入的是**当前工作目录**（cwd）的内容，不是工作区根。
+        """
+        text = (_config.PROMPTS_DIR / "system.md").read_text(encoding="utf-8")
+        ws = str(self.settings.get("workspace_root") or "").strip()
+        if not ws:
+            return text
+        cwd = self.effective_cwd()
+        cwd_str = str(cwd) if cwd is not None else ws
+        mode = str(self.settings.get("permission_mode") or "ask").strip().lower()
+        parts = [text.rstrip()]
+        ws_file = _config.PROMPTS_DIR / "workspace.md"
+        if ws_file.exists():
+            section = (ws_file.read_text(encoding="utf-8")
+                       .replace("{workspace}", ws)
+                       .replace("{cwd}", cwd_str)
+                       .replace("{permission_mode}", mode))
+            parts.append(section.strip())
+        # 仓库约定：工作区根 + 当前目录（不同则都读；各限 8KB）
+        agents_bases: list[Path] = []
+        for base in (Path(ws), cwd):
+            if base is not None and base not in agents_bases:
+                agents_bases.append(base)
+        for base in agents_bases:
+            try:
+                agents_md = (base / "AGENTS.md").read_text(encoding="utf-8")
+                if agents_md.strip():
+                    parts.append(f"## 仓库约定（来自 {base}\\AGENTS.md）\n\n"
+                                 + agents_md.strip()[:8000])
+            except OSError:
+                pass
+        tree_base = cwd if cwd is not None else Path(ws)
+        try:   # 当前目录内容（轻量：最多 40 项；细节用 glob/grep 查）
+            entries = sorted((p.name + "/" if p.is_dir() else p.name)
+                             for p in tree_base.iterdir())
+            if entries:
+                shown = entries[:40]
+                more = (f"，共 {len(entries)} 项，显示前 40）"
+                        if len(entries) > len(shown) else "）")
+                parts.append(f"## 当前目录内容（{tree_base}{more}\n\n"
+                             + "\n".join(shown))
+        except OSError:
+            pass
+        return "\n\n".join(parts) + "\n"
 
     @property
     def system_prompt(self) -> str:
@@ -405,6 +591,45 @@ class PlannerSession:
     def push_log(self, text: str) -> None:
         self.push_event({"type": "log", "text": text})
 
+    def push_error(self, text: str, hint: str = "") -> None:
+        """把错误**明确显示到界面**（红色错误气泡 + 落日志）——静默失败是最烦人的。
+
+        text：一两句说清发生了什么（带服务商/模型等上下文）；
+        hint：怎么解决（去哪改什么）。
+        """
+        text = str(text or "").strip() or "出错了"
+        hint = str(hint or "").strip()
+        self.push_event({"type": "error", "text": text, "hint": hint})
+        try:
+            self._save_log("error", text + ((" | " + hint) if hint else ""))
+        except Exception:
+            pass
+
+    @staticmethod
+    def _short_error(exc: Exception) -> str:
+        """异常 → 一行短消息（去掉多行堆栈）。"""
+        raw = str(exc or "").strip()
+        first = raw.splitlines()[0] if raw else exc.__class__.__name__
+        return first[:220]
+
+    @staticmethod
+    def _llm_error_hint(exc: Exception) -> str:
+        """按常见错误给出下一步动作。"""
+        s = str(exc or "").lower()
+        if "401" in s or "authentication" in s or "invalid api key" in s or "invalid_request_error" in s and "key" in s:
+            return "API Key 无效或未配置：去 设置 → 模型 API 检查当前服务商的 Key。"
+        if "missing x-opencode-session" in s or "missingsessionid" in s:
+            return "OpenCode Go 需要会话头：请升级到最新版本的 planner（本版已自动带上）。"
+        if "404" in s:
+            return "模型名可能不存在：点输入框上方 🤖 从菜单里选一个可用模型。"
+        if "429" in s:
+            return "请求太频繁或额度用尽，稍后重试（OpenCode Go 的额度可在 Console 查看）。"
+        if "timeout" in s or "timed out" in s:
+            return "请求超时：检查网络/代理是否可达对应服务商。"
+        if "400" in s:
+            return "请求被服务商拒绝：确认服务商/模型选对（点 🤖 重选），再试一次。"
+        return "可检查：服务商/模型是否选对、API Key 是否有效、网络是否可达。"
+
     def push_agenda_update(self) -> None:
         self.push_event({"type": "agenda_update", "date": _now().strftime("%Y-%m-%d")})
 
@@ -426,6 +651,133 @@ class PlannerSession:
             events = self._events
             self._events = []
             return events
+
+    # ── 审批（代码工作区：写操作 / 工作区外读）──────────────────
+
+    def request_approval(self, tool: str, paths: list[str], preview: str = "",
+                         scopes: list[dict] | None = None, cwd: str = "") -> str:
+        """挂起等待用户审批；返回 allow_once / always* / deny / timeout / stop。
+
+        等待期间每 0.5s 醒一次检查停止/关闭信号（超时默认拒绝）；
+        事件 approval_request / approval_resolved 推给前端弹窗
+        （preview 展示 diff/摘要，scopes 供「记住并允许」选范围，cwd 供展示）。
+        """
+        req_id = uuid.uuid4().hex[:12]
+        ev = threading.Event()
+        timeout = float(self.settings.get("approval_timeout_seconds", 120) or 120)
+        entry = {"id": req_id, "tool": tool, "paths": list(paths),
+                 "preview": str(preview or ""), "scopes": list(scopes or []),
+                 "cwd": str(cwd or ""), "timeout": timeout,
+                 "event": ev, "decision": ""}
+        with self.buffer_lock:
+            self.pending_approvals[req_id] = entry
+        self.push_event({"type": "approval_request", "id": req_id,
+                         "tool": tool, "paths": list(paths),
+                         "preview": entry["preview"], "scopes": entry["scopes"],
+                         "cwd": entry["cwd"], "timeout": timeout})
+        deadline = time.time() + timeout
+        decision = "timeout"
+        while time.time() < deadline:
+            if ev.wait(timeout=0.5):
+                decision = str(entry.get("decision") or "deny")
+                break
+            if self._stop_requested or self._closing:
+                decision = "stop"
+                break
+        with self.buffer_lock:
+            self.pending_approvals.pop(req_id, None)
+        self.push_event({"type": "approval_resolved", "id": req_id, "decision": decision})
+        _logger.info("[approval] %s %s → %s", tool, paths, decision)
+        return decision
+
+    def resolve_approval(self, req_id: str, decision: str, scope: str = "") -> bool:
+        """前端回填审批结果；返回是否命中一个挂起请求。
+
+        decision：allow_once / always / deny；always 时 scope ∈ file/dir/workspace
+        （缺省 file）；内部统一成 always_file / always_dir / always_workspace。
+        """
+        d = str(decision or "").strip().lower()
+        if d not in ("allow_once", "always", "deny"):
+            return False
+        if d == "always":
+            sc = str(scope or "").strip().lower()
+            if sc not in ("file", "dir", "workspace", "cmd", "cmd_prefix"):
+                sc = "file"
+            d = f"always_{sc}"
+        with self.buffer_lock:
+            entry = self.pending_approvals.get(str(req_id or "").strip())
+            if entry is None:
+                return False
+            entry["decision"] = d
+            entry["event"].set()
+        return True
+
+    # ── 结构化提问（ask_user：弹窗选项 / 自由输入）────────────────
+
+    def ask_user(self, question: str, options: list[str] | None = None) -> str:
+        """挂起等待用户回答问题（弹窗）；返回给模型的工具结果文本。
+
+        - 用户在弹窗里选一个选项（selected）或直接打字（answer），两者都记；
+        - 超时（approval_timeout_seconds）→ 提示模型自行斟酌、不要反复追问；
+        - 停止/关窗 → 提示按现状收尾。等待期间每 0.5s 醒一次检查停止信号。
+        """
+        q = str(question or "").strip()[:500]
+        opts = [str(o).strip()[:80] for o in list(options or []) if str(o).strip()][:4]
+        if not q:
+            return "（提问失败：question 不能为空。）"
+        req_id = uuid.uuid4().hex[:12]
+        ev = threading.Event()
+        timeout = float(self.settings.get("approval_timeout_seconds", 120) or 120)
+        entry = {"id": req_id, "question": q, "options": opts,
+                 "answer": "", "selected": "", "timeout": timeout,
+                 "event": ev}
+        with self.buffer_lock:
+            self.pending_questions[req_id] = entry
+        self.push_event({"type": "question_request", "id": req_id,
+                         "question": q, "options": opts, "timeout": timeout})
+        deadline = time.time() + timeout
+        status = "timeout"
+        while time.time() < deadline:
+            if ev.wait(timeout=0.5):
+                status = "answered"
+                break
+            if self._stop_requested or self._closing:
+                status = "stop"
+                break
+        with self.buffer_lock:
+            self.pending_questions.pop(req_id, None)
+        answer = str(entry.get("answer") or "").strip()
+        selected = str(entry.get("selected") or "").strip()
+        self.push_event({"type": "question_resolved", "id": req_id,
+                         "answer": answer, "selected": selected, "status": status})
+        _logger.info("[ask_user] %s → %s (answer=%r)", q[:40], status, answer[:40])
+        if status == "stop":
+            return "（用户停止了这一轮，提问没有得到回答。就按现在的情况收尾。）"
+        if status == "timeout":
+            return "（用户超时没有回答。不要反复追问，按你的判断继续或先做别的。）"
+        if selected and answer:
+            if answer == selected:
+                return f"用户选择了「{selected}」。"
+            return f"用户选择了「{selected}」，补充说明：{answer}"
+        if selected:
+            return f"用户选择了「{selected}」。"
+        return f"用户回答：{answer}"
+
+    def resolve_question(self, req_id: str, answer: str = "",
+                         selected: str = "") -> bool:
+        """前端回填提问结果（选项或自由文本）；返回是否命中一个挂起请求。"""
+        a = str(answer or "").strip()[:2000]
+        sc = str(selected or "").strip()[:80]
+        if not a and not sc:
+            return False
+        with self.buffer_lock:
+            entry = self.pending_questions.get(str(req_id or "").strip())
+            if entry is None:
+                return False
+            entry["answer"] = a
+            entry["selected"] = sc
+            entry["event"].set()
+        return True
 
     def _set_thinking(self, value: bool) -> None:
         self.thinking = value
@@ -607,11 +959,14 @@ class PlannerSession:
                 self._inbox.append(msg)
                 if trigger:
                     self.pending_response = True
-                return msg
-            self.recent_buffer.append(msg)
-            self._msg_counter += 1
-            if trigger:
-                self.pending_response = True
+            else:
+                self.recent_buffer.append(msg)
+                self._msg_counter += 1
+                if trigger:
+                    self.pending_response = True
+        # 收到消息**立即落盘**（连同排队队列）：强杀/断电也不丢——2026-10-18
+        # 事故教训：之前只在生成结束才保存，外部强杀把用户"最后一轮消息"带走了。
+        self._save_buffer_state()
         return msg
 
     @staticmethod
@@ -633,6 +988,32 @@ class PlannerSession:
                         continue
                 elif not meta.get("ts"):
                     meta["ts"] = ts
+
+    def _heal_wrapped_node_summaries(self) -> None:
+        """自愈：节点消息的摘要曾是 JSON 外壳（2026-10-18 降级路径事故批次）——
+        原地剥壳，只动带 node_id 且 `[摘要]` 段以 `{` 开头的消息；剥不出来就保留。"""
+        import re as _re
+
+        from .middleware import clean_wrapped_summary
+        pat = _re.compile(r"\[摘要\] ([\s\S]*?)(?=\n\[|$)")
+        healed = 0
+        with self.buffer_lock:
+            for m in self.recent_buffer:
+                if "node_id" not in (getattr(m, "metadata", None) or {}):
+                    continue
+                content = str(getattr(m, "content", "") or "")
+                mm = pat.search(content)
+                if not mm or not mm.group(1).lstrip().startswith("{"):
+                    continue
+                cleaned = clean_wrapped_summary(mm.group(1))
+                if cleaned and cleaned != mm.group(1):
+                    try:
+                        m.content = content[:mm.start(1)] + cleaned + content[mm.end(1):]
+                        healed += 1
+                    except Exception:   # 消息不可变等异常：跳过
+                        pass
+        if healed:
+            _logger.info("[repair] 已剥壳 %d 条节点消息的 JSON 摘要", healed)
 
     def _repair_buffer(self) -> None:
         """检查 buffer 末尾是否有孤儿 tool_call，自动补 tool 消息（防御用）。"""
@@ -669,12 +1050,19 @@ class PlannerSession:
                 self.recent_buffer = kept
 
     def _save_buffer_state(self) -> None:
-        """buffer 持久化（messages_to_dict → json，存进 memory_tree.db）。"""
+        """buffer 持久化（messages_to_dict 存 json，落 memory_tree.db）。
+
+        连同 **_inbox（生成中排队待处理的消息）** 一起落盘——断点续聊：
+        强杀/断电也不丢用户刚发的消息（2026-10-18 事故：无差别杀进程把
+        release 实例连同"最后一轮消息"一起带走，那轮对话没落盘）。
+        """
         try:
             from langchain_core.messages import messages_to_dict
             last_msg_at = None
             if self._last_player_message_at is not None:
                 last_msg_at = self._last_player_message_at.timestamp()
+            with self.buffer_lock:
+                inbox_snapshot = messages_to_dict(list(self._inbox))
             self.get_memory_tree().save_buffer_state(
                 messages_to_dict(self.recent_buffer), self._msg_counter, self.round,
                 last_activity_at=self._last_activity_at or None,
@@ -684,6 +1072,7 @@ class PlannerSession:
                 heartbeat_minutes=self._heartbeat_minutes or None,
                 heartbeat_note=self._heartbeat_note or None,
                 last_player_message_at=last_msg_at,
+                inbox=inbox_snapshot,
             )
         except Exception as exc:
             _logger.warning("[session] 保存 buffer 状态失败: %s", exc)
@@ -693,6 +1082,16 @@ class PlannerSession:
         try:
             from langchain_core.messages import messages_from_dict
             state = self.get_memory_tree().load_buffer_state()
+            # 恢复排队消息（断点续聊：生成进行中发的消息也已随 buffer 落盘；
+            # 重启后先保留在队列，生成调度会自然接上）
+            if state and state.get("inbox"):
+                try:
+                    self._inbox = messages_from_dict(state["inbox"])
+                    if self._inbox:
+                        self.pending_response = True   # 让调度线程继续处理它们
+                    _logger.info("[session] 从 buffer_state 恢复排队消息: %d 条", len(self._inbox))
+                except Exception:
+                    self._inbox = []
             if not state or not state["recent_buffer"]:
                 self._last_activity_at = (state or {}).get("last_activity_at", 0.0) or 0.0
                 reminded = (state or {}).get("reminded_overdue", [])
@@ -706,6 +1105,7 @@ class PlannerSession:
             if msgs:
                 self.recent_buffer = msgs
                 self._stamp_missing_ts()   # 旧数据/缺时间戳的消息补打（压缩时间字段的数据来源）
+                self._heal_wrapped_node_summaries()   # 事故批次：JSON 外壳摘要剥壳
                 self._msg_counter = state.get("_msg_counter", len(msgs))
                 self.round = state.get("round", 0)
                 self._last_activity_at = state.get("last_activity_at", 0.0) or 0.0
@@ -756,31 +1156,30 @@ class PlannerSession:
     # ── 异步压缩（后台线程，不阻塞生成）──────────────────────
 
     def _maybe_compress_async(self) -> None:
-        """阈值检查：原始消息数 ≥ 设置的「触发条数」且未在压缩 → spawn 后台压缩线程。
+        """阈值检查：原始消息估算 token ≥「token 预算」且未在压缩 → spawn 后台压缩线程。
 
+        叶子压缩**只看 token 预算**（`compress_token_budget`，用户设置，应用即生效）；
+        条数不再参与判定（历史遗留的 `compress_trigger` 已移除）。
         压缩线程对 buffer 快照压缩（不触碰原 buffer），压缩完成后等待
         空闲窗口（无生成/无待处理消息），原子替换"新消息以外"的旧部分。
-
-        门槛**读用户的设置**（`settings.compress_trigger`），不再写死常量：
-        原来这里用的是 `SUMMARIZE_TRIGGER_MESSAGES = 60`，于是设置页里把
-        "触发条数"调成 40 不生效（仍要等到 60 条）、调成 80 则会白跑一趟
-        （60 条就启动，但那时 `raw - keep` 圈不出批次）。
         """
         if self._compressing:
             return
-        trigger = int(
-            (getattr(self, "settings", None) or {}).get(
-                "compress_trigger", _SUMMARIZE_TRIGGER
-            )
-        )
+        st = getattr(self, "settings", None) or {}
+        keep = int(st.get("compress_keep", _SUMMARIZE_KEEP))
+        token_budget = int(st.get("compress_token_budget", _SUMMARIZE_TOKEN_BUDGET))
+        from .middleware import should_compress_raw
         with self.buffer_lock:
             raw = [m for m in self.recent_buffer
                    if "node_id" not in (getattr(m, "metadata", None) or {})]
-            if len(raw) < trigger:
+            if not should_compress_raw(raw, keep, token_budget):
                 return
             snapshot = list(self.recent_buffer)
         self._compressing = True
-        _logger.info("[compress] 触发异步压缩（raw=%d，门槛=%d）", len(raw), trigger)
+        _logger.info("[compress] 触发异步压缩（raw=%d 条，估算超 %d token 预算）",
+                     len(raw), token_budget)
+        # 前端指示灯（标题栏呼吸灯）：压缩是分钟级后台任务，给个可见反馈
+        self.push_event({"type": "compress_state", "value": True})
         threading.Thread(target=self._run_async_compression, args=(snapshot,),
                          name="planner-compress", daemon=True).start()
 
@@ -815,7 +1214,7 @@ class PlannerSession:
                     if (getattr(m, "id", None) or id(m)) not in remove_ids]
                 self.recent_buffer.extend(adds)
                 self._strip_orphan_tool_messages()   # 防御：压缩切段可能留孤儿 tool
-                self._reorder_node_messages()
+                self._place_node_messages()
             self._save_buffer_state()
             self.push_event({"type": "memory_update"})
             _logger.info("[compress] 异步压缩完成：删除 %d 条，插入 %d 节点消息",
@@ -824,6 +1223,7 @@ class PlannerSession:
             _logger.exception("[compress] 异步压缩异常")
         finally:
             self._compressing = False
+            self.push_event({"type": "compress_state", "value": False})
 
     def _log_dir(self) -> Path:
         d = self.data_root / CHARACTER_ID
@@ -1176,13 +1576,27 @@ class PlannerSession:
         self.push_agenda_update()
         return {"ok": True, "removed": len(removed)}
 
+    def kill_run_proc(self) -> None:
+        """终止正在执行的 run_command 子进程（连整棵进程树）——停止/关闭时调用。"""
+        proc = self._run_proc
+        self._run_proc = None
+        if proc is None:
+            return
+        try:
+            from .tools import _kill_process_tree
+            _kill_process_tree(proc)
+            _logger.info("[stop] 已终止执行中的命令进程")
+        except Exception:
+            _logger.exception("[stop] 终止命令进程失败")
+
     def request_stop(self) -> None:
         """请求停止当前生成（用户点「停止」）。
 
         生成会在下一个安全点收尾（当前模型调用结束、工具执行完后），
-        已生成的消息保留在 buffer；停止后无需心跳兜底之外的额外处理。
+        已生成的消息保留在 buffer；**正在执行的命令立即杀掉进程树**。
         """
         self._stop_requested = True
+        self.kill_run_proc()
         _logger.info("[stop] 收到停止请求")
 
     def _player_worker(self) -> None:
@@ -1277,6 +1691,16 @@ class PlannerSession:
         """
         from langchain_core.messages import AIMessage, AIMessageChunk
 
+        # 预检：没配 API Key 就直接说清楚（别等 provider 回 401 再让人猜）
+        if not self.mock:
+            cfg = resolve_llm_config(self.settings)
+            if not cfg["api_key"]:
+                self.push_error(
+                    f"没有配置 {cfg['provider']} 的 API Key，无法调用模型。",
+                    "点输入框上方 🤖 切换服务商，或去 设置 → 模型 API 填当前服务商的 Key。")
+                self.schedule_heartbeat(FALLBACK_HEARTBEAT_MINUTES)
+                return
+
         self._repair_buffer()
         self._strip_orphan_tool_messages()
         with self.buffer_lock:
@@ -1284,6 +1708,12 @@ class PlannerSession:
         final_messages = None
         current_msg_id = None
         current_chunks = []
+        current_think_id = None
+        # 本轮用量累计（跨 ReAct 多次模型调用求和；duration 为整轮生成耗时）
+        gen_in = gen_out = gen_hit = gen_reason = 0
+        gen_cache_known = False
+        usage_calls = 0
+        gen_t0 = time.time()
         # 已见消息 id（而非 seen_count=len(msgs)）：压缩中间件会 RemoveMessage
         # 收缩消息列表，按长度增量会漏掉压缩后新增的 ToolMessage → 工具卡片
         # 永远停在"正在执行"转圈。按消息 id 去重，与列表收缩无关。
@@ -1311,6 +1741,36 @@ class PlannerSession:
                     # 真实流式模型 → AIMessageChunk（逐 token）；非流式（mock）→ 完整 AIMessage
                     if not isinstance(chunk, (AIMessage, AIMessageChunk)):
                         continue
+                    # 思考过程（DeepSeek reasoning_content；llm.py 的 passthrough 塞进
+                    # additional_kwargs）：逐 token 推 thinking_stream，只展示不落 buffer。
+                    try:
+                        rc = str((chunk.additional_kwargs or {}).get("reasoning_content") or "")
+                    except Exception:
+                        rc = ""
+                    if rc:
+                        if current_think_id is None:
+                            current_think_id = uuid.uuid4().hex[:12]
+                        self.push_event({
+                            "type": "thinking_stream",
+                            "content": rc,
+                            "msg_id": current_think_id,
+                        })
+                    # 用量统计：流式最终块带 usage_metadata（stream_usage=True）；
+                    # 缓存命中由 llm.py shim 从 DeepSeek prompt_cache_hit_tokens 映射而来
+                    um = getattr(chunk, "usage_metadata", None)
+                    if um:
+                        usage_calls += 1
+                        gen_in += int(um.get("input_tokens") or 0)
+                        gen_out += int(um.get("output_tokens") or 0)
+                        # 最近一次模型调用的输入 = 真实上下文规模（含系统提示/节点/图片，
+                        # 用于标题栏显示；比字符估算准确）
+                        self._last_prompt_tokens = int(um.get("input_tokens") or 0)
+                        gen_reason += int((um.get("output_token_details") or {})
+                                          .get("reasoning") or 0)
+                        cr = (um.get("input_token_details") or {}).get("cache_read")
+                        if cr is not None:
+                            gen_hit += int(cr)
+                            gen_cache_known = True
                     content = chunk.content or ""
                     if not content:
                         continue
@@ -1345,9 +1805,14 @@ class PlannerSession:
                             self._maybe_speak(full_text)
                         current_chunks = []
                         current_msg_id = None
+                    # 一个超步结束（模型/工具节点收束）→ 下一段思考开新块
+                    current_think_id = None
         except Exception as exc:
             _logger.exception("[agent] stream 异常")
-            self.push_log(f"小助走神了一下（生成出错：{exc}）")
+            cfg = resolve_llm_config(self.settings)
+            self.push_error(
+                f"调用模型失败（{cfg['provider']} / {cfg['model']}）：{self._short_error(exc)}",
+                self._llm_error_hint(exc))
             if self._is_self_learning_generation():
                 self.schedule_heartbeat(
                     _config.PLANNER_LEARNING_HEARTBEAT_MINUTES,
@@ -1364,6 +1829,21 @@ class PlannerSession:
             threading.Thread(target=_close_stream_bg, args=(stream,),
                              name="planner-stream-close", daemon=True).start()
             del stream
+        # 用量/缓存统计（无 usage 的端点/失败轮次不记）；打断也记（token 已消耗）
+        if usage_calls and (gen_in or gen_out):
+            cfg = resolve_llm_config(self.settings)
+            try:
+                self.llm_stats.record(
+                    input_tokens=gen_in, output_tokens=gen_out,
+                    cache_hit=gen_hit, cache_known=gen_cache_known,
+                    reason_tokens=gen_reason,
+                    duration_s=time.time() - gen_t0,
+                    provider=cfg["provider"], model=cfg["model"],
+                    rounds=usage_calls, mock=self.mock)
+                self.push_event({"type": "stats_update",
+                                 "summary": self.llm_stats.summary()})
+            except Exception:
+                _logger.exception("[stats] 记录失败")
         if final_messages:
             with self.buffer_lock:
                 # 过滤"无话可说"的空回复（无文本且无工具调用）：
@@ -1374,6 +1854,12 @@ class PlannerSession:
                             and not str(getattr(m, "content", "") or "").strip()
                             and not getattr(m, "tool_calls", None))
                 ]
+                # 思考过程（additional_kwargs.reasoning_content）**随消息持久化**：
+                # 历史/重启后仍能在对话里展开看；不会被发回端点（langchain 的
+                # _convert_message_to_dict 是白名单式转换，见 test_thinking_stream）。
+                # 单轮调用上限触发的英文注入消息 → 替换成中文提示（别进 buffer 当正文）
+                for m in filtered:
+                    self._neutralize_limit_message(m)
                 # 生成期间新追加的消息不能被 final_messages 回写覆盖：
                 # 输入是 buffer 快照，期间到达的玩家消息（语音/打字）必须保留，
                 # 交由下一轮生成处理（pending_response 已由 enqueue 置位）
@@ -1383,25 +1869,51 @@ class PlannerSession:
                          and getattr(m, "type", None) == "human"]
                 self.recent_buffer = filtered + extra
             self._stamp_missing_ts()   # agent 生成的 ai/tool 消息补时间戳
-            self._reorder_node_messages()
+            self._place_node_messages()
         self.push_agenda_update()
 
-    def _reorder_node_messages(self) -> None:
-        """压缩节点移到 buffer 开头（按 node_start 排序）。
+    def _neutralize_limit_message(self, m) -> bool:
+        """单轮调用上限触发的英文注入消息 → 中文提示（原地替换，返回是否命中）。
 
-        压缩中间件经 langgraph add_messages 把节点消息追加到列表末尾；
-        多次压缩后节点会卡在对话中间（早期摘要插在晚期对话之间，时间顺序
-        错乱）。压缩的总是最早的消息，节点代表被压缩的早期对话，应排最前。
+        来源：ModelCallLimitMiddleware(exit_behavior="end") 在超限时注入
+        `AIMessage("Model call limits exceeded: run limit (N/N)")` 并跳 end。
+        它是系统的保险丝，不是小助说的话——替换成可读中文，避免英文错误进对话。
+        """
+        try:
+            if getattr(m, "type", None) != "ai":
+                return False
+            text = str(getattr(m, "content", "") or "")
+            if not text.startswith("Model call limits exceeded"):
+                return False
+            limit = int(self.settings.get("model_call_limit", 100) or 100)
+            m.content = (f"（本轮达到单轮调用上限（{limit} 次模型调用），已强制收尾。"
+                         "如果任务还没做完，和我说「继续」即可接着干；"
+                         "也可以到 设置 → 交互 → 单轮调用上限 调大。）")
+            return True
+        except Exception:
+            return False
+
+    def _place_node_messages(self) -> None:
+        """把节点消息放回它对应区间的原位置（追加为主，最小改动）。
+
+        压缩产生的节点消息（add_messages / 追加）最初落在列表末尾；它代表被压缩的
+        早期对话，应位于所有原始消息之前、且按 node_start 排序。这里只做必要插入：
+        **已经就位的节点不做任何移动**（前缀零改动，保护 prompt cache；旧实现每次
+        压缩都把全部节点重排到最前，扩大前缀重写范围）。
         """
         with self.buffer_lock:
-            nodes = [m for m in self.recent_buffer
-                     if "node_id" in (getattr(m, "metadata", None) or {})]
-            if not nodes:
+            buf = list(self.recent_buffer)
+            idx = {i for i, m in enumerate(buf)
+                   if "node_id" in (getattr(m, "metadata", None) or {})}
+            if not idx:
                 return
-            rest = [m for m in self.recent_buffer
-                    if "node_id" not in (getattr(m, "metadata", None) or {})]
-            nodes.sort(key=lambda m: (getattr(m, "metadata", None) or {}).get("node_start", 0))
-            self.recent_buffer = nodes + rest
+            ordered = sorted(
+                (buf[i] for i in idx),
+                key=lambda m: (getattr(m, "metadata", None) or {}).get("node_start", 0))
+            rest = [m for i, m in enumerate(buf) if i not in idx]
+            new_buf = ordered + rest
+            if new_buf != buf:
+                self.recent_buffer = new_buf
 
     def _emit_tool_events(self, m) -> None:
         """从新增消息中提取工具调用/结果，推送前端工具卡片事件。"""
@@ -1428,30 +1940,126 @@ class PlannerSession:
                 self.push_event({"type": "tool_call", "id": tc.get("id", ""),
                                  "name": name, "args": args})
         elif mtype == "tool":
-            if getattr(m, "name", "") == "continue_speaking":
+            name = getattr(m, "name", "") or ""
+            if name == "continue_speaking":
                 return   # 对应卡片不展示
+            # 写操作留底关联：取出属于本次调用名字的 change id（队列按执行顺序）
+            change_ids: list[int] = []
+            with self.buffer_lock:
+                while self._pending_changes and self._pending_changes[0].get("tool") == name:
+                    change_ids.append(int(self._pending_changes.pop(0)["id"]))
+            if change_ids:
+                ak = getattr(m, "additional_kwargs", None)
+                if isinstance(ak, dict):
+                    ak["change_ids"] = change_ids   # 白名单转换 → 不会发回模型端点
+            diff = self.change_diff(change_ids, tool=name) if change_ids else None
             self.push_event({"type": "tool_result", "id": getattr(m, "tool_call_id", ""),
-                             "content": str(getattr(m, "content", "") or "")})
+                             "content": str(getattr(m, "content", "") or ""),
+                             "diff": diff})
+            # show_image：图片事件（前端渲染图片气泡；路径写进消息供 /history 重建）
+            images: list[dict] = []
+            if name == "show_image":
+                with self.buffer_lock:
+                    while self._pending_images:
+                        images.append(self._pending_images.pop(0))
+                if images:
+                    ak = getattr(m, "additional_kwargs", None)
+                    if isinstance(ak, dict):
+                        ak["image_paths"] = [img["path"] for img in images]
+                        ak["image_captions"] = [img.get("caption", "") for img in images]
+                for img in images:
+                    self.push_event({"type": "image",
+                                     "id": getattr(m, "tool_call_id", ""),
+                                     "url": image_url(img["path"]),
+                                     "caption": img.get("caption", "")})
+
+    def change_diff(self, change_ids: list[int], tool: str = "") -> str | None:
+        """变更条目的「修改前后」unified diff 文本（工具行/历史展示用）。
+
+        - 单条：changes.db 的 before/after 快照直接对比；
+        - move_file（两条：源消失 + 目标创建）：内容不变 → 不逐行对比，给一行说明；
+        - 未留底（no_snapshot）/内容过大 → 给替代说明；无差异 → None。
+        """
+        try:
+            from .changes import diff_text
+            rows = []
+            db = self.get_changes_db()
+            for cid in list(change_ids)[:4]:
+                row = db.get_full(int(cid))
+                if row is not None:
+                    rows.append(row)
+            if not rows:
+                return None
+            if tool == "move_file" and len(rows) >= 2:
+                # 源行 after=None（文件消失）；目标行 = 另一条
+                src = next((str(r["rel"]) for r in rows if r["after"] is None),
+                           str(rows[0]["rel"]))
+                dst = next((str(r["rel"]) for r in rows if str(r["rel"]) != src),
+                           str(rows[-1]["rel"]))
+                return f"（移动：{src} → {dst}，内容未变）"
+            if tool == "move_file":
+                return "（移动操作，内容未变）"
+            if len(rows) > 1:
+                # 多文件补丁（apply_patch）：每个文件一段 diff 拼接
+                parts: list[str] = []
+                for r in rows[:8]:
+                    if r["no_snapshot"]:
+                        parts.append(f"（{r['rel']}：内容过大/二进制，未留底，无法展示 diff）")
+                        continue
+                    d = diff_text(r["before"], r["after"], str(r["rel"]))
+                    if d:
+                        parts.append(d)
+                return "\n".join(parts) if parts else None
+            r = rows[0]
+            if r["no_snapshot"]:
+                return "（内容过大或二进制，未留底全文，无法展示 diff）"
+            d = diff_text(r["before"], r["after"], str(r["rel"]))
+            if d is None and (r["before"] or "") == (r["after"] or ""):
+                return None
+            if d is None:
+                return "（内容过大，省略 diff）"
+            return d
+        except Exception:
+            _logger.warning("[changes] diff 生成失败", exc_info=True)
+            return None
 
     # ── 对外状态 ──────────────────────────────────────────────
 
     # ── 上下文统计（token 估算）────────────────────────────────
 
     def context_stats(self) -> dict:
-        """当前上下文的长度估算（无 tokenizer，按中文字符/token 比例粗估）。
+        """当前上下文的长度统计。
 
-        范围：system prompt + 对话 buffer（含压缩节点消息）。
-        比例：对话以中文为主，1 个汉字 ≈ 1~1.5 token（含标点/英文混合取 1.2），
-        tokens = chars × 1.2（字符数 ≤ token 数，估算只会偏保守）。
+        - `tokens`：字符估算（无 tokenizer，中文按 chars × 1.2）——用于分解占比展示；
+        - `real_tokens`：**上一轮模型调用 API 实报的输入 token**（含系统提示/记忆节点/
+          图片，最准）——标题栏优先显示它；重启后未生成过时回退估算。
+        breakdown：system / nodes（记忆节点）/ raw（原始消息）/ images（视觉注入，每张 ≤384）。
         """
-        chars = len(self.system_prompt or "")
+        system_chars = len(self.system_prompt or "")
+        nodes = raw = images = 0
         with self.buffer_lock:
             for m in self.recent_buffer:
                 content = getattr(m, "content", "") or ""
-                if isinstance(content, str):
-                    chars += len(content)
+                if isinstance(content, list):
+                    text = "".join(str(b.get("text") or "") for b in content
+                                   if isinstance(b, dict))
+                    images += sum(1 for b in content
+                                  if isinstance(b, dict) and b.get("type") == "image_url")
+                else:
+                    text = str(content)
+                if "node_id" in (getattr(m, "metadata", None) or {}):
+                    nodes += len(text)
+                else:
+                    raw += len(text)
             msgs = len(self.recent_buffer)
-        return {"messages": msgs, "chars": chars, "tokens": int(chars * 1.2)}
+        est = lambda n: int(n * 1.2)   # noqa: E731
+        breakdown = {"system": est(system_chars), "nodes": est(nodes),
+                     "raw": est(raw), "images": images * 384}
+        chars = system_chars + nodes + raw
+        return {"messages": msgs, "chars": chars,
+                "tokens": sum(breakdown.values()),
+                "real_tokens": int(getattr(self, "_last_prompt_tokens", 0) or 0),
+                "breakdown": breakdown}
 
     def state_dict(self) -> dict:
         with self.buffer_lock:
@@ -1460,6 +2068,7 @@ class PlannerSession:
             return {
                 "mode": self.mode,
                 "thinking": self.thinking,
+                "compressing": bool(getattr(self, "_compressing", False)),
                 "heartbeat": self.heartbeat_dict(),
                 "dnd": {"enabled": self.dnd_enabled, "in_dnd": self.in_dnd(),
                         "until": self.dnd_until.isoformat() if self.dnd_until else None},

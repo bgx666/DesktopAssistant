@@ -77,14 +77,20 @@ def main():
             for ev in d["events"]:
                 if ev["type"] == "text":
                     texts.append(ev["content"])
-            if any("拆解" in t or "任务" in t or "安排" in t for t in texts):
+            if texts:
                 break
+        if not texts:
+            print("120 秒内没有收到任何文本回复")
+            return 1
         print("收到的回复（按轮次）：")
         for t in texts[:5]:
             print("-", t[:120])
         st = get("/state")
-        print(f"\n任务统计: {st['state']['plan']['tasks']}")
-        print(f"今日计划: {st['state']['plan']['today_plan_done']}/{st['state']['plan']['today_plan_total']}")
+        agenda = st["state"].get("agenda", {})
+        ctx = st["state"].get("context", {})
+        print(f"\n今日议程: {agenda.get('today_todo', '?')}/{agenda.get('today_total', '?')} 未完成"
+              f" | 逾期 {agenda.get('overdue_count', '?')}")
+        print(f"上下文: {ctx.get('messages', '?')} 条 / 约 {ctx.get('tokens', '?')} token")
         return 0
     finally:
         proc.terminate()

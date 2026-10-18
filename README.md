@@ -138,7 +138,7 @@ python -m pip install -e .
 ```bash
 LLM_API_KEY=sk-xxxxxxxxxxxxxxxxxxxx   # 必填
 LLM_BASE_URL=https://api.deepseek.com # 可选
-LLM_MODEL=deepseek-v4-flash           # 可选
+PLANNER_LLM_MODEL=deepseek-flash      # 可选（默认即 deepseek-flash）
 ```
 
 亦可直接设置同名系统环境变量。

@@ -6,90 +6,122 @@
       content="default-src 'self'; connect-src http://127.0.0.1:*; style-src 'self' 'unsafe-inline'; script-src 'self';" />
 <title>小助 · 设置</title>
 <style>
-  :root { --cyan: #39c5bb; --cyan2: #7deee3; --blue: #5fb8d6; --pink: #ff2e97; --text: #2b2f38; --dim: #8fa8b8; }
+  /* 与主面板同一套设计语言：中性灰 + 单一强调色（企业风） */
+  :root { --accent: #2563eb; --text: #1b1d23; --dim: #8a919e;
+          --line: #e5e7eb; --line-strong: #d3d7de; --surface-2: #f3f4f6; }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body { height: 100%; }
   body {
-    font-family: "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
-    background: #f4f8fb; color: var(--text);
+    font-family: "Segoe UI", "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+    background: #f6f7f9; color: var(--text);
     display: flex; flex-direction: column; height: 100vh;
   }
 
   /* ── 顶部标题 ── */
   .head { padding: 14px 18px 10px; }
-  .head h1 { font-size: 16px; }
+  .head h1 { font-size: 16px; font-weight: 600; }
   .head .sub { font-size: 11.5px; color: var(--dim); margin-top: 3px; }
 
   /* ── 主体：左侧选项卡 + 右侧内容 ── */
   .layout { flex: 1; display: flex; min-height: 0; }
   aside {
     width: 118px; flex: none; padding: 10px 8px;
-    border-right: 1px solid #e3ecf3; background: #eef4fa;
+    border-right: 1px solid var(--line); background: var(--surface-2);
     display: flex; flex-direction: column; gap: 4px;
   }
   aside .tab {
-    padding: 10px 12px; border: none; border-radius: 10px; cursor: pointer;
-    background: transparent; color: #4a5a70; font-size: 13px; text-align: left;
+    padding: 9px 12px; border: none; border-radius: 8px; cursor: pointer;
+    background: transparent; color: #4b5563; font-size: 13px; text-align: left;
     transition: background 0.15s, color 0.15s;
   }
-  aside .tab:hover { background: #e2ecf6; }
-  aside .tab.active { background: #fff; color: #1e8a80; font-weight: 700; box-shadow: 0 1px 4px rgba(90,120,200,0.12); }
+  aside .tab:hover { background: #e7eaef; }
+  aside .tab.active { background: #fff; color: var(--text); font-weight: 600; box-shadow: 0 1px 2px rgba(16,24,40,0.06); }
   main { flex: 1; overflow-y: auto; padding: 16px 20px; min-width: 0; }
   .pane { display: none; }
   .pane.active { display: block; }
 
-  h2 { font-size: 13.5px; margin-bottom: 12px; color: #345; }
-  section { background: #fff; border: 1px solid #e3ecf3; border-radius: 12px; padding: 14px 16px; margin-bottom: 14px; }
+  h2 { font-size: 13.5px; margin-bottom: 12px; color: var(--text); font-weight: 600; }
+  section { background: #fff; border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; margin-bottom: 14px; }
   .row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
   .row label { width: 132px; font-size: 12.5px; flex: none; }
   .row input[type=number], .row input[type=text], .row input[type=password] {
-    flex: 1; padding: 6px 10px; border: 1px solid #d6e2ec; border-radius: 8px;
+    flex: 1; padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px;
     font-size: 13px; outline: none; max-width: 210px;
   }
-  .row input:focus { border-color: var(--cyan); }
-  .row .hint { font-size: 11px; color: var(--dim); flex: none; width: 120px; }
+  .row input:focus { border-color: #a9c3f5; box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.08); }
+  .row .hint { font-size: 11px; color: var(--dim); flex: 1; min-width: 110px; }
 
-  canvas { width: 100%; height: 240px; background: #fff; border-radius: 10px; display: block; border: 1px solid #e3ecf3; cursor: grab; }
+  canvas { width: 100%; height: 240px; background: #fff; border-radius: 10px; display: block; border: 1px solid var(--line); cursor: grab; }
   canvas:active { cursor: grabbing; }
   .chart-tip { font-size: 11px; color: var(--dim); margin-top: 8px; line-height: 1.7; }
   .legend { font-size: 11px; color: var(--dim); margin-top: 6px; }
-  .legend b { color: var(--blue); }
+  .legend b { color: var(--accent); }
 
   /* ── 语音开关/音色 ── */
   .row select {
-    flex: 1; max-width: 210px; padding: 6px 10px; border: 1px solid #d6e2ec; border-radius: 8px;
+    flex: 1; max-width: 210px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px;
     font-size: 13px; outline: none; background: #fff; color: var(--text);
   }
   .row #btn_tts_test {
-    flex: none; padding: 6px 16px; border: none; border-radius: 8px; cursor: pointer;
-    background: linear-gradient(135deg, var(--cyan2), var(--cyan)); color: #fff;
-    font-size: 12.5px; font-weight: 700;
+    flex: none; padding: 6px 16px; border: 1px solid var(--line); border-radius: 8px; cursor: pointer;
+    background: #fff; color: var(--text);
+    font-size: 12.5px; font-weight: 500;
   }
+  .row #btn_tts_test:hover { background: var(--surface-2); }
   .row #btn_tts_test:disabled { opacity: .55; cursor: default; }
   .switch { position: relative; width: 40px; height: 22px; flex: none; cursor: pointer; }
   .switch input { display: none; }
   .switch .slider {
-    position: absolute; inset: 0; border-radius: 11px; background: #cfdce8;
+    position: absolute; inset: 0; border-radius: 11px; background: #d3d7de;
     transition: background 0.15s;
   }
   .switch .slider::before {
     content: ""; position: absolute; width: 16px; height: 16px; border-radius: 50%;
     background: #fff; top: 3px; left: 3px; transition: transform 0.15s;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.25);
+    box-shadow: 0 1px 3px rgba(0,0,0,0.2);
   }
-  .switch input:checked + .slider { background: var(--cyan); }
+  .switch input:checked + .slider { background: var(--accent); }
   .switch input:checked + .slider::before { transform: translateX(18px); }
 
   /* ── 底部：保存按钮固定右下角 ── */
   .footer {
     flex: none; display: flex; align-items: center; gap: 12px;
-    padding: 12px 18px; border-top: 1px solid #e3ecf3; background: #fff;
+    padding: 12px 18px; border-top: 1px solid var(--line); background: #fff;
   }
-  #msg { flex: 1; font-size: 12px; color: var(--pink); min-height: 16px; }
-  #msg.ok { color: #2e9e6b; }
-  #save { padding: 8px 30px; border: none; border-radius: 10px; cursor: pointer;
-    color: #fff; font-size: 13px; font-weight: 700; background: linear-gradient(135deg, var(--cyan2), var(--cyan)); }
+  #msg { flex: 1; font-size: 12px; color: #dc2626; min-height: 16px; }
+  #msg.ok { color: #16a34a; }
+  #save { padding: 8px 30px; border: none; border-radius: 9px; cursor: pointer;
+    color: #fff; font-size: 13px; font-weight: 600; background: var(--accent); }
+  #save:hover { background: #1d4ed8; }
   #save:disabled { opacity: .55; cursor: default; }
+  .row .mini {
+    flex: none; padding: 6px 12px; border: 1px solid var(--line); border-radius: 8px; cursor: pointer;
+    background: #fff; color: var(--text); font-size: 12px; font-weight: 500;
+  }
+  .row .mini:hover { background: var(--surface-2); }
+
+  /* ── 应用内确认框（替代原生 confirm：Windows 原生弹窗关闭后键盘焦点可能不还给页面）── */
+  #ui-confirm {
+    position: fixed; inset: 0; z-index: 99;
+    background: rgba(15, 23, 42, 0.42);
+    display: flex; align-items: center; justify-content: center;
+  }
+  #ui-confirm.hidden { display: none; }
+  .ui-confirm-card {
+    width: min(92%, 400px); background: #fff; border-radius: 14px; padding: 16px 18px;
+    border: 1px solid var(--line);
+    box-shadow: 0 24px 56px rgba(15, 23, 42, 0.22);
+  }
+  .ui-confirm-text { white-space: pre-wrap; word-break: break-all; line-height: 1.7; font-size: 13px; margin-bottom: 14px; }
+  .ui-confirm-btns { display: flex; gap: 8px; }
+  .ui-confirm-btns button {
+    flex: 1; padding: 8px 6px; border: none; border-radius: 8px; cursor: pointer;
+    font-size: 13px; font-weight: 600;
+  }
+  #ui-confirm-ok { background: var(--accent); color: #fff; }
+  #ui-confirm-ok:hover { background: #1d4ed8; }
+  #ui-confirm-cancel { background: var(--surface-2); color: var(--text); }
+  #ui-confirm-cancel:hover { background: #e7eaef; }
 </style>
 </head>
 <body>
@@ -103,6 +135,7 @@
       <button class="tab active" data-tab="interact">交互</button>
       <button class="tab" data-tab="compress">记忆压缩</button>
       <button class="tab" data-tab="llm">LLM API</button>
+      <button class="tab" data-tab="workspace">代码工作区</button>
     </aside>
 
     <main>
@@ -114,6 +147,14 @@
             <label>长按判定时间</label>
             <input type="number" id="press_ms" min="50" max="5000" step="10" />
             <span class="hint">毫秒（按住多久进入语音输入）</span>
+          </div>
+        </section>
+        <section>
+          <h2>工作循环</h2>
+          <div class="row">
+            <label>单轮调用上限</label>
+            <input type="number" id="model_call_limit" min="10" max="500" step="10" />
+            <span class="hint">一轮生成里最多几次模型调用（干活的硬保险；超了会强制收尾，说「继续」可接着干）</span>
           </div>
         </section>
         <section>
@@ -151,30 +192,35 @@
         <section>
           <h2>记忆压缩</h2>
           <div class="row">
-            <label>触发压缩条数</label>
-            <input type="number" id="compress_trigger" min="20" max="500" />
-            <span class="hint">对话积累到多少条触发压缩</span>
+            <label>触发 token 预算</label>
+            <input type="number" id="compress_token_budget" min="10000" max="500000" step="10000" />
+            <span class="hint">原始消息估算 token 超该值就压缩（唯一触发条件）</span>
           </div>
           <div class="row">
             <label>压缩后保留条数</label>
             <input type="number" id="compress_keep" min="5" max="200" />
-            <span class="hint">压缩后保留最近多少条</span>
+            <span class="hint">压缩后保留最近多少条原文</span>
           </div>
           <div class="row">
             <label>层级触发阈值</label>
             <input type="number" id="compact_threshold" min="3" max="50" />
-            <span class="hint">某层节点达到多少个开始合并</span>
+            <span class="hint">某层节点达到多少个开始向上合并</span>
           </div>
           <div class="row">
             <label>合并个数</label>
             <input type="number" id="compact_factor" min="2" max="10" />
             <span class="hint">每次合并几个节点为 1 个</span>
           </div>
+          <div class="row">
+            <label>节点 token 预算</label>
+            <input type="number" id="node_token_budget" min="200" max="4000" step="100" />
+            <span class="hint">压缩节点的大小上限（超出软裁剪）</span>
+          </div>
         </section>
         <section>
           <h2>压缩示意图</h2>
           <canvas id="chart" width="900" height="300"></canvas>
-          <div class="legend">黑色折线 = 每次压缩触发前的上下文峰值（触发条数 × 360 + 节点 × 500 token）· 横轴为对话轮数（线性）</div>
+          <div class="legend">黑色折线 = 每次压缩触发前的上下文峰值（触发预算 ≈ 等价条数 × 360 + 节点 × 500 token）· 横轴为对话轮数（线性）</div>
           <div class="chart-tip">拖动平移 · 滚轮缩放 · 双击重置 · 输入上面的压缩参数后即时重算。</div>
         </section>
       </div>
@@ -182,18 +228,30 @@
       <!-- LLM API -->
       <div class="pane" data-pane="llm">
         <section>
-          <h2>LLM API（留空 = 使用环境变量 / .env）</h2>
+          <h2>模型 API</h2>
           <div class="row">
-            <label>API Key</label>
-            <input type="password" id="llm_api_key" />
+            <label>服务商</label>
+            <select id="llm_provider">
+              <option value="deepseek">DeepSeek 官方</option>
+              <option value="opencode">OpenCode Go</option>
+            </select>
+            <span class="hint" id="llm_provider_hint"></span>
           </div>
           <div class="row">
-            <label>Base URL</label>
-            <input type="text" id="llm_base_url" placeholder="如 https://api.deepseek.com" />
+            <label>API Key</label>
+            <input type="password" id="llm_api_key_active" placeholder="留空 = 使用环境变量 / .env" />
           </div>
           <div class="row">
             <label>Model</label>
-            <input type="text" id="llm_model" placeholder="如 deepseek-v4-flash" />
+            <input type="text" id="llm_model_active" list="llm_model_list" placeholder="如 deepseek-flash" />
+            <datalist id="llm_model_list"></datalist>
+          </div>
+          <div class="row">
+            <label>Base URL</label>
+            <input type="text" id="llm_base_url_active" />
+          </div>
+          <div class="hint" style="width:100%">
+            两个服务商的 Key / 模型 / 端点**分别保存**，切换服务商互不覆盖；留空项用预设或环境变量。
           </div>
         </section>
 
@@ -222,6 +280,40 @@
           </div>
         </section>
       </div>
+      <!-- 代码工作区 -->
+      <div class="pane" data-pane="workspace">
+        <section>
+          <h2>代码工作区</h2>
+          <div class="row">
+            <label>工作区目录</label>
+            <input type="text" id="workspace_root" placeholder="留空 = 关闭代码能力" style="max-width:230px" />
+            <button class="mini" id="btn_pick_ws" type="button">选择…</button>
+            <button class="mini" id="btn_clear_ws" type="button">清除</button>
+          </div>
+          <div class="hint" style="width:100%">
+            启用后小助可以读写该目录下的代码：<b>区内读取免审批</b>；<b>写操作</b>与<b>区外读取</b>会弹出审批窗（超时默认拒绝）。
+            敏感文件（.env / 私钥 / .git 内部）<b>永远拒绝</b>。更换工作区会清空已记住的审批规则。
+          </div>
+          <div class="row">
+            <span class="hint" style="width:100%">
+              提示：工作区变更后「保存设置」才生效；已记住的「记住并允许」规则见 <code>data/permissions.json</code>。
+            </span>
+          </div>
+        </section>
+
+        <section>
+          <h2>已记住的授权规则</h2>
+          <div id="perm-rules"></div>
+          <div class="row">
+            <span class="hint" style="width:100%">
+              「记住并允许」留下的规则；删除后对应操作会重新弹审批（删除立即生效，不用保存）。
+            </span>
+          </div>
+          <div class="row">
+            <button class="mini" id="perm-clear" type="button">清空全部规则</button>
+          </div>
+        </section>
+      </div>
     </main>
   </div>
 
@@ -229,6 +321,17 @@
     <span id="msg"></span>
     <button id="save">保存设置</button>
   </div>
+
+<!-- 应用内确认框（替代原生 confirm：Windows 下原生弹窗关闭后键盘焦点可能不还给页面） -->
+<div id="ui-confirm" class="hidden">
+  <div class="ui-confirm-card">
+    <div id="ui-confirm-text" class="ui-confirm-text"></div>
+    <div class="ui-confirm-btns">
+      <button id="ui-confirm-cancel" type="button">取消</button>
+      <button id="ui-confirm-ok" type="button">确定</button>
+    </div>
+  </div>
+</div>
 
 <audio id="tts-audio" hidden></audio>
 <script src="settings.js"></script>

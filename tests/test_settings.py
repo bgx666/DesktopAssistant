@@ -10,17 +10,77 @@ import planner.settings as settings_mod
 def test_defaults_and_roundtrip(data_root):
     s = settings_mod.load_settings(data_root)
     assert s["press_ms"] == 200
-    assert s["compress_trigger"] == 60
-    merged = settings_mod.save_settings(data_root, {"press_ms": 350, "compress_trigger": 80})
+    assert s["compress_token_budget"] == 100000
+    assert s["model_call_limit"] == 100   # 干活模式：默认 100 次单轮调用上限
+    merged = settings_mod.save_settings(data_root, {"press_ms": 350,
+                                                    "compress_token_budget": 20000})
     assert merged["press_ms"] == 350
-    assert settings_mod.load_settings(data_root)["compress_trigger"] == 80
+    assert settings_mod.load_settings(data_root)["compress_token_budget"] == 20000
+
+
+def test_model_call_limit_validation(data_root):
+    """单轮调用上限：10~500，越界/非法值报错；正常值可存。"""
+    merged = settings_mod.save_settings(data_root, {"model_call_limit": 300})
+    assert merged["model_call_limit"] == 300
+    with pytest.raises(ValueError):
+        settings_mod.save_settings(data_root, {"model_call_limit": 5})     # 低于下限
+    with pytest.raises(ValueError):
+        settings_mod.save_settings(data_root, {"model_call_limit": 600})   # 高于上限
+    with pytest.raises(ValueError):
+        settings_mod.save_settings(data_root, {"model_call_limit": "abc"})
+
+
+def test_model_call_limit_used_by_agent_and_rebuilds(data_root, monkeypatch):
+    """agent 构建读 model_call_limit；改设置重建 agent。"""
+    import planner.agent as agent_mod
+    from planner.session import PlannerSession
+
+    captured = {}
+
+    def _fake_create_agent(**kwargs):
+        captured["middleware"] = kwargs.get("middleware")
+        return object()
+
+    monkeypatch.setattr(agent_mod, "create_agent", _fake_create_agent)
+    s = PlannerSession(data_root, mock=True)
+    try:
+        s.update_settings({"model_call_limit": 200})
+        _ = s._agent   # 触发构建（property）
+        mws = captured["middleware"]
+        limits = [m for m in mws if type(m).__name__ == "ModelCallLimitMiddleware"]
+        assert limits and int(limits[0].run_limit) == 200
+        # 改上限 → agent 重建（新值生效）
+        s._agent_obj = "sentinel"
+        s.update_settings({"model_call_limit": 50})
+        assert s._agent_obj is None
+    finally:
+        s.close()
+
+
+def test_limit_message_neutralized(data_root):
+    """超限注入的英文 AI 消息 → 写回 buffer 前替换成中文提示。"""
+    from langchain_core.messages import AIMessage
+
+    from planner.session import PlannerSession
+
+    s = PlannerSession(data_root, mock=True)
+    try:
+        m = AIMessage(content="Model call limits exceeded: run limit (100/100)")
+        assert s._neutralize_limit_message(m) is True
+        assert "单轮调用上限" in str(m.content)
+        assert "Model call limits" not in str(m.content)
+        normal = AIMessage(content="普通回复")
+        assert s._neutralize_limit_message(normal) is False
+        assert normal.content == "普通回复"
+    finally:
+        s.close()
 
 
 def test_validation(data_root):
     with pytest.raises(ValueError):
         settings_mod.save_settings(data_root, {"press_ms": 10})          # 低于下限
     with pytest.raises(ValueError):
-        settings_mod.save_settings(data_root, {"compress_keep": 80, "compress_trigger": 60})  # keep >= trigger
+        settings_mod.save_settings(data_root, {"compress_token_budget": 1000})  # 低于下限
     with pytest.raises(ValueError):
         settings_mod.save_settings(data_root, {"compact_factor": 8, "compact_threshold": 4})  # factor >= threshold
     with pytest.raises(ValueError):
@@ -47,16 +107,16 @@ def test_corrupted_file_falls_back(data_root, monkeypatch):
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text("{bad json", encoding="utf-8")
     s = settings_mod.load_settings(data_root)
-    assert s["compress_trigger"] == 60
+    assert s["compress_token_budget"] == 100000
 
 
 def test_session_update_settings(data_root):
     from planner.session import PlannerSession
     s = PlannerSession(data_root, mock=True)
     try:
-        s.update_settings({"press_ms": 400, "compress_trigger": 80})
+        s.update_settings({"press_ms": 400, "compress_token_budget": 20000})
         assert s.settings["press_ms"] == 400
-        assert s.settings["compress_trigger"] == 80
+        assert s.settings["compress_token_budget"] == 20000
         with pytest.raises(ValueError):
             s.update_settings({"press_ms": 1})
     finally:
@@ -111,25 +171,29 @@ def test_tts_voice_from_another_engine_is_not_applied(data_root, monkeypatch):
 
 
 def test_compress_params_dynamic(data_root, monkeypatch):
-    """压缩参数从 session.settings 动态读取（应用即生效）。"""
+    """压缩参数从 session.settings 动态读取（叶子压缩只看 token 预算）。"""
     from langchain_core.messages import HumanMessage
     from planner.middleware import SummarizationMiddleware, MemoryNodeOutput
     from planner.session import PlannerSession
 
     s = PlannerSession(data_root, mock=True)
     try:
-        s.update_settings({"compress_trigger": 30, "compress_keep": 10})
+        s.update_settings({"compress_token_budget": 10000, "compress_keep": 10})
         comp = SummarizationMiddleware(s)
         monkeypatch.setattr(comp, "_call_compress", lambda ctx, ins: MemoryNodeOutput(
-            summary="摘要", profile={"preferences": [], "personality": [],
-                                     "habits": [], "goals": []}, future_notes=[]))
-        # 30 条触发（旧逻辑 60 条不触发）
-        msgs = [HumanMessage(content=f"m{i}", metadata={"ts": "2026-08-08 10:00:00"})
+            summary="摘要"))
+        # 30 条 × ~300 字符 ≈ 10800 token ≥ 10000 预算 → 触发
+        msgs = [HumanMessage(content=f"m{i}" + "x" * 298,
+                             metadata={"ts": "2026-08-08 10:00:00"})
                 for i in range(30)]
         removes, adds = comp.compress_snapshot(msgs)
-        assert removes and adds, "30 条时应触发压缩（设置 30 触发）"
+        assert removes and adds, "token 超预算时应触发压缩"
         # batch = 最早 30-10=20 条
         assert len(removes) == 20
+        # 预算调大 → 不再触发（应用即生效）
+        s.update_settings({"compress_token_budget": 500000})
+        removes2, adds2 = comp.compress_snapshot(msgs)
+        assert not removes2 and not adds2, "预算调大后不应再触发"
     finally:
         s.close()
 
@@ -147,8 +211,7 @@ def test_compact_params_dynamic(data_root, monkeypatch):
             tree.add_leaf(f"摘要{i}", (i * 10, i * 10 + 9), None)
         comp = SummarizationMiddleware(s)
         monkeypatch.setattr(comp, "_call_compress", lambda ctx, ins: MemoryNodeOutput(
-            summary="父摘要", profile={"preferences": [], "personality": [],
-                                      "habits": [], "goals": []}, future_notes=[]))
+            summary="父摘要"))
         # 默认阈值 8 → 5 个叶子不合并
         removes, adds = comp.compress_snapshot([])
         assert not adds

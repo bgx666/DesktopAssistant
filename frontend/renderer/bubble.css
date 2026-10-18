@@ -20,14 +20,14 @@ html, body {
   justify-content: center;
 }
 
-/* 中心圆：柔蓝（偏蓝），细白描边 */
+/* 中心圆：与小助品牌球同款（青绿实色），细白描边 */
 #core {
   width: 44px;
   height: 44px;
   border-radius: 50%;
-  background: #5fb8d6;
+  background: radial-gradient(circle at 32% 28%, #7ce8db, #2fb3a6 62%, #178f86);
   border: 1px solid rgba(255, 255, 255, 0.4);
-  box-shadow: none;
+  box-shadow: 0 4px 14px rgba(23, 143, 134, 0.30);
   position: relative;
   cursor: pointer;
   transition: transform 0.15s ease;
@@ -54,47 +54,39 @@ html, body {
   animation: pulse 0.9s infinite;
 }
 
-/* 语音连续对话模式（voice-on）：球体青色呼吸环 + 状态点青色脉冲
+/* 语音连续对话模式（voice-on）：球体蓝环呼吸 + 状态点脉冲
    （VAD 待命中；说话录音时叠加 .recording 柔紫状态） */
 #core.voice-on {
-  border-color: #00f0ff;
-  box-shadow: 0 0 0 2px rgba(0, 240, 255, 0.7), 0 0 16px rgba(0, 240, 255, 0.45);
+  border-color: rgba(37, 99, 235, 0.85);
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.45), 0 0 14px rgba(37, 99, 235, 0.30);
   animation: voice-breathe 2.4s ease-in-out infinite;
 }
 @keyframes voice-breathe {
-  0%, 100% { box-shadow: 0 0 0 2px rgba(0, 240, 255, 0.7), 0 0 16px rgba(0, 240, 255, 0.45); }
-  50% { box-shadow: 0 0 0 3px rgba(0, 240, 255, 0.9), 0 0 26px rgba(0, 240, 255, 0.7); }
+  0%, 100% { box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.45), 0 0 14px rgba(37, 99, 235, 0.30); }
+  50% { box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.65), 0 0 22px rgba(37, 99, 235, 0.45); }
 }
 #core.voice-on #status-dot {
-  background: #00f0ff;
+  background: #2563eb;
   animation: pulse 1.6s infinite;
 }
 
-/* 生成中（thinking）：呼吸式闪烁——球体粉蓝辉光呼吸 + 状态点脉冲 */
+/* 生成中（thinking）：呼吸式闪烁——球体蓝辉光呼吸 + 状态点脉冲 */
 #core.thinking {
-  border-color: rgba(77, 166, 255, 0.9);
+  border-color: rgba(37, 99, 235, 0.85);
   animation: think-breathe 1.2s ease-in-out infinite;
 }
 @keyframes think-breathe {
   0%, 100% {
-    box-shadow: 0 0 0 2px rgba(77, 166, 255, 0.5), 0 0 12px rgba(77, 166, 255, 0.35);
+    box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.35), 0 0 10px rgba(37, 99, 235, 0.25);
   }
   50% {
-    box-shadow: 0 0 0 3px rgba(77, 166, 255, 0.95), 0 0 26px rgba(77, 166, 255, 0.75);
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.7), 0 0 20px rgba(37, 99, 235, 0.5);
   }
 }
-/* 语音对话模式下的思考：青色系快速呼吸（覆盖 voice-on 的慢呼吸，闪烁感更强） */
+/* 语音对话模式下的思考：更快呼吸（覆盖 voice-on 的慢呼吸，闪烁感更强） */
 #core.voice-on.thinking {
-  border-color: #00f0ff;
-  animation: think-breathe-cyan 1s ease-in-out infinite;
-}
-@keyframes think-breathe-cyan {
-  0%, 100% {
-    box-shadow: 0 0 0 2px rgba(0, 240, 255, 0.55), 0 0 12px rgba(0, 240, 255, 0.35);
-  }
-  50% {
-    box-shadow: 0 0 0 3px rgba(0, 240, 255, 1), 0 0 28px rgba(0, 240, 255, 0.85);
-  }
+  border-color: rgba(37, 99, 235, 0.9);
+  animation: think-breathe 1s ease-in-out infinite;
 }
 
 /* ── 录音雷达环：贴蓝色球体边缘的闭合多边形波形（雷达图效果）── */
@@ -125,7 +117,7 @@ html, body {
   stroke-width: 1;
 }
 
-/* 状态点（球心居中，对称）：在线偏绿（与圆环区分）/ 思考中柔粉脉冲 / 离线红 / 录音柔紫脉冲 */
+/* 状态点（球心居中，对称）：在线偏绿 / 思考中蓝脉冲 / 离线红 / 录音柔紫脉冲 */
 #status-dot {
   position: absolute;
   left: 50%;
@@ -134,17 +126,17 @@ html, body {
   height: 18px;
   margin: -9px 0 0 -9px;
   border-radius: 50%;
-  background: #6fd993;
+  background: #34c78a;
   border: 2px solid #fff;
   box-sizing: border-box;
   z-index: 1;
 }
 #status-dot.thinking {
-  background: #4da6ff;
+  background: #2563eb;
   animation: pulse 0.9s infinite;
 }
 #status-dot.offline {
-  background: #ff6b81;
+  background: #dc2626;
 }
 @keyframes pulse {
   50% { opacity: 0.45; transform: scale(1.25); }
@@ -159,7 +151,7 @@ html, body {
   height: 15px;
   padding: 0 3px;
   border-radius: 8px;
-  background: #e5484d;
+  background: #dc2626;
   border: 2px solid #fff;
   color: #fff;
   font-size: 9px;
@@ -177,7 +169,7 @@ html, body {
   height: 15px;
   padding: 0 3px;
   border-radius: 8px;
-  background: #5fb8d6;
+  background: #2563eb;
   border: 2px solid #fff;
   color: #fff;
   font-size: 9px;
@@ -189,6 +181,6 @@ html, body {
 /* 拖拽悬停：球描边加粗高亮 */
 #core.drop-target {
   border: 2px solid #fff;
-  box-shadow: 0 0 0 3px rgba(95, 184, 214, 0.6);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.45);
 }
 .hidden { display: none !important; }
