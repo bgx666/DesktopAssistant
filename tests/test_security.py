@@ -48,8 +48,9 @@ def test_tools_source_no_command_execution():
     for bad in ("os.system", "os.popen", "exec(", "eval(",
                 "os.remove", "os.rename", "os.makedirs"):
         assert bad not in src, f"tools.py 含 {bad}"
-    # write_bytes 只允许出现在 show_image 的网络图片缓存写入（data/images；
-    # content-type/大小白名单 + /file 只服务工作区/缓存目录，另见 test_show_image.py）
+    # write_bytes 只允许出现在 show_image 的图片缓存写入（网络下载缓存 + 本地
+    # 展示持久副本，均落 data/images；content-type/大小白名单 + /file 只服务
+    # 工作区/缓存目录，另见 test_show_image.py）
     for i, line in enumerate(src.splitlines(), 1):
         if "write_bytes" in line:
             assert "dest.write_bytes" in line, f"tools.py:{i} 出现计划外的 write_bytes"

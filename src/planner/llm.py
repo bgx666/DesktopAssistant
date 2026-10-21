@@ -175,12 +175,16 @@ def is_vision_model(model_name: str) -> bool:
 
     ⚠️ `deepseek-flash`（官方 V4.1-Flash）是多模态模型，必须收录——
     否则默认模型下 `capture_screen` 会**静默降级为 OCR**。
+    ⚠️ OpenCode Go 上同一模型叫 `deepseek-v4.1-flash`（不含子串 "deepseek-flash"，
+    用户实测漏网 → 面板显示"当前模型不支持视觉"、看图/挂图全走 OCR）——
+    用 `v4.1-flash` 子串一并收录；注意别误收 `deepseek-v4-flash` / `deepseek-v4-pro`
+    （v4 老版纯文本，test_vision 有断言保护）。
     另收录 OpenCode Go 常见家族（gpt-5/6、claude、gemini）便于切服务商后仍走原图。
     """
     name = (model_name or "").lower()
     return any(k in name for k in (
         "vision", "-vl", "-omni", "multimodal", "gpt-4o", "gpt-4.1",
-        "deepseek-flash", "gpt-5", "gpt-6", "claude", "gemini"))
+        "deepseek-flash", "v4.1-flash", "gpt-5", "gpt-6", "claude", "gemini"))
 
 
 #: 思考开关的三个取值（官方 thinking.type，实测都有效）
@@ -353,12 +357,28 @@ class MockChatModel(BaseChatModel):
         # （用所有 HumanMessage 判断：计划快照会注入"（当前计划）"Human 且以 [ 开头）
         user_texts = " ".join(
             str(m.content or "") for m in messages if isinstance(m, HumanMessage))
+        # 「气泡提问」= 悬浮球待处理提醒步骤（ask_user 气泡卡）的专属词；
+        # 放在最前，避免被历史里的旧触发词劫持（见下方全历史扫描说明）。
+        if "气泡提问" in user_texts:
+            return self._make_result("行，问你一件事：", [self._tc("ask_user", {
+                "question": "气泡提问：这两个方案先做哪个？",
+                "options": ["A：先做这个", "B：先做那个"]})])
+        # 「快速输入测试」= 快速输入浮层（全局快捷键）步骤的专属词：该步骤排最后，
+        # 历史里已有「补丁块」——必须放在所有分支之前，否则会被历史词劫持。
+        if "快速输入测试" in user_texts:
+            return self._make_result("收到，快速输入已送达。")
         # ⚠️ 触发词扫描的是**全历史** HumanMessage：分支顺序 = 优先级，一个触发词
         # 一旦用过就永远留在历史里 → **新触发词必须加在现有词之前**（越新越靠前），
         # 否则新消息会被历史里的旧词劫持（实测：「考我」放最前会让 step12 之后的
         # 「改文件/画图/…」全被历史的「考考我」抢走；「考我」放最后则被「打补丁」抢走）。
         # 「出题」= ask_user 的专属高优先词（正式"考我"测试词已进历史，见上）。
         # 带「多想」时附带思考流（e2e 造"隐藏期间在途思考+提问卡"场景）。
+        # 「补丁块」= 改动文件快捷块步骤的专属词，必须放最前：该步骤排在 HIDEGEN
+        # （已往历史里写过「出题」）之后，「打补丁」会被历史里的「出题」劫持。
+        if "补丁块" in user_texts:
+            return self._make_result("好，我打个补丁建两个文件。",
+                                     [self._tc("apply_patch",
+                                               {"patch": self._e2e_patch_text()})])
         if "出题" in user_texts:
             return self._make_result("行，先考你一道：",
                                      [self._tc("ask_user", {
@@ -370,16 +390,9 @@ class MockChatModel(BaseChatModel):
                                      [self._tc("continue_speaking", {})])
         # 触发多文件补丁（dev/e2e：验证 apply_patch 的审批/多文件 diff 渲染）
         if "打补丁" in user_texts:
-            patch = "\n".join([
-                "*** Begin Patch",
-                "*** Add File: e2e_patch_a.txt",
-                "+alpha",
-                "*** Add File: e2e_patch_b.txt",
-                "+beta",
-                "*** End Patch",
-            ])
             return self._make_result("好，我打个补丁建两个文件。",
-                                     [self._tc("apply_patch", {"patch": patch})])
+                                     [self._tc("apply_patch",
+                                               {"patch": self._e2e_patch_text()})])
         # 触发 HTML 预览（dev/e2e：回复里带 ```html 代码块 → 沙箱可交互预览卡）
         if "做个网页" in user_texts:
             demo = "\n".join([
@@ -497,6 +510,18 @@ class MockChatModel(BaseChatModel):
         return self._make_result(text, calls, reasoning=reasoning)
 
     # ── 构造工具调用 ─────────────────────────────────────────
+
+    @staticmethod
+    def _e2e_patch_text() -> str:
+        """e2e 多文件补丁负载（打补丁/补丁块触发词共用）。"""
+        return "\n".join([
+            "*** Begin Patch",
+            "*** Add File: e2e_patch_a.txt",
+            "+alpha",
+            "*** Add File: e2e_patch_b.txt",
+            "+beta",
+            "*** End Patch",
+        ])
 
     def _tc(self, name: str, args: dict) -> dict:
         return {"name": name, "args": args, "id": f"mockcall_{self._uuid.uuid4().hex[:12]}",

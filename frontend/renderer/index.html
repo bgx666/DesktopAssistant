@@ -59,11 +59,12 @@
 
       <!-- 聊天 -->
       <section id="chat" class="view active">
-        <div id="mounted-bar" class="hidden"></div>
         <div id="messages"></div>
         <audio id="tts-audio" hidden></audio>
         <div id="at-list" class="hidden"></div>
         <button id="jump-bottom" class="hidden" title="回到最新消息">↓</button>
+        <!-- 已挂载文件条：紧贴输入框上方（放对话区顶部用户注意不到） -->
+        <div id="mounted-bar" class="hidden"></div>
         <form id="input-bar">
           <textarea id="input" rows="1" placeholder="告诉小助你要做什么…（Enter 发送 / Shift+Enter 换行）"></textarea>
           <!-- 底部一行（框内）：左侧状态 chips，右侧语音/发送按钮（opencode 式布局） -->
@@ -77,6 +78,9 @@
               <button id="cb-stats" class="cb-chip" type="button" title="原始消息上下文 / 缓存命中 / TPS（最近 50 轮平均，点击看明细）">—</button>
             </div>
             <div id="input-actions">
+              <button id="plus-btn" type="button" title="添加文件（随消息一起发送）">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              </button>
               <button id="voice-btn" type="button" title="点击开始录音，再点一下结束并转成文字">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
               </button>
@@ -86,37 +90,24 @@
         </form>
       </section>
 
-      <!-- 日历（日程 / 当天任务，可编辑） -->
+      <!-- 日历（左月历 / 右当天待办，可编辑） -->
       <section id="calendar" class="view">
-        <div id="cal-header">
-          <button id="cal-prev" type="button" title="上个月">‹</button>
-          <span id="cal-title"></span>
-          <button id="cal-next" type="button" title="下个月">›</button>
-          <button id="cal-today" type="button">今天</button>
+        <div id="cal-left">
+          <div id="cal-header">
+            <button id="cal-prev" type="button" title="上个月">‹</button>
+            <span id="cal-title"></span>
+            <button id="cal-next" type="button" title="下个月">›</button>
+            <button id="cal-today" type="button">今天</button>
+          </div>
+          <div id="cal-weekdays">
+            <span>日</span><span>一</span><span>二</span><span>三</span>
+            <span>四</span><span>五</span><span>六</span>
+          </div>
+          <div id="cal-grid"></div>
         </div>
-        <div id="cal-weekdays">
-          <span>日</span><span>一</span><span>二</span><span>三</span>
-          <span>四</span><span>五</span><span>六</span>
-        </div>
-        <div id="cal-grid"></div>
         <div id="cal-day">
           <div id="cal-day-title"></div>
           <div id="cal-day-list"></div>
-          <form id="cal-add-form">
-            <input id="cal-time" type="time" title="时刻（留空＝全天）" />
-            <select id="cal-kind" title="类型">
-              <option value="event">日程</option>
-              <option value="task">任务</option>
-            </select>
-            <input id="cal-content" type="text" placeholder="添加日程或任务…（Enter 添加）" />
-            <select id="cal-repeat" title="重复">
-              <option value="">不重复</option>
-              <option value="daily">每天</option>
-              <option value="weekly">每周</option>
-              <option value="weekdays">工作日</option>
-            </select>
-            <button type="submit">添加</button>
-          </form>
         </div>
       </section>
 
@@ -169,6 +160,15 @@
         <div class="pop-sec">模型用量（最近 50 轮）</div>
         <div id="stats-summary"></div>
         <div id="stats-list"></div>
+      </div>
+
+      <!-- 加号菜单：截屏 / 添加本地文件（都进"已挂载"待发送区） -->
+      <div id="plus-menu" class="popover hidden">
+        <div class="pop-title">添加内容</div>
+        <button class="mode-item" id="plus-shot" type="button">
+          <b>截屏</b><span>框选屏幕，确认后挂为待发送图片</span></button>
+        <button class="mode-item" id="plus-file" type="button">
+          <b>添加本地文件</b><span>文本 / 图片 / 文档，随消息一起发送</span></button>
       </div>
 
       <!-- 工作目录面板（点标题栏目录 chip） -->

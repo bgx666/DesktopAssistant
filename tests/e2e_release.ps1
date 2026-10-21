@@ -15,6 +15,8 @@ $ElectronExe = Join-Path $ReleaseRoot "app\frontend\node_modules\electron\dist\e
 $FrontendDir = Join-Path $ReleaseRoot "app\frontend"
 $IsolatedData = Join-Path $env:TEMP "opencode\planner_e2e_release"
 $StartBat = Join-Path $ReleaseRoot "start.bat"
+$CdpPort = 9223
+$backend = $null
 
 # ── 隔离性断言 1：start.bat 的隔离配置必须与期望值完全一致（防回归）──
 $batText = Get-Content $StartBat -Raw
@@ -43,6 +45,7 @@ if (Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyCon
     throw "18772 已被占用（release 版可能正在运行）——先退出小助再跑验证"
 }
 
+try {
 Remove-Item $IsolatedData -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $IsolatedData | Out-Null
 
@@ -75,7 +78,6 @@ Invoke-RestMethod -Uri "http://127.0.0.1:$Port/chat" -Method Post -ContentType "
 Write-Host "[e2e] 已发送测试对话"
 
 Write-Host "[e2e] 启动 release Electron（窗口将显示测试对话）"
-$CdpPort = 9223
 $el = Start-Process -FilePath $ElectronExe -ArgumentList @($FrontendDir, "--remote-debugging-port=$CdpPort") -PassThru
 
 # 用 CDP 确认渲染页面加载成功（短连接轮询 netstat 抓不到，页面存在即证明链路）
@@ -145,10 +147,22 @@ if (-not (Test-Path (Join-Path $IsolatedData "user-data"))) { throw "Electron �
 Write-Host "[e2e] 隔离 user-data + 后端数据均落在隔离目录"
 
 Write-Host "[e2e] 验证通过：release 链路完整且隔离断言全部通过"
-
-# 清理
-Get-Process electron -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-Stop-Process -Id $backend.Id -Force -ErrorAction SilentlyContinue
-Get-Process python -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "*planner-release*" } | Stop-Process -Force -ErrorAction SilentlyContinue
-Remove-Item Env:PLANNER_DATA_ROOT, Env:PLANNER_MOCK_LLM, Env:PLANNER_PORT, Env:PLANNER_URL, Env:PLANNER_USER_DATA -ErrorAction SilentlyContinue
-Write-Host "[e2e] 已清理进程与环境变量"
+} finally {
+    # 清理：**失败/异常也必须执行**——否则 mock 后端会继续占着 18772，
+    # 用户之后从桌面快捷方式打开小助会连到测试后端，看到的全是 e2e 测试对话
+    # （2026-10-20 真实事故：面板检查失败抛出后跳过了清理）。
+    try {
+        if ($backend) { Stop-Process -Id $backend.Id -Force -ErrorAction SilentlyContinue }
+        # 只杀本脚本启动的 Electron（按调试端口匹配，不误伤其他 Electron 应用）
+        Get-CimInstance Win32_Process | Where-Object {
+            $_.Name -like 'electron*' -and $_.CommandLine -match "--remote-debugging-port=$CdpPort"
+        } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+        # 开跑前已断言 18772 为空 → 此刻还在监听的一定是本脚本拉起的后端
+        $conn = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
+        if ($conn) {
+            $conn | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }
+        }
+    } catch { /* 忽略清理异常 */ }
+    Remove-Item Env:PLANNER_DATA_ROOT, Env:PLANNER_MOCK_LLM, Env:PLANNER_PORT, Env:PLANNER_URL, Env:PLANNER_USER_DATA -ErrorAction SilentlyContinue
+    Write-Host "[e2e] 已清理进程与环境变量"
+}

@@ -4,6 +4,7 @@
 - press_ms            悬浮球长按判定毫秒
 - compress_keep       压缩后保留多少条原始消息
 - compress_token_budget  原始消息估算 token 超过该值时触发叶子压缩（**唯一触发条件**）
+- compress_chunk_tokens  批次估算 token 超过该大小 → 切分片逐片压缩（叶子更细、探索回原文更容易；0 = 关闭分片整批压；默认 3 万）
 - compact_threshold   某层节点数达到多少触发向上合并
 - compact_factor      每次合并几个节点（须 < threshold）
 - node_token_budget   压缩节点整节点 token 预算（summary 占大头）
@@ -35,6 +36,7 @@ DEFAULT_SETTINGS: dict = {
     "press_ms": 200,
     "compress_keep": 20,
     "compress_token_budget": 100000,
+    "compress_chunk_tokens": 30000,
     "compact_threshold": 8,
     "compact_factor": 4,
     "node_token_budget": 1000,
@@ -66,6 +68,7 @@ _LIMITS = {
     "press_ms": (50, 5000),
     "compress_keep": (5, 200),
     "compress_token_budget": (10000, 500000),
+    "compress_chunk_tokens": (0, 100000),
     "compact_threshold": (3, 50),
     "compact_factor": (2, 10),
     "node_token_budget": (200, 4000),

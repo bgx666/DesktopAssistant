@@ -101,7 +101,7 @@ def test_init_and_state(backend):
     assert data["mode"] == "mock"
     assert data["char"]["display_name"] == "小助"
     st = _get(base, "/state")["state"]
-    assert "heartbeat" in st and "dnd" in st and "agenda" in st
+    assert "heartbeat" in st and "agenda" in st
 
 
 def test_chat_produces_text_event(backend):
@@ -110,6 +110,16 @@ def test_chat_produces_text_event(backend):
     assert r["ok"] is True
     ev = _wait_events(base, lambda e: e["type"] == "text")
     assert ev is not None and ev["content"]
+
+
+def test_chat_pushes_user_message_event(backend):
+    """/chat 先推 user_message（悬浮球语音/快速输入发的消息，面板靠它渲染气泡）。"""
+    _, base = backend
+    r = _post(base, "/chat", {"message": "悬浮球发的消息"})
+    ev = _wait_events(base, lambda e: e["type"] == "user_message")
+    assert ev is not None
+    assert ev["text"] == "悬浮球发的消息"
+    assert ev["id"] == r["msg_id"]
 
 
 def test_chat_empty_rejected(backend):
@@ -287,15 +297,6 @@ def test_tts_voices_endpoint(backend, monkeypatch):
     with pytest.raises(urllib.error.HTTPError) as e:
         _get(base, "/tts/say?text=" + quote("你好") + "&voice=bad_voice")
     assert e.value.code == 400
-
-
-def test_dnd_endpoint(backend):
-    session, base = backend
-    r = _post(base, "/dnd", {"enabled": True, "until_hour": 14})
-    assert r["dnd"]["enabled"] is True
-    assert session.dnd_until.hour == 14
-    _post(base, "/dnd", {"enabled": False})
-    assert session.dnd_until is None
 
 
 def test_nudge(backend):

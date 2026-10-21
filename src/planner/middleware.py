@@ -6,17 +6,14 @@
 - wrap-style（wrap_model_call / wrap_tool_call）：包裹每次调用，可短路/重试/转换。
 
 中间件链（agent.py 中按序）：
-- DndGuardMiddleware      before_agent   免打扰时段且非玩家触发 → 跳 end
-- AgendaSnapshotMiddleware  before_agent   议程有变化 → 注入 [当前议程]（今天+未来 7 天日历）
 - PlayerPriorityMiddleware before_model   玩家消息在 _inbox → 跳 end（让位）
-- NudgeMiddleware         after_model 计数 + before_model 第 5 轮注入「走神」提示
 - HeartbeatTrackMiddleware wrap_tool_call 记录 + before_model 跳转（heartbeat 即停）
 - ApprovalMiddleware      wrap_tool_call 代码工作区审批（写/区外读挂起，黑名单硬拒）
 - LoggingMiddleware       wrap_*        每轮 LLM/工具调用写 jsonl 日志
 
 ReAct 循环：**用 create_agent 内建的原生循环**（model → tools → model → …），
 模型不再返回工具调用就自然结束本轮。中间件只负责"提前跳出"的几种情况
-（玩家让位 / heartbeat / 用户停止 / 免打扰），**不主动截断工具→模型的回路**。
+（玩家让位 / heartbeat / 用户停止），**不主动截断工具→模型的回路**。
 """
 
 from __future__ import annotations
@@ -33,6 +30,7 @@ from langgraph.runtime import Runtime
 from langgraph.types import Command
 from typing_extensions import NotRequired
 
+from .content import content_text
 from .workspace import (
     PermissionStore,
     READ_TOOLS,
@@ -53,50 +51,8 @@ _logger = logging.getLogger("planner.middleware")
 class PlannerState(AgentState):
     """planner agent 的 state 扩展字段。"""
 
-    model_call_count: NotRequired[int]
     set_heartbeat_called: NotRequired[bool]
     plan_injected: NotRequired[bool]
-
-
-# ── 免打扰守卫 ───────────────────────────────────────────────
-
-class DndGuardMiddleware(AgentMiddleware):
-    """before_agent：免打扰时段内，自主触发（非玩家消息）→ 跳 end。
-
-    玩家消息与 nudge（用户主动戳悬浮球）永远不受限——用户主动交互肯定要回。
-    """
-
-    def __init__(self, session) -> None:
-        super().__init__()
-        self.session = session
-
-    @hook_config(can_jump_to=["end"])
-    def before_agent(self, state: PlannerState, runtime: Runtime) -> dict | None:
-        if self.session.in_dnd() and self.session.current_trigger not in ("player", "nudge"):
-            _logger.info("[dnd] 免打扰时段，跳过自主触发")
-            self.session.push_log("（免打扰时段，暂不打扰。）")
-            return {"jump_to": "end"}
-        return None
-
-
-# ── 议程快照注入（数据源＝日历）──────────────────────────────
-
-class AgendaSnapshotMiddleware(AgentMiddleware):
-    """before_agent：议程指纹变化时注入 [当前议程]（今天+未来 7 天的日历）。
-
-    每次生成最多注入一次；内容无变化时不注入（指纹去重，避免每轮重复占 token）。
-    """
-
-    def __init__(self, session) -> None:
-        super().__init__()
-        self.session = session
-
-    @hook_config(can_jump_to=["end"])
-    def before_agent(self, state: PlannerState, runtime: Runtime) -> dict | None:
-        text = self.session._agenda_snapshot_text()
-        if text is None:
-            return None
-        return {"messages": [HumanMessage(content=text)]}
 
 
 # ── 屏幕截图注入 ─────────────────────────────────────────────
@@ -169,25 +125,6 @@ class PlayerPriorityMiddleware(AgentMiddleware):
         return None
 
 
-# ── 走神提示 ─────────────────────────────────────────────────
-
-class NudgeMiddleware(AgentMiddleware):
-    """after_model 递增 model_call_count；before_model 在第 5 轮后注入收尾提示。
-
-    原生多轮 ReAct 下这个计数才开始真正有意义：一轮对话里模型可以连续
-    「调工具 → 看结果 → 再调工具」很多次，这里的第 5 轮提示是唯一温和的
-    软上限（硬上限是 agent.py 的 ModelCallLimitMiddleware run_limit）。
-    """
-
-    def before_model(self, state: PlannerState, runtime: Runtime) -> dict | None:
-        if state.get("model_call_count", 0) == 5:
-            return {"messages": [HumanMessage(content="（你已经忙了一小会儿了，把最重要的事做完就歇一下吧。）")]}
-        return None
-
-    def after_model(self, state: PlannerState, runtime: Runtime) -> dict | None:
-        return {"model_call_count": state.get("model_call_count", 0) + 1}
-
-
 # ── heartbeat 即停止 ─────────────────────────────────────────
 
 class HeartbeatTrackMiddleware(AgentMiddleware):
@@ -195,7 +132,7 @@ class HeartbeatTrackMiddleware(AgentMiddleware):
 
     关键语义：create_agent 的循环在工具执行后总会再调模型（停止条件是"模型不再
     返回工具调用"），必须在 before_model 跳转——若用 after_model，heartbeat 标记
-    会在下一次模型调用后立即跳转，导致该轮其他工具（如 set_do_not_disturb）
+    会在下一次模型调用后立即跳转，导致该轮其他工具
     从未执行。返回 Command 时必须把工具结果消息放进 update["messages"]，
     否则 ToolMessage 丢失 → DeepSeek 400。
     """
@@ -211,28 +148,6 @@ class HeartbeatTrackMiddleware(AgentMiddleware):
         if state.get("set_heartbeat_called"):
             return {"jump_to": "end"}
         return None
-
-
-# ── 用户正在输入提示 ───────────────────────────────────────
-
-class TypingHintMiddleware(AgentMiddleware):
-    """wrap_model_call：用户输入框非空时，每次 LLM 调用前在上下文末尾临时追加
-    一句提示（只影响本次调用，不落 state / buffer）。"""
-
-    def __init__(self, session) -> None:
-        super().__init__()
-        self.session = session
-
-    def wrap_model_call(self, request, handler: Callable):
-        if self.session.typing:
-            request = request.override(messages=[
-                *request.messages,
-                HumanMessage(
-                    content="（当前用户正在输入文字，可能马上要发消息。"
-                            "如果你生成时用户可能在输入，请别说太多，简短收尾。）",
-                ),
-            ])
-        return handler(request)
 
 
 # ── 停止请求 ─────────────────────────────────────────────
@@ -526,15 +441,24 @@ SUMMARIZE_KEEP_MESSAGES = 20
 SUMMARIZE_TOKEN_BUDGET = 100000
 LEVEL_COMPACT_THRESHOLD = 8
 BRANCHING_FACTOR = 4
-#: 整批一次压缩的估算 token 上限：批次超过它才直接走分片（否则"整批优先"，
-#: 一次压缩 = 一个 L0 节点——用户预期；超窗失败也会自动回退分片兜底）
-_ONE_SHOT_MAX_TOKENS = 300000
+#: 压缩分片目标大小（token）：批次超过它 → 切分片逐片压缩（设置页
+#: compress_chunk_tokens 可调；0 = 关闭分片、整批一次）。
+CHUNK_TOKEN_TARGET = 30000
+#: 分片大小浮动窗口（为对齐"用户消息边界"允许的大小范围）
+_CHUNK_FLOAT_LO = 0.75
+_CHUNK_FLOAT_HI = 1.4
+#: 一轮压缩里层级合并的批次上限 / 层数上限（防超大积压把一轮拖成几十分钟）
+_MAX_COMPACT_BATCHES_PER_ROUND = 8
+_MAX_COMPACT_LEVEL = 12
 
 
 def should_compress_raw(raw_msgs: list, keep: int, token_budget: int) -> bool:
     """是否需要叶子压缩：**只看原始消息估算 token ≥ 预算**（条数不参与判定）。
 
-    token 估算与 session.context_stats 一致（chars × 1.2，中文为主，偏保守）。
+    token 估算与 session.context_stats 同口径：文本 chars × 1.2（中文为主，偏保守），
+    **图片块每张按 384 计**——不能把视觉注入的 base64 data URL 按字符数算（一张 1MB
+    图 = 百万级"字符"，估算虚高 → 远低于预算就触发压缩；用户实测：预算 20 万、
+    原始才 1 万多就开始压缩）。
     至少 2 条原始消息才可能圈出批次；正常保留 keep 条，连 keep 条都超预算时
     只保留最后 1 条（见 compress_snapshot 的 keep_n 兜底）。
     """
@@ -542,8 +466,15 @@ def should_compress_raw(raw_msgs: list, keep: int, token_budget: int) -> bool:
         return False
     if token_budget <= 0:
         return False
-    chars = sum(len(str(getattr(m, "content", "") or "")) for m in raw_msgs)
-    return int(chars * 1.2) >= token_budget
+    chars = 0
+    images = 0
+    for m in raw_msgs:
+        content = getattr(m, "content", "") or ""
+        chars += len(content_text(content))
+        if isinstance(content, list):
+            images += sum(1 for b in content
+                          if isinstance(b, dict) and b.get("type") == "image_url")
+    return int(chars * 1.2) + images * 384 >= token_budget
 
 from pydantic import BaseModel, Field  # noqa: E402
 
@@ -623,11 +554,48 @@ class MemoryNodeOutput(BaseModel):
         return d
 
 
+#: 压缩输出的 JSON 形状示例（附加到指令末尾）：减少模型输出形状漂移
+#: （lessons 写成列表、user 写成字典 → pydantic 校验失败 → 重试一次 + 抠摘要，
+#: 每次叶子调用变成两次模型调用——2026-10-19 用户日志实测）
+_JSON_SKELETON = (
+    "\n**输出 JSON 的形状（键名与嵌套层级必须一致；数组是数组、对象是对象）**：\n"
+    '{"summary": "叙述文本", '
+    '"task": {"goal": "", "status": "", "todo": [], "next_steps": [], "blockers": []}, '
+    '"decisions": [{"what": "", "why": ""}], '
+    '"lessons": {"errors": [{"symptom": "", "cause": "", "fix": ""}], "patterns": []}, '
+    '"context": {"env": [], "commands": [], "artifacts": [], "constraints": []}, '
+    '"user": []}\n'
+    "（没有内容的字段按前文规则省略或留空；cwd 由系统填写，不用输出。）"
+)
+_JSON_SKELETON_EN = (
+    "\n**Output JSON shape (key names and nesting must match exactly; arrays are "
+    "arrays, objects are objects)**:\n"
+    '{"summary": "narrative", '
+    '"task": {"goal": "", "status": "", "todo": [], "next_steps": [], "blockers": []}, '
+    '"decisions": [{"what": "", "why": ""}], '
+    '"lessons": {"errors": [{"symptom": "", "cause": "", "fix": ""}], "patterns": []}, '
+    '"context": {"env": [], "commands": [], "artifacts": [], "constraints": []}, '
+    '"user": []}\n'
+    "(omit or leave empty fields per the rules above; cwd is filled by the system — "
+    "do not output it.)"
+)
+
+#: 叶子压缩的"范围"行（两种形态：整批/独立分片 = 普通；渐进前缀分片 = 锚点定位）
+_LEAF_SCOPE = (
+    "标有 {marker} 的节点是更早内容的已有摘要，**不要重新压缩、不要合并进结果**；"
+    "没有该标记的普通对话消息（第 {start}-{end} 条）才是本次要压缩的内容。\n"
+)
+_LEAF_SCOPE_CHUNK = (
+    "标有 {marker} 的节点是更早内容的已有摘要，**不要重新压缩、不要合并进结果**；"
+    "**本次只压缩输入末尾的一段原始对话**（第 {start}-{end} 条）：从这条消息开始"
+    "「{anchor}」，直到输入的最后一条消息（结尾是「{anchor_end}」）为止；"
+    "这段之前的原始对话只是更早的背景（用来理解上下文），**不要写进结果**。\n"
+)
 _LEAF_INSTRUCTION = (
     "请把本次标记为待压缩的**原始对话**压缩为结构化 JSON（只输出 JSON，不要输出其他文字）。\n"
-    "**范围**：标有 {marker} 的节点是更早内容的已有摘要，**不要重新压缩、不要合并进结果**；"
-    "没有该标记的普通对话消息（第 {start}-{end} 条）才是本次要压缩的内容。\n"
+    "**范围**：{scope}"
     "{cwd_line}"
+    "{budget_line}"
     "**各字段按实际内容填写：某个字段没有相关内容时——整个字段可以直接省略（省略即空），"
     "不要写「无 / 暂无 / 没有相关信息」这类占位词，更不要为了填充而编造或硬凑空话："
     "字段少而实，好过看起来齐全。**\n"
@@ -648,6 +616,7 @@ _PARENT_INSTRUCTION = (
     "请把以下 {n} 个节点（{ids}）压缩合并为**上一层节点**的结构化 JSON（只输出 JSON）。\n"
     "**范围**：这些节点已去掉保护标记，是本次要合并的目标；若输入里还有其他带 "
     "{marker} 标记的节点，**不要动它们**。\n"
+    "{budget_line}"
     "**合并规则（逐字段）**：\n"
     "- summary：把子节点叙述整合成一条阶段经过（保留主线与因果，不逐条罗列子事件）。\n"
     "- task：以**最新状态**为准（覆盖旧的）；未完成的 todo/blocker 保留，已完成的坍缩为「已完成」。\n"
@@ -662,14 +631,26 @@ _PARENT_INSTRUCTION = (
 
 # ── 英文压缩指令（评测用：LoCoMo-Refined 英文对话，session.summary_language="en"）──
 
+_LEAF_SCOPE_EN = (
+    "entries marked {marker} are summaries of earlier content — do NOT "
+    "re-compress them and do NOT merge them into the result; the unmarked raw messages "
+    "(turns {start}-{end}) are what you compress.\n"
+)
+_LEAF_SCOPE_CHUNK_EN = (
+    "entries marked {marker} are summaries of earlier content — do NOT re-compress them "
+    "and do NOT merge them into the result; **compress ONLY the final span of raw "
+    "conversation in the input** (turns {start}-{end}): it starts at this message "
+    "\"{anchor}\" and runs to the very last message of the input (ending with "
+    "\"{anchor_end}\"); everything before it is earlier background (for context only), "
+    "do NOT write it into the result.\n"
+)
 _LEAF_INSTRUCTION_EN = (
     "Compress the **raw conversation** marked for compaction into structured JSON "
     "(output ONLY JSON, no other text).\n"
     "**Always write all field values in English.**\n"
-    "**Scope**: entries marked {marker} are summaries of earlier content — do NOT "
-    "re-compress them and do NOT merge them into the result; the unmarked raw messages "
-    "(turns {start}-{end}) are what you compress.\n"
+    "**Scope**: {scope}"
     "{cwd_line}"
+    "{budget_line}"
     "**Fill each field from actual content: if a field has nothing relevant, omit it entirely "
     "(an omitted field counts as empty). Never write placeholders like \"none\", \"N/A\" or "
     "\"nothing to report\", and never fabricate or pad just to fill fields — fewer, real "
@@ -694,6 +675,7 @@ _PARENT_INSTRUCTION_EN = (
     "**Always write all field values in English.**\n"
     "**Scope**: these nodes have no protection marker — they are the merge targets; if any other node "
     "in the input carries the {marker} marker, do NOT touch it.\n"
+    "{budget_line}"
     "**Merge rules (per field)**:\n"
     "- summary: integrate the child narratives into one phase narrative (keep the through-line and causality, "
     "do not list child events one by one).\n"
@@ -735,8 +717,17 @@ class SummarizationMiddleware(AgentMiddleware):
         # 压缩摘要语言（评测用）：session.summary_language="en" → 英文指令
         self.language: str = (getattr(session, "summary_language", None) or "zh").lower()
 
-    def _leaf_instruction(self, start: int, end: int) -> str:
+    def _leaf_instruction(self, start: int, end: int, anchor: str = "",
+                          anchor_end: str = "") -> str:
+        """叶子压缩指令；anchor 非空 = 渐进前缀分片模式（头/尾锚点定位本片）。"""
         tpl = _LEAF_INSTRUCTION_EN if self.language == "en" else _LEAF_INSTRUCTION
+        if anchor:
+            scope_tpl = (_LEAF_SCOPE_CHUNK_EN if self.language == "en"
+                         else _LEAF_SCOPE_CHUNK)
+        else:
+            scope_tpl = _LEAF_SCOPE_EN if self.language == "en" else _LEAF_SCOPE
+        scope = scope_tpl.format(marker=NODE_MARKER, start=start, end=end,
+                                 anchor=anchor, anchor_end=anchor_end)
         cwd = self._current_cwd()
         if not cwd:
             cwd_line = ""
@@ -745,7 +736,35 @@ class SummarizationMiddleware(AgentMiddleware):
                         f"you don't need to): {cwd}\n")
         else:
             cwd_line = f"- 当前工作目录（系统会填进 context.cwd，你不用填）：{cwd}\n"
-        return tpl.format(marker=NODE_MARKER, start=start, end=end, cwd_line=cwd_line)
+        return tpl.format(scope=scope, cwd_line=cwd_line,
+                          budget_line=self._budget_line()) + (
+            _JSON_SKELETON_EN if self.language == "en" else _JSON_SKELETON)
+
+    def _budget_line(self) -> str:
+        """把 node_token_budget 写成模型可执行的**整节点总长度**预算。
+
+        口径（2026-10-19 用户确认）：设置值 N ≈ 节点总字数 N 字（中文）——
+        以前预算只影响 `max_tokens` 与事后裁剪，模型不知道，往 3 倍以上写；
+        第一版按 1 token≈1.6 字折算（1000→1600 字）用户仍嫌长，改为 1:1。
+        英文（评测用）保持 token 语义：1 token≈3.5 字符。
+        """
+        try:
+            budget = int((getattr(self.session, "settings", None) or {})
+                         .get("node_token_budget", 1000) or 1000)
+        except (TypeError, ValueError):
+            budget = 1000
+        budget = max(200, budget)
+        if self.language == "en":
+            chars = int(budget * 3.5)
+        else:
+            chars = budget
+        if self.language == "en":
+            return (f"- **Length budget**: keep the whole node under ~{chars} characters "
+                    f"(summary ~{chars * 2 // 5}, all other fields ~{chars * 3 // 5}) — a "
+                    "ceiling, not a target: write less when there is less, never pad.\n")
+        return (f"- **长度预算**：整节点合计约 {chars} 字以内（summary 约 {chars * 2 // 5} 字，"
+                f"其余字段合计约 {chars * 3 // 5} 字）——这是上限不是目标：内容少就写短，"
+                "不要为了凑字数展开细节。\n")
 
     def _current_cwd(self) -> str:
         """当前工作目录字符串（无工作区时为空；节点记录用，代码填写防幻觉）。"""
@@ -773,7 +792,9 @@ class SummarizationMiddleware(AgentMiddleware):
 
     def _parent_instruction(self, ids: list[str]) -> str:
         tpl = _PARENT_INSTRUCTION_EN if self.language == "en" else _PARENT_INSTRUCTION
-        return tpl.format(marker=NODE_MARKER, n=len(ids), ids="、".join(ids))
+        base = tpl.format(marker=NODE_MARKER, n=len(ids), ids="、".join(ids),
+                          budget_line=self._budget_line())
+        return base + (_JSON_SKELETON_EN if self.language == "en" else _JSON_SKELETON)
 
     def before_model(self, state: PlannerState, runtime: Runtime) -> dict | None:
         # 压缩已改为异步线程（session._maybe_compress_async / _run_async_compression）：
@@ -810,12 +831,20 @@ class SummarizationMiddleware(AgentMiddleware):
                 batch = self._extend_batch_for_tool_pairs(msgs, batch)
                 self._compress_batch(msgs, batch, removes, adds)
 
+        # 层级合并：某层活跃节点数 ≥ 阈值 → 把最早的 factor 个合并成 1 个父节点。
+        # **持续合并到低于阈值**（旧行为每轮每层只合一批：10 个节点(6/3) 只合 3 个、
+        # 剩 7 个仍超阈值挂到下一轮——用户指出）；每轮批次/层数有上限防积压跑飞。
         tree = self.session.get_memory_tree()
         level = 0
-        while tree.get_level_count(level) >= threshold:
+        batches = 0
+        while (level <= _MAX_COMPACT_LEVEL
+               and batches < _MAX_COMPACT_BATCHES_PER_ROUND):
+            if tree.get_level_count(level) < threshold:
+                level += 1
+                continue
             if not self._compact_level(msgs, level, removes, adds, threshold, factor):
                 break
-            level += 1
+            batches += 1
 
         return removes, adds
 
@@ -844,50 +873,85 @@ class SummarizationMiddleware(AgentMiddleware):
         return extended
 
     def _compress_batch(self, msgs, batch, removes, adds) -> None:
-        """压缩一个批次 → 节点（**默认整批一次调用 = 一个节点**）。
+        """压缩一个批次 → 节点（**分片，2026-10-19 定稿**）。
 
-        只有两种例外才回退分片（每片 ≤3 万 token，逐片各落一个节点）：
-        ① 批次估算超过 `_ONE_SHOT_MAX_TOKENS`（超大积压，防单次调用超窗）；
-        ② 整批调用失败（如端点上下文超限）——失败不落任何东西，分片重试。
-        （分片最初是无条件启用的，用户反馈"一次压缩冒出好几个 L0 节点、感觉
-        不是 15 万压一次"后改为"整批优先"——2026-10-18。）
+        - 批次估算 ≤ 分片大小（`compress_chunk_tokens`，默认 3 万 token）或分片
+          关闭（设 0）：一次调用 = 一个 L0 叶子（小批次不分片）；
+        - 更大：切成 n 片（切点优先用户消息边界、允许大小浮动），第 k 次调用带
+          "第 1..k 片原文"（**渐进前缀**——逐字节复刻聊天序列的前缀 → 缓存全
+          命中），指令头/尾锚点只压最后一片；**n 个分片叶子各自进上下文**，
+          之后由层级合并（阈值/合批，一轮持续合并到低于阈值）统一消化。
+        - **分片按时间正序压缩，勿改成倒序**（2026-10-19 推演过）：正序时每次
+          调用 = 上一次的前缀 + 新一片 → 上一次的缓存恰好覆盖公共前缀（全命中）；
+          且**首片调用最小**——聊天缓存过期/被驱逐时最坏只全价一片（~3 万）。
+          倒序则首调用 = 整批（15 万），且"滚动窗口式小缓存"最先驱逐开头、
+          前缀匹配又必须从开头对上 → 最坏全价一整批。
+        例外：某片失败 → 停手（已成功片照常进上下文）。
         """
+        st = getattr(self.session, "settings", None) or {}
+        chunk_tokens = int(st.get("compress_chunk_tokens", CHUNK_TOKEN_TARGET) or 0)
         est = self._estimate_messages_tokens(batch)
-        if est <= _ONE_SHOT_MAX_TOKENS:
-            if self._summarize_leaf(msgs, batch, removes, adds):
-                return
-            _logger.warning("[compress] 整批压缩失败，回退分片重试（估算 %d token）", est)
-        chunks = self._split_batch_by_tokens(batch)
+        if chunk_tokens <= 0 or est <= chunk_tokens:
+            self._summarize_leaf(msgs, batch, removes, adds)
+            return
+        chunks = self._split_batch_by_tokens(batch, max_tokens=chunk_tokens)
         if len(chunks) <= 1:
-            return   # 只有一片（且已失败）：本轮放弃，下次触发再试
+            self._summarize_leaf(msgs, batch, removes, adds)
+            return
+        prefix: list = []
         for chunk in chunks:
-            if not self._summarize_leaf(msgs, chunk, removes, adds):
-                break   # 本片失败：停手（后续片的全局序号会错位）
+            prefix.extend(chunk)
+            head, tail = self._anchor_quotes(chunk)
+            nid = self._summarize_leaf(
+                msgs, chunk, removes, adds,
+                context_msgs=list(prefix),
+                anchor_quote=head, anchor_end_quote=tail)
+            if not nid:
+                break   # 本片失败：停手（已成功片保留）
 
     @staticmethod
     def _estimate_message_tokens(m) -> int:
-        """单条消息的估算 token（字符 × 1.2，与压缩触发同口径）。"""
-        content = getattr(m, "content", "") or ""
-        if isinstance(content, list):
-            text = "".join(str(b.get("text") or "") for b in content
-                           if isinstance(b, dict))
-        else:
-            text = str(content)
-        return int(len(text) * 1.2)
+        """单条消息的估算 token（文本 chars × 1.2，与压缩触发同口径；图片不计）。"""
+        return int(len(content_text(getattr(m, "content", "") or "")) * 1.2)
 
     @classmethod
     def _estimate_messages_tokens(cls, msgs: list) -> int:
         return sum(cls._estimate_message_tokens(m) for m in msgs)
 
     @staticmethod
+    def _strip_image_blocks(msgs: list) -> list:
+        """压缩调用输入：image_url 块换成文本占位（摘要用不到原图）。
+
+        base64 data URL 动辄几十万字符——发进压缩调用纯浪费（token/延迟），
+        对摘要也没有价值（详情存储的同类清洗见 _summarize_leaf）。
+        """
+        out = []
+        for m in msgs:
+            content = getattr(m, "content", None)
+            if not isinstance(content, list):
+                out.append(m)
+                continue
+            kept = [b for b in content
+                    if not (isinstance(b, dict) and b.get("type") == "image_url")]
+            kept = kept or [{"type": "text", "text": "（图片）"}]
+            try:
+                out.append(m.model_copy(update={"content": kept}))
+            except Exception:
+                out.append(m)
+        return out
+
+    @staticmethod
     def _split_batch_by_tokens(batch: list, max_tokens: int = 30000,
                                max_chunks: int = 12) -> list[list]:
-        """按估算 token 把叶子批次切成分片（每次摘要调用输入别超 ~3 万 token）。
+        """按估算 token 把叶子批次切成分片（目标 ~max_tokens/片，允许浮动）。
 
-        只在**安全边界**切：下一段不能以 tool 消息开头、本段不能以带 tool_calls
-        的 ai 结尾——批次是作为消息发给模型的，tool 配对断裂会直接 400。
-        一次最多切 max_chunks 片（剩下的留给下一轮压缩），避免超大积压把一轮
-        压缩拖成几十分钟。**注意：分片是兜底路径**（整批优先，见 _compress_batch）。
+        切点策略（2026-10-19 用户定，服务于"渐进前缀"压缩）：
+        - 优先**用户消息边界**——每片 = 完整若干轮对话，摘要不会在"用户问了、
+          答案在下片"处割裂；在 [0.75×, 1.4×] 的浮动窗口内遇到用户消息即收片；
+        - 浮动窗口内没有用户消息边界（如一大段连续工具循环）→ 到 1.4× 后在
+          第一个**安全边界**收（不切开 tool 配对：下一条不是 tool、本条不是
+          带 tool_calls 的 ai——批次作为消息发给模型，配对断裂会直接 400）；
+        - 一次最多切 max_chunks 片（剩下的留给下一轮压缩）。
         """
         est = SummarizationMiddleware._estimate_message_tokens
 
@@ -897,12 +961,19 @@ class SummarizationMiddleware(AgentMiddleware):
         for i, m in enumerate(batch):
             cur.append(m)
             cur_tokens += est(m)
-            if cur_tokens < max_tokens or i == len(batch) - 1:
-                continue
+            if i == len(batch) - 1:
+                break
             nxt = batch[i + 1]
             if (getattr(nxt, "type", None) == "tool"
                     or getattr(m, "tool_calls", None)):
                 continue   # 不安全边界：继续累积到配对完整再切
+            human_next = getattr(nxt, "type", None) == "human"
+            if cur_tokens >= max_tokens * _CHUNK_FLOAT_LO and human_next:
+                pass       # 用户消息前：优先收片（完整回合边界）
+            elif cur_tokens >= max_tokens * _CHUNK_FLOAT_HI:
+                pass       # 超出浮动上限：在安全边界兜底收片
+            else:
+                continue
             chunks.append(cur)
             cur = []
             cur_tokens = 0
@@ -1052,8 +1123,18 @@ class SummarizationMiddleware(AgentMiddleware):
 
     # ── 叶子压缩（对话 → level0 节点）────────────────────────
 
-    def _summarize_leaf(self, msgs, batch, removes, adds) -> bool:
-        """压缩一个叶子分片 → level0 节点；成功返回 True（失败时调用方停手）。"""
+    def _summarize_leaf(self, msgs, batch, removes, adds,
+                        context_msgs=None, anchor_quote: str = "",
+                        anchor_end_quote: str = "") -> str | None:
+        """压缩一个叶子分片 → level0 节点；成功返回 node_id（失败 None）。
+
+        - `batch`：本片（落节点 details、从 buffer 移除的都是它）；
+        - `context_msgs`：发给压缩模型的**原始消息序列**——渐进前缀分片模式传
+          "批次第 1 片到本片"（前面部分是背景，指令头/尾锚点标注本片范围）；
+          默认 None = 只发本片（整批/独立分片）；
+        - `anchor_quote` / `anchor_end_quote`：渐进前缀模式的头/尾锚点
+          （本片首条有正文消息的开头 / 末条有正文消息的结尾）。
+        """
         tree = self.session.get_memory_tree()
         # 全局序号（对齐小B _span 机制）：节点范围 = 已压缩累计条数起，
         # 连续不重叠——不能用 enumerate(msgs) 相对索引（每次从 0 附近开始，
@@ -1065,11 +1146,17 @@ class SummarizationMiddleware(AgentMiddleware):
         # 已有节点带保护标记作为上下文（模型据此知道"这些不要动"）
         node_msgs = [m for m in msgs
                      if (getattr(m, "metadata", None) or {}).get("node_id")]
-        instruction = HumanMessage(content=self._leaf_instruction(start_pos, end_pos))
-        out = self._call_compress(node_msgs + list(batch), instruction)
+        instruction = HumanMessage(
+            content=self._leaf_instruction(start_pos, end_pos,
+                                           anchor=anchor_quote,
+                                           anchor_end=anchor_end_quote))
+        send_raw = list(context_msgs) if context_msgs is not None else list(batch)
+        # 图片块剥离后再发压缩调用（base64 对摘要无用且极贵）
+        out = self._call_compress(self._strip_image_blocks(node_msgs + send_raw),
+                                  instruction)
         if not out or not out.summary or not out.summary.strip():
             _logger.warning("[compress] 叶子摘要为空，跳过")
-            return False
+            return None
         out.context.cwd = self._current_cwd()[:300]   # 工作目录由代码填写（防幻觉）
 
         from langchain_core.messages import messages_to_dict
@@ -1119,7 +1206,35 @@ class SummarizationMiddleware(AgentMiddleware):
         _logger.info("[compress] 叶子 %s 第%d-%d条（%d 条消息落树，字段=%s）",
                      node_id, start_pos, end_pos, len(batch),
                      "、".join(k for k, v in out.fields_payload().items() if v))
-        return True
+        return node_id
+
+    @staticmethod
+    def _anchor_quotes(chunk: list) -> tuple[str, str]:
+        """分片锚点（头 + 尾）：供压缩指令"从这条消息开始…直到输入最后一条"定位。
+
+        - 头 = 本片**第一条有正文消息**的开头 120 字（空 ai(tool_calls) 往前扫最多
+          4 条找正文；全空退化为占位描述，极罕见）；
+        - 尾 = 本片**最后一条有正文消息**的结尾 60 字（向后扫最多 4 条）——渐进
+          前缀模式下分片永远是输入的末尾，尾部锚点防止模型把结尾的工具结果
+          误当背景而提前收尾。
+        """
+        head = ""
+        for m in chunk[:4]:
+            text = content_text(getattr(m, "content", "") or "").strip()
+            if text:
+                head = text[:120]
+                break
+        if not head:
+            names = [tc.get("name") for tc in (getattr(chunk[0], "tool_calls", None) or [])]
+            head = ("（助手调用工具：" + "、".join(str(n) for n in names) + "）"
+                    if names else "（本片开头）")
+        tail = ""
+        for m in reversed(chunk[-4:]):
+            text = content_text(getattr(m, "content", "") or "").strip()
+            if text:
+                tail = text[-60:]
+                break
+        return head, tail
 
     # ── 向上压缩（递归：摘要还能再被摘要）────────────────────
 
@@ -1142,8 +1257,24 @@ class SummarizationMiddleware(AgentMiddleware):
             if nid:
                 by_id[nid] = m
         target_ids = {n["id"] for n in to_compact}
+        # ⚠️ 目标也可能是**本轮刚产生的分片叶子**（消息在 adds、不在快照 msgs 里）
+        # ——必须一并从 adds 摘除，否则子节点消息会和父节点消息并存于 buffer
+        # （历史 bug：合并后 inactive 的 L0 与父节点同时可见、范围看起来重叠/
+        # 不连续——用户实测 2026-10-19）
+        adds[:] = [m for m in adds
+                   if (getattr(m, "metadata", None) or {}).get("node_id") not in target_ids]
+        # 目标之后的节点属于"未来"——**不进压缩输入**（与叶子压缩剔除保留尾部同一
+        # 原则；防止模型把后面的状态混进本段摘要）。cutoff = 目标里最大的起始序号。
+        cutoffs = []
+        for n in to_compact:
+            try:
+                cutoffs.append(int(n["round_range"][0]))
+            except (TypeError, ValueError, IndexError):
+                pass
+        cutoff = max(cutoffs) if cutoffs else None
         # 压缩输入边界（计划 7.2）：只放节点消息（原始消息不进）；目标节点从树渲染
-        # → 去掉保护标记（模型据此知道"这几条要压"）；其他节点保留标记 = 别动
+        # → 去掉保护标记（模型据此知道"这几条要压"）；目标**之前**的节点保留标记
+        # = 更早的背景、别动
         context_msgs = []
         removable = []
         seen_ids = set()
@@ -1158,7 +1289,14 @@ class SummarizationMiddleware(AgentMiddleware):
                 context_msgs.append(HumanMessage(content=text, metadata={"node_id": nid}))
                 removable.append(m)
             else:
-                context_msgs.append(m)          # 其他节点：原样（带保护标记）
+                cs = (getattr(m, "metadata", None) or {}).get("node_start")
+                if cutoff is not None and cs is not None:
+                    try:
+                        if int(cs) > cutoff:
+                            continue   # 目标之后的节点（未来信息）→ 跳过
+                    except (TypeError, ValueError):
+                        pass
+                context_msgs.append(m)          # 更早的节点：原样（带保护标记）
         for n in to_compact:                    # 目标不在 buffer（异常）→ 补上
             if n["id"] not in seen_ids:
                 context_msgs.append(HumanMessage(content=self._node_full_text(n),
@@ -1217,11 +1355,13 @@ class SummarizationMiddleware(AgentMiddleware):
     def _apply_budget(out: MemoryNodeOutput, budget: int) -> MemoryNodeOutput:
         """节点预算软裁剪（硬上限由压缩模型 max_tokens 承担）。
 
-        弱模型偶尔写超长；这里对 summary 与各列表做兜底截断，避免单节点膨胀。
+        预算口径 = **整节点目标字数**（中文设置值≈字数；见 `_budget_line`）。
+        这里对 summary 与各列表做兜底截断：summary ≤ 1×预算，避免单节点膨胀。
+        弱模型偶尔写超长；指令已要求按预算写，截断只是保险。
         """
         cap = max(200, int(budget or 1000))
-        if len(out.summary) > cap * 2:
-            out.summary = out.summary[: cap * 2].rstrip() + "…"
+        if len(out.summary) > cap:
+            out.summary = out.summary[:cap].rstrip() + "…"
 
         def _clip(items, n: int = 8, width: int = 200) -> list[str]:
             return [str(x)[:width] for x in list(items or [])[:n] if x]

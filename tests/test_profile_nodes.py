@@ -326,7 +326,7 @@ def test_apply_budget_trims_long_fields():
         user=[f"u{i}" for i in range(30)],
     )
     trimmed = SummarizationMiddleware._apply_budget(out, 1000)
-    assert len(trimmed.summary) <= 2000 + 1
+    assert len(trimmed.summary) <= 1000 + 1
     assert len(trimmed.task.todo) == 8
     assert len(trimmed.decisions) == 8
     assert len(trimmed.user) == 12

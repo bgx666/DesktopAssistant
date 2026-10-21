@@ -45,7 +45,6 @@
   let sending = false;        // ASR/发送中（期间不再触发新录音）
   let thinking = false;       // 后端生成中（打断时 POST /stop）
   let mutedTts = false;       // 主动停嘴（打断/关闭模式）——流式队列停止播放
-  let suppressTts = false;    // 自主学习静音：本次生成不朗读（后端 tts_mute 信号）
   let ownAudio = false;       // 自己的 TTS 正在播放（扬声器出声 → 麦克风可能捕获）
   let cooldownUntil = 0;      // 播放停止后的冷却截止时间（防回声尾音误触发）
   let ttsEnabled = true;      // 自动语音播报开关（来自后端 settings.tts_enabled）
@@ -110,7 +109,6 @@
     const was = thinking;
     thinking = !!v;
     if (!was && thinking) {
-      suppressTts = false;                         // 新一轮生成开始，恢复语音
       mutedTts = false;
     }
     if (was && !thinking) handleGenerationEnd();   // 生成结束 → 流式缓冲收尾
@@ -288,7 +286,7 @@
   function handleTextStream(content) {
     // 普通模式也走流式 TTS：不依赖 voice_mode 开关，只要有 text_stream 就尽早出声
     if (!isActive()) return;
-    if (!suppressTts && mutedTts) mutedTts = false;    // 新一轮生成恢复播放
+    if (mutedTts) mutedTts = false;    // 新一轮生成恢复播放
     streamBuf += content;
     splitAndQueue(false);
   }
@@ -299,7 +297,7 @@
   }
 
   // 立即停嘴：暂停当前播放、强制结束播放等待、清空队列与预取
-  // （tts_mute / 语音播报开关关闭 / 打断 共用）
+  // （语音播报开关关闭 / 打断 共用）
   function stopSpeakingNow() {
     if (ttsAudio) { try { ttsAudio.pause(); } catch { /* 忽略 */ } }
     if (currentPlayResolve) {
@@ -356,7 +354,7 @@
   }
 
   function queueSpeak(text) {
-    if (suppressTts || !ttsEnabled || !text || text.length < 2) return;
+    if (!ttsEnabled || !text || text.length < 2) return;
     playQueue.push(text);
     // 入队即预取音频：轮到播放时不用再等合成/下载
     if (!prefetchMap.has(text)) {
@@ -471,14 +469,7 @@
     window.planner.onState((s) => setThinking(!!(s && s.thinking)));
     window.planner.onEvents((events) => {
       for (const ev of events || []) {
-        if (ev.type === 'tts_mute') {
-          suppressTts = !!ev.value;
-          if (suppressTts) {
-            // 自主学习：立即停嘴，后续文本不再朗读
-            mutedTts = true;
-            stopSpeakingNow();
-          }
-        } else if (ev.type === 'text_stream' && ev.content) {
+        if (ev.type === 'text_stream' && ev.content) {
           handleTextStream(ev.content);
         }
       }

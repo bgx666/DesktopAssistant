@@ -109,3 +109,60 @@ def test_clear_character_data(data_root):
     assert tree.get_level_count(0) == 0
     assert tree.load_buffer_state() is None
     tree.close()
+
+
+def test_children_info_includes_ranges_and_level(data_root):
+    """children 条目带 level/条数范围/时间范围（模型按时间挑分支下钻），
+    查询节点自身也带 id/level/范围。"""
+    tree = SQLiteMemoryTree("assistant", data_root / "memory_tree.db")
+    ids = [tree.add_leaf(f"摘要{i}", (i * 10, i * 10 + 9), None,
+                         time_range=(f"2026-08-0{i + 1} 09:00:00",
+                                     f"2026-08-0{i + 1} 18:00:00"))
+           for i in range(3)]
+    parent = tree.compact(ids, "合并")
+    info = tree.get_node_children_info(parent)
+    assert info["node_id"] == parent and info["level"] == 1
+    assert info["round_start"] == 0 and info["round_end"] == 29
+    c = info["children"][0]
+    assert c["level"] == 0
+    assert c["round_start"] == 0 and c["round_end"] == 9
+    assert c["time_start"].startswith("2026-08-01")
+    # 叶子：同样带自身范围与摘要（模型可能直接跳到叶子编号）
+    leaf = tree.get_node_children_info(ids[1])
+    assert leaf["level"] == 0 and leaf["round_start"] == 10
+    assert leaf["summary"] == "摘要1"
+    tree.close()
+
+
+def test_root_overview_lists_unmerged_tops(data_root):
+    """顶层概览 = 所有 active 且无父节点的节点（多支并列都列出）；合并后只剩一个。"""
+    tree = SQLiteMemoryTree("assistant", data_root / "memory_tree.db")
+    a = [tree.add_leaf(f"a{i}", (i * 2, i * 2 + 1), None) for i in range(2)]
+    p1 = tree.compact(a, "合并A")
+    b = [tree.add_leaf(f"b{i}", (100 + i * 2, 101 + i * 2), None) for i in range(2)]
+    p2 = tree.compact(b, "合并B")   # 两支并列，都没再往上合并
+    ov = tree.get_root_overview()
+    assert {n["node_id"] for n in ov} == {p1, p2}
+    assert all(n["level"] == 1 for n in ov)
+    root = tree.compact([p1, p2], "根")
+    assert [n["node_id"] for n in tree.get_root_overview()] == [root]
+    tree.close()
+
+
+def test_explore_tool_overview_and_bad_id(data_root):
+    """explore_memory_tree：留空=顶层概览；坏编号的提示要说明"不是记忆里没有"。"""
+    from planner.session import PlannerSession
+    from planner.tools import build_tools
+
+    s = PlannerSession(data_root, mock=True)
+    try:
+        tree = s.get_memory_tree()
+        leaves = [tree.add_leaf(f"摘要{i}", (i * 2, i * 2 + 1), None) for i in range(2)]
+        p1 = tree.compact(leaves, "合并A")
+        tools = {t.name: t for t in build_tools(s)}
+        out = tools["explore_memory_tree"].invoke({})
+        assert "顶层概览" in out and p1 in out
+        bad = tools["explore_memory_tree"].invoke({"node_id": "node0_999"})
+        assert "找不到节点" in bad and "不是记忆里没有" in bad
+    finally:
+        s.close()

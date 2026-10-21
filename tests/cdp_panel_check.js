@@ -1044,7 +1044,16 @@ function connect(wsUrl) {
       const rg = await p.send('Runtime.evaluate', {
         expression: `(async () => {
           const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-          // 3) 提问请求会自动展开面板；等到 shown 后再断言——旧代码正是在展开重建时抹掉内容
+          // 3) 新行为（2026-10-19）：审批/提问请求不再自动展开面板——悬浮球旁
+          //    冒提醒浮层 + 黄灯。这里先等提问卡出现在（隐藏的）对话区，
+          //    再手动展开（等同用户点球/点浮层「展开面板」）。
+          let hasCard = false;
+          for (let i = 0; i < 60; i += 1) {
+            await sleep(150);
+            if (document.querySelector('.question-inline:not(.resolved)')) { hasCard = true; break; }
+          }
+          if (!hasCard) return 'CARD_LOST';
+          window.planner.togglePanel();
           for (let i = 0; i < 60; i += 1) {
             await sleep(150);
             if ((await window.planner.getPanelState()) === 'shown') break;
@@ -1179,6 +1188,428 @@ function connect(wsUrl) {
     }
   }
 
+  // 24) 截屏（悬浮球右键菜单触发）：覆盖层选区 → ✓ 挂载为待发送文件（不直接发送）；
+  //     ✗ 取消不留痕。无显示环境拿不到屏幕时软跳过（SKIP_CAPTURE）。
+  let shotResult = 'SKIP';
+  if (BACKEND_PORT) {
+    try {
+      const getMounted = async () => {
+        const m = await p.send('Runtime.evaluate', {
+          expression: 'window.planner.getMounted()', returnByValue: true, awaitPromise: true });
+        return (m.result && m.result.result && m.result.result.value) || [];
+      };
+      const n0 = (await getMounted()).length;
+      await p.send('Runtime.evaluate', { expression: 'window.planner.startScreenshot()' });
+      const shotPage = await waitPage('screenshot.html', 8000);
+      if (!shotPage) {
+        shotResult = 'SKIP_CAPTURE';   // 拿不到屏幕画面（无显示/权限）→ 软跳过
+      } else {
+        const s = await connect(shotPage.webSocketDebuggerUrl);
+        await s.send('Runtime.enable');
+        await sleep(600);
+        const rr = await s.send('Runtime.evaluate', {
+          expression: `(async () => {
+            const fire = (t, x, y) => window.dispatchEvent(
+              new MouseEvent(t, { clientX: x, clientY: y, button: 0, bubbles: true }));
+            fire('mousedown', 120, 120);
+            fire('mousemove', 320, 240);
+            fire('mouseup', 320, 240);
+            await new Promise((r) => setTimeout(r, 250));
+            if (document.getElementById('tools').classList.contains('hidden')) return 'NO_TOOLS';
+            document.getElementById('ok').click();
+            return 'OK';
+          })()`,
+          returnByValue: true, awaitPromise: true,
+        });
+        s.close();
+        const clicked = rr.result && rr.result.result && rr.result.result.value;
+        if (clicked !== 'OK') {
+          shotResult = 'OVERLAY_BAD ' + clicked;
+        } else {
+          let list = [];
+          for (let i = 0; i < 20; i += 1) {
+            await sleep(250);
+            list = await getMounted();
+            if (list.length === n0 + 1) break;
+          }
+          if (list.length !== n0 + 1) {
+            shotResult = 'MOUNT_FAIL ' + list.length;
+          } else {
+            const item = list[list.length - 1];
+            if (item.kind !== 'image' || !fs.existsSync(item.path)) {
+              shotResult = 'FILE_BAD ' + (item.path || '');
+            } else {
+              // 取消路径：再截一次 → ✗ → 挂载数不变
+              await p.send('Runtime.evaluate', { expression: 'window.planner.startScreenshot()' });
+              const shotPage2 = await waitPage('screenshot.html', 8000);
+              if (!shotPage2) {
+                shotResult = 'SKIP_CAPTURE';
+              } else {
+                const s2 = await connect(shotPage2.webSocketDebuggerUrl);
+                await s2.send('Runtime.enable');
+                await sleep(400);
+                await s2.send('Runtime.evaluate', {
+                  expression: "document.getElementById('cancel').click()" });
+                s2.close();
+                await sleep(700);
+                const n2 = (await getMounted()).length;
+                shotResult = (n2 === n0 + 1) ? 'SHOT_OK' : ('CANCEL_LEAK ' + n2);
+              }
+            }
+          }
+        }
+      }
+      // 清掉挂载，避免影响复跑
+      await p.send('Runtime.evaluate', { expression: 'window.planner.clearMounted()' });
+    } catch (e) {
+      shotResult = 'SETUP_FAIL ' + e.message;
+    }
+  }
+
+  // 25) 输入框粘贴（Ctrl+V）：剪贴板位图（无磁盘路径）→ 主进程落盘 userData/pasted/
+  //     → 挂载条出现。纯文本粘贴不拦截（原生行为）。
+  let pasteResult = 'SKIP';
+  if (BACKEND_PORT) {
+    try {
+      const getMounted2 = async () => {
+        const m = await p.send('Runtime.evaluate', {
+          expression: 'window.planner.getMounted()', returnByValue: true, awaitPromise: true });
+        return (m.result && m.result.result && m.result.result.value) || [];
+      };
+      const n0 = (await getMounted2()).length;
+      const pr = await p.send('Runtime.evaluate', {
+        expression: `(async () => {
+          const input = document.getElementById('input');
+          const b64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+          const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+          const file = new File([bytes], 'paste-test.png', { type: 'image/png' });
+          const dt = new DataTransfer();
+          dt.items.add(file);
+          input.dispatchEvent(new ClipboardEvent('paste',
+            { clipboardData: dt, bubbles: true, cancelable: true }));
+          return 'DISPATCHED';
+        })()`,
+        returnByValue: true, awaitPromise: true,
+      });
+      const dispatched = pr.result && pr.result.result && pr.result.result.value;
+      if (dispatched !== 'DISPATCHED') {
+        pasteResult = 'DISPATCH_FAIL ' + dispatched;
+      } else {
+        let list = [];
+        for (let i = 0; i < 20; i += 1) {
+          await sleep(250);
+          list = await getMounted2();
+          if (list.length === n0 + 1) break;
+        }
+        if (list.length !== n0 + 1) {
+          pasteResult = 'PASTE_MOUNT_FAIL ' + list.length;
+        } else {
+          const item = list[list.length - 1];
+          if (item.kind !== 'image' || !fs.existsSync(item.path)
+              || !String(item.path).includes('pasted')) {
+            pasteResult = 'PASTE_FILE_BAD ' + (item.path || '');
+          } else {
+            pasteResult = 'PASTE_OK';
+          }
+        }
+      }
+      await p.send('Runtime.evaluate', { expression: 'window.planner.clearMounted()' });
+    } catch (e) {
+      pasteResult = 'SETUP_FAIL ' + e.message;
+    }
+  }
+
+  // 26) 改动文件快捷块：mock「打补丁」改两个文件 → 回复下方出现快捷块
+  //     （文件名 + 「打开」「目录」按钮）；/history 重建同样带 changed_files 条目
+  let cfResult = 'SKIP';
+  if (BACKEND_PORT) {
+    const wsBase5 = path.join(os.tmpdir(), `planner_e2e_cf_${process.pid}_${Date.now()}`);
+    fs.mkdirSync(wsBase5, { recursive: true });
+    try {
+      await postJson(`http://127.0.0.1:${BACKEND_PORT}/settings`,
+                     { updates: { permission_mode: 'auto' } });
+      await postJson(`http://127.0.0.1:${BACKEND_PORT}/workspace`, { path: wsBase5 });
+      // 等上一轮生成真正结束再发（防御：上一轮可能还在等审批/提问超时）
+      for (let i = 0; i < 300; i += 1) {
+        try {
+          const st = await backendGet(`http://127.0.0.1:${BACKEND_PORT}/state`);
+          if (!(st.state && st.state.thinking)) break;
+        } catch { /* 忽略 */ }
+        await sleep(250);
+      }
+      const n0r = await p.send('Runtime.evaluate', {
+        expression: "document.querySelectorAll('.changed-files').length",
+        returnByValue: true,
+      });
+      const n0 = Number((n0r.result && n0r.result.result && n0r.result.result.value) || 0);
+      await postJson(`http://127.0.0.1:${BACKEND_PORT}/chat`, { message: '补丁块' });
+      const cf = await p.send('Runtime.evaluate', {
+        expression: `(async () => {
+          const n0 = ${n0};
+          let blocks = document.querySelectorAll('.changed-files');
+          for (let i = 0; i < 80 && blocks.length <= n0; i += 1) {
+            await new Promise((r) => setTimeout(r, 250));
+            blocks = document.querySelectorAll('.changed-files');
+          }
+          if (blocks.length <= n0) return 'NO_BLOCK';
+          const block = blocks[blocks.length - 1];
+          const line = block.querySelector('.cf-line');
+          if (!line) return 'NO_LINE';
+          const text = line.textContent || '';
+          if (!text.includes('e2e_patch_a.txt') || !text.includes('e2e_patch_b.txt')) {
+            return 'NAMES_MISSING ' + text.slice(0, 60);
+          }
+          // 默认收起：点一行才展开出按钮
+          const body = block.querySelector('.cf-body');
+          if (!body || getComputedStyle(body).display !== 'none') return 'NOT_COLLAPSED';
+          line.click();
+          await new Promise((r) => setTimeout(r, 150));
+          if (getComputedStyle(body).display === 'none') return 'EXPAND_FAIL';
+          const btns = [...block.querySelectorAll('.cf-btn')]
+            .filter((b) => b.offsetParent !== null);
+          if (btns.length < 4) return 'BTNS_MISSING ' + btns.length;
+          // 按钮 IPC 链路可用（用不存在的路径验证返回形状：不真开窗口、也不弹
+          // Windows 报错框——open-path 处理器先查存在性）
+          const bad1 = await window.planner.showInFolder('C:/definitely-nonexistent-xyz/nope.txt');
+          if (!bad1 || bad1.ok !== false) return 'IPC_SHOW_BAD ' + JSON.stringify(bad1);
+          const bad2 = await window.planner.openInExplorer('C:/definitely-nonexistent-xyz/nope.txt');
+          if (!bad2 || bad2.ok !== false) return 'IPC_OPEN_BAD ' + JSON.stringify(bad2);
+          return 'BLOCK_OK';
+        })()`,
+        returnByValue: true,
+        awaitPromise: true,
+      });
+      cfResult = cf.result && cf.result.result && cf.result.result.value;
+      if (cfResult === 'BLOCK_OK') {
+        // /history 重建路径：changed_files 条目在（面板重开时能重建快捷块）
+        try {
+          const h = await backendGet(`http://127.0.0.1:${BACKEND_PORT}/history`);
+          const has = (h.messages || []).some((m) => m.role === 'changed_files'
+            && (m.files || []).some((f) => String(f.rel || '').includes('e2e_patch_a.txt')));
+          cfResult = has ? 'CF_OK' : 'HISTORY_MISSING';
+        } catch (e) {
+          cfResult = 'HISTORY_FAIL ' + e.message;
+        }
+      }
+    } catch (e) {
+      cfResult = 'SETUP_FAIL ' + e.message;
+    }
+    try { fs.rmSync(wsBase5, { recursive: true, force: true }); } catch { /* 忽略 */ }
+  }
+
+  // 27) 快速输入浮层（悬浮球模式全局快捷键）：窗口启动即创建（隐藏）——
+  //     验证「待发送文件显示 → 输入 → Enter 发送 → 挂载清空 → /history 落库」
+  //     与 UI 设置项（快捷键/气泡时长）可读。热键本身由 OS 注册，CDP 无法模拟。
+  let quickResult = 'SKIP';
+  if (BACKEND_PORT) {
+    try {
+      const quickFile = path.join(os.tmpdir(), `planner_e2e_quick_${process.pid}.txt`);
+      fs.writeFileSync(quickFile, 'hello');
+      console.log('  [27] quick input: page found');
+      const qp = await waitPage('quick-input.html', 15000);
+      const q = await connect(qp.webSocketDebuggerUrl);
+      console.log('  [27] quick input: connected');
+      await q.send('Runtime.enable');
+      const qr = await q.send('Runtime.evaluate', {
+        expression: `(async () => {
+          window.planner.clearMounted();
+          await new Promise((r) => setTimeout(r, 150));
+          window.planner.mountFiles([{ name: 'quick_e2e.txt', path: ${JSON.stringify(quickFile)}, kind: 'text', content: 'hello' }]);
+          for (let i = 0; i < 30; i += 1) {
+            await new Promise((r) => setTimeout(r, 100));
+            if (document.querySelectorAll('.qf-chip').length === 1) break;
+          }
+          if (document.querySelectorAll('.qf-chip').length !== 1) return 'FILES_MISSING';
+          const el = document.getElementById('quick-input');
+          el.value = '快速输入测试';
+          el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+          for (let i = 0; i < 40; i += 1) {
+            await new Promise((r) => setTimeout(r, 100));
+            const m = await window.planner.getMounted();
+            if (!m.length) break;
+          }
+          const ui = await window.planner.getUiSettings();
+          if (!(ui.quick_input_hotkey && ui.toast_seconds > 0)) return 'UI_SETTINGS_MISSING';
+          return 'QUICK_SENT';
+        })()`,
+        returnByValue: true,
+        awaitPromise: true,
+      });
+      quickResult = (qr.result && qr.result.result && qr.result.result.value) || 'NO_RESULT';
+      if (quickResult === 'QUICK_SENT') {
+        let found = false;
+        for (let i = 0; i < 40; i += 1) {
+          try {
+            const h = await backendGet(`http://127.0.0.1:${BACKEND_PORT}/history`);
+            found = (h.messages || []).some((m) => m.role === 'user'
+              && String(m.content || '').includes('快速输入测试'));
+          } catch { /* 忽略 */ }
+          if (found) break;
+          await sleep(150);
+        }
+        // 面板应立即出现这条用户消息（user_message 事件；旧代码要收起/展开才看到）
+        let shown = false;
+        for (let i = 0; i < 40; i += 1) {
+          const r2 = await p.send('Runtime.evaluate', {
+            expression: "Array.from(document.querySelectorAll('.msg.user .bubble'))"
+              + ".some((b) => (b.textContent || '').includes('快速输入测试'))",
+            returnByValue: true,
+          });
+          if (r2.result && r2.result.result && r2.result.result.value) { shown = true; break; }
+          await sleep(150);
+        }
+        quickResult = !found ? 'HISTORY_MISSING'
+          : (shown ? 'QUICK_OK' : 'PANEL_NOT_RENDERED');
+      }
+      q.close();
+      try { fs.rmSync(quickFile, { force: true }); } catch { /* 忽略 */ }
+    } catch (e) {
+      quickResult = 'SETUP_FAIL ' + e.message;
+    }
+  }
+
+  // 28) 悬浮球待处理提醒：收起面板 → mock 触发 ask_user → 球黄灯呼吸 +
+  //     球旁提醒卡片；直接在卡片里点选项回答（不展开面板）→ 黄灯恢复
+  let pendingResult = 'SKIP';
+  if (BACKEND_PORT) {
+    try {
+      const bp = await waitPage('bubble.html', 10000);
+      const bb = await connect(bp.webSocketDebuggerUrl);
+      await bb.send('Runtime.enable');
+      // 先等上一轮生成收尾（步骤 27 的消息可能还在回）
+      for (let i = 0; i < 100; i += 1) {
+        try {
+          const st = await backendGet(`http://127.0.0.1:${BACKEND_PORT}/state`);
+          if (!(st.state && st.state.thinking)) break;
+        } catch { /* 忽略 */ }
+        await sleep(150);
+      }
+      console.log('  [28] collapsing panel...');
+      // 收起面板 → 悬浮球形态（togglePanel 在 shown 时是"置前"，收起要用 hidePanel）
+      await bb.send('Runtime.evaluate', {
+        expression: 'window.planner.hidePanel()',
+        returnByValue: true,
+      });
+      let hidden = false;
+      for (let i = 0; i < 40; i += 1) {
+        await sleep(150);
+        const st = await bb.send('Runtime.evaluate', {
+          expression: 'window.planner.getPanelState()', returnByValue: true, awaitPromise: true,
+        });
+        if ((st.result && st.result.result && st.result.result.value) === 'hidden') { hidden = true; break; }
+      }
+      if (!hidden) {
+        pendingResult = 'PANEL_NOT_HIDDEN';
+      } else {
+        console.log('  [28] panel hidden, sending 气泡提问');
+        await postJson(`http://127.0.0.1:${BACKEND_PORT}/chat`, { message: '气泡提问' });
+        console.log('  [28] chat posted');
+        // 球体黄灯（pending 广播）
+        let lit = false;
+        for (let i = 0; i < 80; i += 1) {
+          const r = await bb.send('Runtime.evaluate', {
+            expression: "document.getElementById('core').classList.contains('pending')",
+            returnByValue: true,
+          });
+          if (r.result && r.result.result && r.result.result.value) { lit = true; break; }
+          await sleep(150);
+        }
+        if (!lit) {
+          pendingResult = 'BALL_NOT_PENDING';
+        } else {
+          console.log('  [28] ball pending lit');
+          const pp = await waitPage('pending.html', 15000);
+          const pw = await connect(pp.webSocketDebuggerUrl);
+          await pw.send('Runtime.enable');
+          let ready = false;
+          for (let i = 0; i < 60; i += 1) {
+            const r = await pw.send('Runtime.evaluate', {
+              expression: "document.querySelectorAll('#pn-options .pn-opt').length",
+              returnByValue: true,
+            });
+            const n = Number((r.result && r.result.result && r.result.result.value) || 0);
+            if (n >= 2) { ready = true; break; }
+            await sleep(150);
+          }
+          if (!ready) {
+            pendingResult = 'CARD_NOT_READY';
+          } else {
+            console.log('  [28] card ready, clicking option');
+            await pw.send('Runtime.evaluate', {
+              expression: "document.querySelector('#pn-options .pn-opt').click()",
+              returnByValue: true,
+            });
+            // 黄灯恢复（question_resolved 经 /dequeue 回来）
+            let cleared = false;
+            for (let i = 0; i < 100; i += 1) {
+              const r = await bb.send('Runtime.evaluate', {
+                expression: "document.getElementById('core').classList.contains('pending')",
+                returnByValue: true,
+              });
+              if (!(r.result && r.result.result && r.result.result.value)) { cleared = true; break; }
+              await sleep(150);
+            }
+            const pr = await bb.send('Runtime.evaluate', {
+              expression: 'window.planner.getPending()', returnByValue: true, awaitPromise: true,
+            });
+            const left = Number(((pr.result && pr.result.result && pr.result.result.value) || {}).count || 0);
+            pendingResult = (cleared && left === 0) ? 'PENDING_OK' : 'NOT_CLEARED';
+          }
+          pw.close();
+          // 回到面板展开态（后续 bubble 检查脚本自己会切换，这里保持一致）
+          await bb.send('Runtime.evaluate', {
+            expression: 'window.planner.getPanelState().then((s) => { if (s === "hidden") window.planner.togglePanel(); })',
+            returnByValue: true, awaitPromise: true,
+          });
+        }
+      }
+      bb.close();
+    } catch (e) {
+      pendingResult = 'SETUP_FAIL ' + e.message;
+    }
+  }
+
+  // 29) Markdown 表格 + 链接：渲染成 <table> 与可点击超链接；非法协议拒绝
+  let mdResult = 'SKIP';
+  try {
+    const mr = await p.send('Runtime.evaluate', {
+      expression: `(async () => {
+        const NL = String.fromCharCode(10);
+        const mdText = ['| 公司 | 要 | 代价 |', '|---|---|---|',
+          '| 中船院所 | 多数要 | 开源受限 |', '| 雅江 | 不要 | 长期驻藏 |', '',
+          '[示例](https://example.com/a) 和 https://example.org/b。'].join(NL);
+        const html = window.md.render(mdText);
+        const div = document.createElement('div');
+        div.innerHTML = html;
+        const table = div.querySelector('.md-table');
+        if (!table) return 'NO_TABLE';
+        if (table.querySelectorAll('th').length !== 3) return 'TH_BAD';
+        if (table.querySelectorAll('tbody tr').length !== 2) return 'ROWS_BAD';
+        if (!table.textContent.includes('中船院所')) return 'CELL_BAD';
+        const links = [...div.querySelectorAll('a.md-link')].map((a) => a.getAttribute('href'));
+        if (!links.includes('https://example.com/a')) return 'MD_LINK_BAD ' + links.join(',');
+        if (!links.some((h) => h.startsWith('https://example.org/b'))) return 'BARE_LINK_BAD';
+        const mdText2 = ['# 标题一', '', '- 甲', '- 乙', '', '1. 丙', '2. 丁', '',
+          '> 引用'].join(NL);
+        const div2 = document.createElement('div');
+        div2.innerHTML = window.md.render(mdText2);
+        if (!div2.querySelector('h1')) return 'HEADING_MISSING';
+        if (div2.querySelectorAll('ul li').length !== 2) return 'UL_BAD';
+        if (div2.querySelectorAll('ol li').length !== 2) return 'OL_BAD';
+        if (!div2.querySelector('blockquote')) return 'QUOTE_MISSING';
+        if (window.md.render('[x](javascript:alert(1))').includes('<a')) return 'UNSAFE_LINK';
+        const bad = await window.planner.openExternal('javascript:alert(1)');
+        if (!bad || bad.ok !== false) return 'UNSAFE_OPEN ' + JSON.stringify(bad);
+        return 'MD_OK';
+      })()`,
+      returnByValue: true,
+      awaitPromise: true,
+    });
+    mdResult = (mr.result && mr.result.result && mr.result.result.value) || 'NO_RESULT';
+  } catch (e) {
+    mdResult = 'SETUP_FAIL ' + e.message;
+  }
+
   console.log('  面板异常数:', errs.length, '| 日历 tab 点击:', clickResult,
               '| 目录徽标:', badgeResult, '| 尺寸/拖拽:', sizeResult,
               '| 工具行:', groupResult, '| 状态条:', chipsResult,
@@ -1189,7 +1620,10 @@ function connect(wsUrl) {
               '| 工作目录面板:', wsPanelResult, '| 切换工作区:', switchResult,
               '| 滚动:', scrollResult, '| 多文件补丁:', patchResult,
               '| 隐藏期生成:', hideGenResult, '| 朗读停止:', speakStopResult,
-              '| tts同步:', ttsSyncResult);
+              '| tts同步:', ttsSyncResult, '| 截屏:', shotResult,
+              '| 输入框粘贴:', pasteResult, '| 改动文件:', cfResult,
+              '| 快速输入:', quickResult, '| 待处理提醒:', pendingResult,
+              '| Markdown:', mdResult);
   p.close();
 
   if (errs.length > 0) { console.error('面板加载有 JS 异常'); process.exit(1); }
@@ -1265,6 +1699,30 @@ function connect(wsUrl) {
   }
   if (ttsSyncResult !== 'SKIP' && ttsSyncResult !== 'TTSSYNC_OK') {
     console.error('语音播报开关运行中实时同步检查失败: ' + ttsSyncResult);
+    process.exit(1);
+  }
+  if (shotResult !== 'SKIP' && shotResult !== 'SKIP_CAPTURE' && shotResult !== 'SHOT_OK') {
+    console.error('截屏（选区→挂载 / 取消不留痕）检查失败: ' + shotResult);
+    process.exit(1);
+  }
+  if (pasteResult !== 'SKIP' && pasteResult !== 'PASTE_OK') {
+    console.error('输入框粘贴（Ctrl+V → 落盘 → 挂载）检查失败: ' + pasteResult);
+    process.exit(1);
+  }
+  if (cfResult !== 'SKIP' && cfResult !== 'CF_OK') {
+    console.error('改动文件快捷块（回复下方 + /history 重建）检查失败: ' + cfResult);
+    process.exit(1);
+  }
+  if (quickResult !== 'SKIP' && quickResult !== 'QUICK_OK') {
+    console.error('快速输入浮层（挂载+Enter 发送+/history）检查失败: ' + quickResult);
+    process.exit(1);
+  }
+  if (pendingResult !== 'SKIP' && pendingResult !== 'PENDING_OK') {
+    console.error('悬浮球待处理提醒（黄灯+气泡卡就地回答）检查失败: ' + pendingResult);
+    process.exit(1);
+  }
+  if (mdResult !== 'SKIP' && mdResult !== 'MD_OK') {
+    console.error('Markdown 表格/链接渲染检查失败: ' + mdResult);
     process.exit(1);
   }
   process.exit(0);

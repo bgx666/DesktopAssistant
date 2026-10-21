@@ -763,6 +763,10 @@ def test_tool_result_event_includes_before_after_diff(session, workspace):
                                           tool_call_id="tc3"))
     ev3 = [e for e in session.drain_events() if e["type"] == "tool_result"][-1]
     assert "-第一行" in ev3["diff"]
+    # 留底带 after_missing（「改动文件」块据此把已删除文件标「已不存在」，
+    # 不再给点了没反应的「打开」按钮——用户实测回归）
+    row = session.get_changes_db().list(1)[0]
+    assert row["tool"] == "delete_file" and row["after_missing"] is True
 
 
 def test_move_file_diff_is_note(session, workspace):

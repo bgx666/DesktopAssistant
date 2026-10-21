@@ -57,6 +57,7 @@ def test_resolve_model_default_vision(monkeypatch):
 def test_is_vision_model():
     assert is_vision_model("deepseek-v4-flash-vision-exp")
     assert is_vision_model("deepseek-flash")   # 官方 V4.1-Flash 多模态（默认模型）
+    assert is_vision_model("deepseek-v4.1-flash")   # OpenCode Go 上的同一模型（默认服务商模型）
     assert is_vision_model("gpt-4o")
     assert is_vision_model("gpt-4o-mini")      # 含 "gpt-4o" 子串（mini 也支持视觉）
     assert is_vision_model("qwen2.5-vl-7b")

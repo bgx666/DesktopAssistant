@@ -48,7 +48,7 @@ def _emit_and_get_image_events(session, tool_call_id="ti"):
 
 # ── 本地图片 ─────────────────────────────────────────────────
 
-def test_show_image_local_ok(session, workspace):
+def test_show_image_local_ok(session, workspace, data_root):
     session.update_settings({"workspace_root": str(workspace)})
     tools = _tools(session)
     r = tools["show_image"].invoke({"source": "plot.png", "caption": "我的图表"})
@@ -58,6 +58,13 @@ def test_show_image_local_ok(session, workspace):
     ev = imgs[0]
     assert ev["url"].startswith("/file?path=") and ev["caption"] == "我的图表"
     assert msg.additional_kwargs.get("image_paths"), "路径应写进消息（历史重建用）"
+    # 持久副本：展示的是 data/images 下的拷贝，原文件删了历史也能回看
+    from urllib.parse import unquote
+    served = Path(unquote(ev["url"].split("path=", 1)[1]))
+    assert served.parent == Path(data_root) / "images"
+    assert served.read_bytes() == PNG_1PX
+    (workspace / "plot.png").unlink()
+    assert served.exists(), "历史回看依赖持久副本，不依赖工作区原文件"
 
 
 def test_show_image_rejects_bad_inputs(session, workspace, tmp_path):
@@ -195,5 +202,9 @@ def test_history_returns_image_entries(session, workspace):
         imgs = [m for m in data["messages"] if m["role"] == "image"]
         assert imgs and imgs[0]["caption"] == "历史里的图"
         assert imgs[0]["url"].startswith("/file?path=")
+        # 历史指向持久副本（data/images），而非工作区原文件
+        from urllib.parse import unquote
+        served = Path(unquote(imgs[0]["url"].split("path=", 1)[1]))
+        assert served.parent == Path(session.data_root) / "images"
     finally:
         httpd.shutdown()

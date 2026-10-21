@@ -11,6 +11,10 @@ contextBridge.exposeInMainWorld('planner', {
   pickDirectory: () => ipcRenderer.invoke('pick-directory'),
   // 在系统文件管理器中打开目录
   openInExplorer: (p) => ipcRenderer.invoke('open-path', String(p || '')),
+  // 在资源管理器中定位文件（选中 + 打开所在目录；「改动文件」快捷块用）
+  showInFolder: (p) => ipcRenderer.invoke('show-in-folder', String(p || '')),
+  // 外部链接（Markdown 里的 http/https/mailto）：交给系统默认浏览器
+  openExternal: (url) => ipcRenderer.invoke('open-external', String(url || '')),
   // 面板置前 + 聚焦（Windows 键盘焦点被抢走时的兜底）
   focusPanel: () => ipcRenderer.send('focus-panel'),
   // 把键盘焦点还给本窗口（原生对话框后遗症兜底；双窗口共用）
@@ -38,6 +42,15 @@ contextBridge.exposeInMainWorld('planner', {
   removeMounted: (index) => ipcRenderer.send('remove-mounted', index),
   getMounted: () => ipcRenderer.invoke('get-mounted'),
   onMountedChanged: (cb) => ipcRenderer.on('mounted-files', (e, list) => cb(list)),
+  // 加号按钮：系统文件选择器 → 挂载（返回 [{name, path, kind, content?}]）
+  pickFiles: () => ipcRenderer.invoke('pick-files'),
+  // 输入框粘贴：剪贴板位图（无磁盘路径）→ 主进程落盘 userData/pasted/ → {path, name}
+  savePastedFile: (name, mime, buf) => ipcRenderer.invoke('save-pasted-file', name, mime, buf),
+  // 截屏（悬浮球右键菜单触发；截图覆盖层页面用 get/done/cancel 回传）
+  startScreenshot: () => ipcRenderer.send('start-screenshot'),
+  screenshotGet: () => ipcRenderer.invoke('screenshot-get'),
+  screenshotDone: (dataUrl) => ipcRenderer.send('screenshot-done', String(dataUrl || '')),
+  screenshotCancel: () => ipcRenderer.send('screenshot-cancel'),
   // 前端 UI 设置（长按时间等，主进程本地文件，无需后端）
   getUiSettings: () => ipcRenderer.invoke('get-ui-settings'),
   saveUiSettings: (updates) => ipcRenderer.send('save-ui-settings', updates),
@@ -47,12 +60,22 @@ contextBridge.exposeInMainWorld('planner', {
   // 语音连续对话模式（主进程统一持有开关，双窗口广播）
   setVoiceMode: (on) => ipcRenderer.send('voice-mode-set', !!on),
   onVoiceMode: (cb) => ipcRenderer.on('voice-mode', (e, on) => cb(on)),
+  // 快速输入浮层（悬浮球模式全局快捷键弹出）
+  onQuickShow: (cb) => ipcRenderer.on('quick-show', () => cb()),
+  onQuickHide: (cb) => ipcRenderer.on('quick-hide', () => cb()),
+  hideQuickInput: () => ipcRenderer.send('quick-hide'),
+  quickResize: (h) => ipcRenderer.send('quick-resize', h),
+  // 待处理请求（审批/提问）：球旁提醒浮层（悬浮球形态）
+  onPending: (cb) => ipcRenderer.on('pending', (e, p) => cb(p)),
+  getPending: () => ipcRenderer.invoke('get-pending'),
+  pendingResize: (h) => ipcRenderer.send('pending-resize', h),
+  closePending: () => ipcRenderer.send('pending-close'),
+  expandPending: () => ipcRenderer.send('pending-expand'),
   // 面板形态广播（hidden/shown/morphing_*）：语音模式 active 窗口判定用
   onPanelState: (cb) => ipcRenderer.on('panel-state', (e, s) => cb(s)),
   // 悬浮球
   togglePanel: () => ipcRenderer.send('toggle-panel'),
   bubbleMenu: () => ipcRenderer.send('bubble-menu'),
-  setTyping: (typing) => ipcRenderer.send('typing-state', typing),
   moveBubble: (x, y) => ipcRenderer.send('move-bubble', x, y),
   getBubblePos: () => ipcRenderer.invoke('get-bubble-pos'),
   getPanelPos: () => ipcRenderer.invoke('get-panel-pos'),

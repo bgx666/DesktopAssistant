@@ -4,7 +4,7 @@
 
   const $ = (sel) => document.querySelector(sel);
   const sendBtn = $('#send');   // 发送/停止/语音 三合一按钮（模块级，多处引用）
-  const state = { heartbeat: null, dnd: null, agenda: null, lastAgendaDate: '' };
+  const state = { heartbeat: null, agenda: null, lastAgendaDate: '' };
 
   // ── HTTP（走主进程代理：file:// 页面直连被 CORS/PNA 拦）────────
   async function api(path, opts = {}) {
@@ -101,7 +101,7 @@
     });
   }
 
-  function addMessage(text, cls = 'assistant', msgId = null) {
+  function addMessage(text, cls = 'assistant', msgId = null, forceScroll = true) {
     closeToolGroup();   // 普通消息出现 → 工具组封口（后续工具调用开新组）
     const el = document.createElement('div');
     el.className = 'msg ' + cls;
@@ -214,9 +214,21 @@
       });
       el.appendChild(undo);
     }
+    if (cls === 'user' && msgId) el.dataset.msgId = String(msgId);
     messages.appendChild(el);
-    scrollMessagesToBottom(cls === 'user');   // 自己发的消息强制到底；其他只在贴底时跟随
+    scrollMessagesToBottom(cls === 'user' && forceScroll);   // 自己发的消息强制到底；其他/事件到达只在贴底时跟随
     return el;
+  }
+
+  // 用户消息去重：面板本地提交与主进程 user_message 事件可能几乎同时到达
+  // （悬浮球语音 / 快速输入浮层发的消息只有事件——旧代码展开面板看不到，用户实测）
+  function addUserMessage(text, msgId, forceScroll = true) {
+    if (msgId) {
+      const dup = Array.from(messages.querySelectorAll('.msg.user'))
+        .some((el) => el.dataset.msgId === String(msgId));
+      if (dup) return null;
+    }
+    return addMessage(text, 'user', msgId || null, forceScroll);
   }
 
   // 错误气泡：正文（发生了什么）+ 提示（下一步怎么做）；不再只留一行灰色日志
@@ -249,22 +261,21 @@
     input.style.height = Math.min(input.scrollHeight, INPUT_MAX_H) + 'px';
   }
   input.addEventListener('input', autoResizeInput);
-  // 输入框非空 = 正在输入 → 通知后端（只在状态变化时发送）
-  let typingSent = false;
-  function syncTypingState() {
-    const typing = input.value.trim().length > 0;
-    if (typing !== typingSent) {
-      typingSent = typing;
-      window.planner.setTyping(typing);
-    }
-  }
-  input.addEventListener('input', syncTypingState);
   input.addEventListener('keydown', (e) => {
     if (handleAtKey(e)) return;              // @ 补全下拉打开时优先接管方向键/回车
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();                    // Enter 发送（Shift+Enter 换行）
       $('#input-bar').dispatchEvent(new Event('submit', { cancelable: true }));
     }
+  });
+  // 输入框粘贴（Ctrl+V）：图片/文件 → 挂载为待发送（同拖拽/截图/加号）；
+  // 纯文本没有 files → 不拦截，保持原生粘贴
+  input.addEventListener('paste', async (e) => {
+    const dt = e.clipboardData;
+    if (!dt || !dt.files || !dt.files.length) return;
+    e.preventDefault();
+    const files = await window.fileDrop.handleClipboardFiles(dt.files);
+    if (files.length) window.planner.mountFiles(files);
   });
 
   // 键盘焦点兜底（Windows）：原生对话框（旧版遗留）/窗口切换等边缘情况会把键盘
@@ -282,7 +293,6 @@
     if (!text) return;
     input.value = '';
     input.style.height = 'auto';             // 发送后重置高度
-    syncTypingState();                       // 清空输入 → 退出"正在输入"状态
     sendBtn.classList.add('stopping');       // 立即变"停止"（防快速双击重复提交）
     sendBtn.textContent = '停止';
     try {
@@ -290,7 +300,7 @@
       const mounted = await window.planner.getMounted();
       const r = await post('/chat', { message: text, files: mounted });
       if (mounted && mounted.length) window.planner.clearMounted();
-      addMessage(text, 'user', r.msg_id || null);
+      addUserMessage(text, r.msg_id || '');
     } catch (err) {
       addMessage('（连接后端失败，稍后重试）', 'log');
       sendBtn.classList.remove('stopping');
@@ -323,7 +333,7 @@
     if (files.length) window.planner.mountFiles(files);
   });
 
-  // 对话框上方"已挂载文件"条：📎 名称列表 + 逐个移除 + 清除
+  // 输入框上方"已挂载文件"条：名称列表 + 逐个移除 + 清除
   // 渲染逻辑独立成函数：既响应实时广播，也支持展开时主动拉取
   // （悬浮球形态挂载时面板窗口未创建，收不到广播，展开后需主动同步）
   function renderMountedBar(files) {
@@ -350,6 +360,22 @@
     mountedBar.appendChild(clearBtn);
   }
   window.planner.onMountedChanged(renderMountedBar);
+
+  // 加号：菜单（截屏 / 添加本地文件）——都挂进 mounted（待发送区）
+  if ($('#plus-btn')) {
+    $('#plus-btn').addEventListener('click', () => {
+      toggleMenu('#plus-menu', $('#plus-btn'));
+    });
+    $('#plus-shot').addEventListener('click', () => {
+      closePopovers('');
+      window.planner.startScreenshot();
+    });
+    $('#plus-file').addEventListener('click', async () => {
+      closePopovers('');
+      const files = await window.planner.pickFiles();
+      if (files && files.length) window.planner.mountFiles(files);
+    });
+  }
 
   // ── 语音输入：面板里用 🎤 按钮（点击开始 / 再点结束→转文字进输入框）；
   //    悬浮球长按录音仍见 bubble.js。发送按钮不再长按录音（2026-10-17 起）。──
@@ -415,6 +441,74 @@
       img.src = fileUrl;
       wrap.appendChild(img);
     }).catch(() => { ph.textContent = '（图片加载失败）'; });
+    return el;
+  }
+
+  // 本轮改动过的文件快捷块（回复下面）：**默认收成一行**（与工具组行同款观感）——
+  // 「本轮改动 N 个文件 · 文件名1、文件名2…」按改动次数降序、超出一行从尾部截断；
+  // 点这一行展开：每文件一行 + 「打开」「目录」按钮。后端聚合（changed_files 事件 /
+  // /history 的 role=changed_files），纯代码链路、无模型参与。
+  function addChangedFiles(files) {
+    const list = Array.isArray(files) ? files : [];
+    if (!list.length) return null;
+    const el = document.createElement('div');
+    el.className = 'msg changed-files';
+    const box = document.createElement('div');
+    box.className = 'cf-box';
+    const line = document.createElement('div');
+    line.className = 'cf-line';
+    line.title = '点击展开/收起改动文件';
+    const names = list.map((f) => f.rel || f.name || f.path || '').join('、');
+    line.textContent = `本轮改动 ${list.length} 个文件 · ${names}`;
+    line.addEventListener('click', () => el.classList.toggle('open'));
+    box.appendChild(line);
+    const body = document.createElement('div');
+    body.className = 'cf-body';
+    list.forEach((f) => {
+      const row = document.createElement('div');
+      row.className = 'cf-row';
+      const name = document.createElement('span');
+      name.className = 'cf-name';
+      name.textContent = f.rel || f.name || f.path || '';
+      name.title = f.path || '';
+      row.appendChild(name);
+      if (f.count > 1) {
+        const cnt = document.createElement('span');
+        cnt.className = 'cf-count';
+        cnt.textContent = '×' + f.count;
+        row.appendChild(cnt);
+      }
+      if (f.missing) {
+        const tag = document.createElement('span');
+        tag.className = 'cf-missing';
+        tag.textContent = '已不存在';
+        row.appendChild(tag);
+      } else {
+        const openBtn = document.createElement('button');
+        openBtn.className = 'cf-btn';
+        openBtn.textContent = '打开';
+        openBtn.title = '直接打开这个文件';
+        openBtn.addEventListener('click', async () => {
+          const r = await window.planner.openInExplorer(f.path);
+          if (!r || !r.ok) addMessage(`（打开失败：${f.path}）`, 'log');
+        });
+        row.appendChild(openBtn);
+      }
+      const dirBtn = document.createElement('button');
+      dirBtn.className = 'cf-btn';
+      dirBtn.textContent = '目录';
+      dirBtn.title = '打开所在目录';
+      dirBtn.addEventListener('click', async () => {
+        const r = await window.planner.showInFolder(f.path);
+        if (!r || !r.ok) addMessage(`（打开失败：${f.path}）`, 'log');
+      });
+      row.appendChild(dirBtn);
+      body.appendChild(row);
+    });
+    box.appendChild(body);
+    el.appendChild(box);
+    messages.appendChild(el);
+    scrollMessagesToBottom();
     return el;
   }
 
@@ -1200,7 +1294,7 @@
 
   function closePopovers(except) {
     ['#mode-menu', '#ws-panel', '#model-menu', '#effort-menu',
-     '#stats-panel'].forEach((sel) => {
+     '#stats-panel', '#plus-menu'].forEach((sel) => {
       const el = $(sel);
       if (el && sel !== except) el.classList.add('hidden');
     });
@@ -1209,7 +1303,8 @@
   document.addEventListener('click', (e) => {
     if (e.target.closest('.popover') || e.target.closest('#cb-dir')
         || e.target.closest('#cb-mode') || e.target.closest('#cb-model')
-        || e.target.closest('#cb-effort') || e.target.closest('#cb-stats')) return;
+        || e.target.closest('#cb-effort') || e.target.closest('#cb-stats')
+        || e.target.closest('#plus-btn')) return;
     // 处理过程中目标被原地重渲染移除（如工作目录面板里点目录项）→ 不算"点了外面"，
     // 否则 closest('.popover') 落空会误关浮层（历史 bug：点目录面板整个消失）
     if (!document.body.contains(e.target)) return;
@@ -1801,7 +1896,11 @@
   }
 
   function handleEvent(ev) {
-    if (ev.type === 'text_stream') {
+    if (ev.type === 'user_message') {
+      // 其他窗口（悬浮球语音 / 快速输入浮层）或直接 HTTP 发的用户消息：
+      // 面板本地没有自己的 addMessage —— 用事件补气泡（按 msg id 去重）
+      addUserMessage(ev.text || '', ev.id || '', false);   // 不打断用户翻历史
+    } else if (ev.type === 'text_stream') {
       let el = streamMsgs[ev.msg_id];
       if (!el) {
         collapseThinking();   // 这一轮开始说正文了 → 思考过程收起来
@@ -1838,7 +1937,7 @@
       // 后台压缩开始/结束（指示灯；完成后的历史重载走 memory_update）
       $('#compressing').classList.toggle('hidden', !ev.value);
       $('.dot').classList.toggle('compressing', !!ev.value);
-    } else if (ev.type === 'dnd' || ev.type === 'agenda_update') {
+    } else if (ev.type === 'agenda_update') {
       if ($('#calendar').classList.contains('active')) refreshCalendar();
     } else if (ev.type === 'memory_update') {
       pendingMemoryReload = true;   // 记忆树有变化，生成结束后重载历史
@@ -1867,6 +1966,8 @@
       }
     } else if (ev.type === 'image') {
       addImage(ev.url, ev.caption);
+    } else if (ev.type === 'changed_files') {
+      addChangedFiles(ev.files);
     } else if (ev.type === 'workspace_changed') {
       const desc = ev.workspace
         ? `（代码工作区：${ev.cwd || ev.workspace} · 权限模式 ${ev.permission_mode || 'ask'}）`
@@ -1899,7 +2000,6 @@
     }
     setOffline(false);
     state.heartbeat = s.heartbeat;
-    state.dnd = s.dnd;
     // 思考状态：以推送的 state 为准兜底纠正（thinking 事件可能在面板隐藏时被悬浮球消费）
     const thinking = !!s.thinking;
     isGenerating = thinking;
@@ -2142,24 +2242,7 @@
     refreshCalendar();
   });
 
-  // 添加：时刻留空 = 全天；repeat 留空 = 一次性
-  $('#cal-add-form').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const content = $('#cal-content').value.trim();
-    if (!content) return;
-    const time = $('#cal-time').value;      // <input type="time"> → "HH:MM" 或 ""
-    const kind = $('#cal-kind').value;
-    const repeat = $('#cal-repeat').value;
-    $('#cal-content').value = '';
-    try {
-      await post('/calendar/add', {
-        date: calState.selected, content, time, kind, repeat,
-      });
-      renderMonth();
-      await renderDay();
-    } catch { /* 保留输入不丢：内容已清，仅提示 */ }
-  });
-
+  // 添加日程的入口（表单）已移除：日程/任务由小助通过日历工具管理
   function escapeHtml(s) {
     return String(s == null ? '' : s)
       .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -2201,6 +2284,8 @@
           appendThinking(createThinkingBlock(), m.content || '');
         } else if (m.role === 'image') {
           addImage(m.url, m.caption);
+        } else if (m.role === 'changed_files') {
+          addChangedFiles(m.files);
         } else {
           const cls = m.role === 'assistant' ? 'assistant' : m.role === 'memory' ? 'memory' : 'user';
           addMessage(m.content, cls, m.id || null);
@@ -2296,7 +2381,6 @@
         if (d.ok && d.text) {
           input.value = (input.value ? input.value.replace(/\s+$/, '') + ' ' : '') + d.text;
           autoResizeInput();
-          syncTypingState();
           input.focus();
         } else {
           addMessage('语音识别失败（模型下载中？）', 'log');

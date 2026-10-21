@@ -988,6 +988,369 @@
 - **测试**：`test_compression_contract.py` 调整+新增（整批单节点 / 失败回退
   分片 / 端到端单节点替换）；全量 pytest **391 passed**；release v0.1.236。
 
+### 2026-10-18 第四十三轮：截屏（右键菜单）+ 加号按钮（添加文件）
+
+- **用户需求**：① 悬浮球右键菜单加"截屏"——类微信：框选、✓/✗、可涂鸦；
+  **✓ 后不直接发送**而是进入待发送态（长按悬浮球语音发送会带上；展开面板
+  在输入框上方显示，发消息一起发）。② 展开面板输入区加"+"按钮选文件。
+- **实现**：
+  - **截屏**：`main.startScreenshot()`——`desktopCapturer` 截光标所在屏幕
+    （物理像素，记 `scale` 供裁剪换算）→ 藏气泡（不截自己）→ 全屏覆盖层
+    窗口（`screenshot.html/js/css`；`#sel` 用 box-shadow 遮暗选区外；
+    画笔/撤销，笔迹按 scale 一起裁进导出图；✓/✗ 工具条贴选区下方，
+    放不下翻到上方；Esc/右键取消、Ctrl+Z 撤销、Enter 确认）→ 确认后 PNG
+    存 `userData/screenshots/`（保留最近 50）→ **挂进 mountedFiles**——
+    与拖拽/加号完全同一套"待发送"机制（面板输入框上方显示；悬浮球长按
+    语音发送时自动带上），toast 提示"截图已挂载"。
+  - **加号**：输入区 `+` 按钮 → `pick-files` IPC（系统多选对话框，分类
+    口径与 fileDrop 一致）→ 挂载。
+  - 坑：覆盖层事件用 window 级监听，合成事件 `e.target` 是 window——
+    守卫须 `typeof e.target.closest === 'function'`（首测 NO_TOOLS 的原因）。
+- **测试**：`cdp_panel_check.js` 第 24 步（SHOT_OK：模拟框选→✓→挂载数 +1
+  且文件落盘、再截→✗→挂载数不变；无显示环境软跳过）；24 步全绿；
+  真机截图核对（裁剪+笔迹）。release v0.1.237。
+- **首版用户实测翻车与修复（同日）**：点「截屏」悬浮球消失了但覆盖层没出来，
+  之后二次点击"没反应"（守卫拦住残影窗口）。根因：**`ready-to-show` 监听器
+  挂在 `loadFile` 之后**——本地小页面加载极快时事件抢在监听器之前发出，窗口
+  永远隐藏（e2e/CDP 驱动不受影响所以没抓到）。修复：监听**先挂再 loadFile** +
+  `ready-to-show`/`did-finish-load`/600ms 定时器**三重兜底显示** +
+  不可见残影窗口自动销毁重建 + 全程 appLog。验证：窗口枚举确认
+  `[截屏] visible=True`。另按用户要求把「+」改成**菜单**（截屏 / 添加本地文件）。
+  release v0.1.238。
+- **第二波用户实测修复（同日）**：
+  1. **笔只能画在选区外面**——`#sel`（显示选区原图）DOM 排在 `#ink`（画笔层）
+     之后 → 画在选区里的笔迹被选区图盖住，只有选区外的可见（导出又被裁掉，
+     所以"截屏效果不好"）。修复：`#ink` 移到 `#sel` 之后 + 显式 z-index
+     （shot 0 / sel 1 / ink 2）。
+  2. **确认可能静默失效**——底图（大屏 base64 十几 MB）解码慢时点 ✓ 会
+     `!img.complete` 静默 return，用户以为要点 ✗ 才能退出 → 取消 → 什么都没挂载
+     （"看不到待发送文件"）。修复：确认时等底图加载（最多 3s）+ reportLog。
+  3. 复现验证：面板加号→截屏→确认 → 挂载条出现/× 可删除；悬浮球→截屏→
+     展开面板 → 挂载条出现（两条流程 DOM 断言全过）。release v0.1.239。
+  4. **挂载条位置**（用户要求）：从对话区顶部挪到**输入框正上方**（DOM 移到
+     `#input-bar` 之前）——放顶部用户注意不到；`#jump-bottom` 相应下移避让。
+     release v0.1.240。
+
+### 2026-10-18 第四十四轮：记忆树翻阅增强（用户反馈"只查一次就放弃"）
+
+- **用户反馈**：调 `explore_memory_tree` 只试一次就说找不到；问树结构有没有
+  在系统提示词里讲清楚（上抽象/下具体、可逐层展开找回具体对话）。
+- **诊断**（三个导航缺陷）：
+  1. 留空调用只返回 `get_root_id()`（level 最高**单个**节点）的 children——
+     树有多支并列时看不到其它支，概览不完整；
+  2. 展开非叶节点的 children **没有时间/条数范围**（只有 node_id+summary）——
+     docstring 说"可按时间缩小范围"但数据不支持，模型没法挑分支；
+  3. 坏编号（拼错/已被合并的旧编号）只回"找不到节点 xxx 的记录"，读起来像
+     "记忆里没有"——模型据此收工。
+- **修复**：
+  - `get_root_overview()`：所有 active 且无父节点的节点（森林根），带
+    level/条数范围/时间范围 + 摘要截断 200 字；留空调用改为返回它（文本格式，
+    每支一行 + "选一支展开"提示）；
+  - `get_node_children_info()`：children 带 level/round_start/round_end/
+    time_start/time_end，查询节点自身也带 id/level/范围；摘要过
+    `clean_wrapped_summary`（顺手治 JSON 外壳）；
+  - 坏编号提示改为：「该编号不存在（可能拼错或来自已被合并的旧消息），**不是
+    记忆里没有**——留空看顶层概览，或改用上下文里的 node 编号再试」；
+  - `system.md`：新增「记忆树的结构与翻法（逐层下钻）」bullet——下具体/上抽象、
+    2~4 次调用的下钻循环、叶子展开=原文、坏编号≠没记忆；工具 docstring 同步重写。
+- **测试**：+3（children 范围字段 / 顶层概览多支与合并后单支 / 工具层概览与
+  坏编号提示）；全量 pytest **394 passed**；release v0.1.241。
+- **同日补充（用户校正框架后，v0.1.242）**：
+  - **用户指出**：① 根节点**本来就在上下文里**（每次压缩替换时把新节点放进去）
+    ——所以"留空看概览"不是主路径，翻树起点就是上下文里的 node 消息；② 翻法 =
+    展开 X（X 的摘要已知）→ 返回 X **下一层**子节点摘要 → 自己判断往哪支钻 →
+    叶子展开返回其覆盖范围的原文——与实现一致，但提示词/docstring 此前把"留空
+    概览"写成第一步，**改为主路径表述**（留空=备用视图）；③ 节点在上下文里本就
+    带条数/时间范围（渲染头 `[nodeX · Lx · 第a-b条]` + `[时间]`），此前缺范围的是
+    **工具返回的 children 条目**（已补，且展开节点自身也带摘要+范围，叶子返回
+    同时给自身摘要——模型可能直接跳到叶子编号）。
+  - **真实性强调（用户要求）**：system.md 节点消息 bullet 增加"**里面记的都是
+    真实发生过的事，不是编造的故事**——只是摘要压缩，需要原始细节用工具找回"
+    （原来只说"你的亲身经历"，未明说"真实/非编造"）。
+  - 回归：`test_memory_tree.py` 叶子断言补摘要字段；全量 pytest **394 passed**；
+    e2e 全绿。
+
+### 2026-10-18 第四十五轮：视觉误判修复 + 输入框粘贴
+
+- **用户实测问题 1**：让助手看目录里的证件照（view_image），工具回"当前模型
+  不支持视觉；OCR 未识别到文字"——用户用的是 V4.1（多模态），为什么？
+  **根因**：`is_vision_model` 按模型名子串判定，收录了官方名 `deepseek-flash`，
+  但 **OpenCode Go 上同一模型叫 `deepseek-v4.1-flash`**（用户的服务商）——
+  不含子串 `deepseek-flash` → `vision_capable=False` → view_image 与挂载图片
+  全部静默降级 OCR。**修复**：收录 `v4.1-flash` 子串（`deepseek-v4-flash`/
+  `deepseek-v4-pro` 仍判纯文本——v4 老版/Pro 无视觉，test_vision 断言保护）；
+  修复后 view_image/挂图/截图发送都走原图注入。
+- **用户实测问题 2**：输入框不能 Ctrl+V 粘贴（图片/文档）。**实现**：
+  textarea paste 事件——纯文本不拦截；图片/文件 → `handleClipboardFiles` →
+  挂载（同拖拽/截图/加号机制）。**剪贴板位图没有磁盘路径**（截图工具复制后
+  直接粘贴）→ 新增 `save-pasted-file` IPC 落盘 `userData/pasted/`（保留 50）
+  → 按图片挂载；资源管理器复制的文件有路径走原路。
+- **回归**：test_vision +1 断言；`cdp_panel_check.js` 第 25 步（合成 paste 事件
+  → 落盘 → 挂载 → PASTE_OK）；全量 pytest **394 passed**；e2e 全绿；
+  release v0.1.243。
+
+### 2026-10-18 第四十六轮：压缩触发估算计入图片 base64（用户实测）
+
+- **用户反馈**：触发预算设 20 万，但原始消息才 1 万多就开始压缩。
+- **根因**：`should_compress_raw` 用 `len(str(m.content))` 估算——视觉注入的
+  user 消息 content 是块列表（text + image_url），`str(list)` 把 **base64
+  data URL 整个算进字符数**（一张 1MB 图 ≈ 百万级字符 ×1.2 → 估算瞬间超 20 万）；
+  而状态条 chip 的"原始"走 `context_stats`（只算文本块 + 图片每张 384）——
+  两边口径不一致，看起来就是"1 万多就触发"。用户刚看过照片/发过图，缓冲里
+  有 image_url 消息，每次调度 tick 都命中触发。
+- **修复**：① `should_compress_raw` 改用 `content.content_text()`（只取文本块）
+  + **图片每张按 384 计**（与 context_stats 同口径）；② `_estimate_message_tokens`
+  同步改用 `content_text`；③ **压缩调用输入剥离 image_url 块**
+  （`_strip_image_blocks` → 「（图片）」占位）——原来批次里带图会把 base64
+  整个发给摘要模型（浪费且无用；详情存储侧清洗原有）。
+- **回归**：`test_compression_contract.py` +2（base64 不计字符、压缩输入无
+  base64）；全量 pytest **396 passed**；release v0.1.244。
+
+### 2026-10-19 第四十七轮：show_image 历史回看修复（持久副本）
+
+- **用户反馈**：助手展示的图片只在当时那条回复里能看；之后再问他，消息里的
+  图片显示「无法加载」。问是不是预期设计。
+- **根因**：历史重建（/history → 前端 `addImage` → api-image → `/file?path=`）
+  按**原路径**重新拉图。工作区原文件之后被删除/修改/移动 → 404/403 → 前端
+  「（图片加载失败）」。用户实测场景：助手迭代简历时展示 `_preview_1.png` /
+  `_preview/resume_preview.png`，之后这些临时预览文件被清理，回看就报错
+  （网络图片没问题——本来就落 `data/images/`）。
+- **修复**：`show_image` 展示工作区文件前，**先复制持久副本到 `data/images/`**
+  （`_persist_image`，内容哈希命名、重复展示去重）——`/file` 的允许根含
+  data/images，之后原文件怎么变都不影响历史回看；docstring 同步说明。
+- **回归**：`test_show_image.py` 本地用例补断言（展示路径指向 data/images 副本、
+  删除原文件后副本仍在）+ 历史用例断言指向持久副本；全量 pytest **396 passed**；
+  release v0.1.245。
+
+### 2026-10-19 第四十八轮：改动文件快捷块（用户需求）
+
+- **用户需求**：每次回复后，把它改过的文件放在回复下面做快捷入口——「打开文件」
+  与「打开所在目录」两种方式；**按改动次数排序**（改得多的排前面）。
+- **实现**：
+  - 后端：`session.changed_files_for_ids(ids)`（changes.db 去重计数 + missing 标记
+    + 次数降序）；实时路径在 `_emit_tool_events` 累积 `_turn_change_ids`、
+    `_run_agent` 结束推 `changed_files` 事件；历史路径 /history 遍历 buffer 累积
+    ToolMessage 的 change_ids，在最终回复后挂 `role=changed_files` 条目。
+  - 前端：`addChangedFiles`（实时 + 历史同一渲染）；新 IPC `show-in-folder`
+    （`shell.showItemInFolder` 选中文件）；「打开」复用 `open-path`。
+- **过程中挖出并修复的两个真 bug（e2e 暴露）**：
+  1. **输入框发送后"正在输入"状态残留**：submit 处理清空 `input.value` 时没同步
+     typing 状态（不派发 input 事件）→ 后端一直以为用户在打字 → 每次模型调用被
+     `TypingHintMiddleware` 追加提示；对真实模型只是"误提示"，对 **mock 脚本是
+     致命**——脚本按"最后一条消息"决策（工具结果 → 收尾），提示顶掉判定 →
+     触发词死循环到单轮调用上限（实测打补丁轮循环 ~100 次、出题轮双问 + 120s
+     超时）。**用户随后决定直接砍掉该功能**：`TypingHintMiddleware` 整个移除
+     （前后端 typing 状态链路：`/typing` 端点、`setTyping` IPC、`session.typing`、
+     `syncTypingState` 全部删除）——提示对真实模型价值有限，带来的状态同步坑
+     不值当。
+  2. **mock 触发词劫持**：新步骤（第 26 步）排在第 21 步「出题」之后，
+     「打补丁」被历史里的「出题」劫持（全历史扫描、优先级=分支顺序）→ 新词
+     「补丁块」加在最前（专属快捷块步骤），`_e2e_patch_text()` 抽出共用负载。
+- **回归**：`test_changed_files.py` +2；`test_agent.py` 打字提示用例随功能移除
+  （删 `test_typing_hint_injected_temporarily`）；`cdp_panel_check.js` 第 26 步
+  （`补丁块` → BLOCK_OK + /history 条目 → CF_OK）；全量 pytest **397 passed**；
+  e2e 全绿；release v0.1.248。
+
+### 2026-10-19 第四十九轮：改动文件块改一行折叠 + 按钮修复（用户反馈）
+
+- **用户反馈 1**：全展开太占地方——改成**与工具组行同款的一行**：「本轮改动 N 个
+  文件 · 文件名…」，按改动次数降序、超出从尾部截断（不做滑动窗口）；点这一行
+  才展开，展开后每文件可选「打开」/「目录」。（纯代码链路，无模型参与 ✓）
+- **用户反馈 2**：「打开」「目录」按钮点了没反应。**根因**：`tools._record_change`
+  调 `db.record` 时**漏传 after_missing**（changes.py 有这个参数但没调用方设置过）
+  → 删除的文件留底里 after_missing=0 → 快捷块仍显示「打开」按钮 → 点已删除的文件
+  自然无反应（用户数据里 delete_file 记录全是 after_missing=0，实锤）。
+- **修复**：
+  1. `_record_change` 传 `after_missing = after is None`（删除/移动源/补丁删除）；
+  2. `changed_files_for_ids` 的 missing 再兜底查**磁盘实际存在性**（覆盖
+     run_command 等非留底方式删除的旧数据）；
+  3. 前端「打开/目录」失败时给 `addMessage` log 反馈（不再静默）；
+  4. 折叠设计：`.cf-line`（一行，点击 toggle）+ `.cf-body`（默认 display:none）。
+- **回归**：`test_changed_files.py` 磁盘兜底用例；`test_code_workspace.py` delete
+  用例断言 after_missing；`cdp_panel_check.js` 第 26 步加「默认收起→点击展开→
+  按钮 IPC 链路形状」断言；全量 pytest **397 passed**；e2e 全绿；release v0.1.249。
+
+### 2026-10-19 第五十轮：改动块聚合口径（用户反馈"中途多轮各出一块"）
+
+- **用户反馈**：说一句话，助手多轮思考/执行工具（还常以 heartbeat 调度收尾、
+  自主心跳续聊），每个回合结束都各出一个改动块——希望**只在回答最后统一出一块**。
+- **根因**：实时侧每个 `_run_agent` 结束就 emit + 清空；而 /history 是跨回合累积
+  的——两条路径口径不一致，实时侧在多回合/自主续聊时冒多个块。
+- **修复（统一为"跨回合累积、回合终点出块"）**：
+  - 实时侧：`_turn_change_ids` **不再在回合开始清空**；回合结束只在
+    `current_trigger == "player"`（回应用户）时出块；自主回合
+    （heartbeat/scheduled/nudge）继续累积；`_receive` 新消息边界先 flush
+    （与 /history 的 human 边界一致）。
+  - /history：追踪 `turn_autonomous`（注入消息（…）/[当前… = 自主）——自主回合的
+    最终回复不出块；玩家回合的**最终回复（无 tool_calls）或 heartbeat 收尾**
+    （heartbeat 也是回合终点）都出块。
+- **回归**：`test_changed_files.py` +2（自主回合改动累积到用户边界统一出、
+  heartbeat 收尾出块）；全量 pytest **399 passed**；e2e 全绿；release v0.1.250。
+
+### 2026-10-19 第五十一轮：/history 回合边界修正（用户截图实证）
+
+- **用户反馈**：截图显示一条消息的回复里仍有多个改动块（"本轮改动 1 个文件 ·
+  _preview/_render.py" 出现在工具组后面 + "…resume_preview.png" 在 heartbeat 行
+  后面）——回合被切碎。
+- **根因（用真实数据副本跑 /history 实证）**：**回合中途的注入消息被当成回合边界**
+  ——① nudge（「（你已经忙了一小会儿了…）」第 5 轮收尾提示）；② view_image 注入
+  （「（这是小助读取的图片：xxx.png…）」，ScreenShotInjectMiddleware 的 user 消息）；
+  ③ [当前议程]。每次注入都触发 `_flush_changed()` → 一回合的改动切成多块；且
+  「（…」开头的注入还把 `turn_autonomous` 置 True → 玩家回合的最终回复不出块
+  （块漂到下一个边界）。实测：11:49 回合被切成 3 块、11:51 回合切成 2 块。
+- **修复**：/history 只有**真正的回合边界**（真实用户消息「对你说：」/「（系统：」
+  开头）才 flush + 更新 `turn_autonomous`；nudge / view_image 注入 / [当前议程]
+  不再算边界（实时侧本来就不 flush 这些——它们不走 `_receive`，现在两边完全同口径）。
+- **验证**：真实数据副本重跑 /history——块数 5 → **2**（11:49 回合 8 文件合一块、
+  11:51 回合 2 文件合一块，位置都在回复末尾）；`test_changed_files.py` +1
+  （中途注入不切块）；全量 pytest **400 passed**；e2e 全绿；release v0.1.251。
+
+### 2026-10-19 第五十二轮：移除 Nudge 收尾提示（用户决定）
+
+- **用户判断**：「你已经忙了一小会儿了，把最重要的事做完就歇一下吧」是**陪伴期**
+  的软性收尾设计；现在小助要完成具体工作（多轮工具是常态），这提示只会让它
+  提前收手——不再需要。
+- **移除**：`NudgeMiddleware` 整个删除（含 `PlannerState.model_call_count` 字段、
+  `_run_agent` 的 state 初始化键、agent 链注册、docstring）；**硬上限
+  `ModelCallLimitMiddleware` 计数独立**（用 `run_model_call_count`，不共用该字段）
+  ——保险丝不受影响，实测确认。
+- **注意**：旧 buffer 里仍可能留有历史 nudge 消息（持久化过）——/history 的
+  回合边界判定本来就"正向匹配"（只有真实用户消息/「（系统：」算边界），
+  不受影响；对应回归用例保留并注明"历史遗留"。
+- **回归**：全量 pytest **400 passed**；e2e 全绿；release v0.1.252。
+
+### 2026-10-19 第五十三轮：Windows 报错框修复（用户反馈"测试总弹窗"）
+
+- **用户反馈**：跑测试时桌面上总弹 Windows「找不到文件 'C:\definitely-nonexistent-xyz\
+  nope.txt'」报错框。
+- **根因**：e2e 第 26 步的 IPC 链路检查用假路径调 `openInExplorer` →
+  `shell.openPath` 对不存在的路径会触发 **Windows 系统报错框**（不只是返回错误码）。
+  这也暴露真 bug：用户点「打开」时文件已被删除 → 同样弹系统框。
+- **修复**：`open-path` 处理器**先查 `fs.existsSync`**，不存在直接返回
+  `{ok:false, error:'not_found'}`（前端给 log 提示，不碰 shell）；`show-in-folder`
+  本来就有存在性检查 ✓；e2e 假路径检查现在不再触发系统框。
+- **回归**：全量 pytest **400 passed**；e2e 全绿（无弹窗）；release v0.1.253。
+
+### 2026-10-19 第五十四轮：压缩分片重做（X 渐进前缀 + B 立即合并，用户定稿）
+
+- **用户驱动的设计推演**（核心诉求链）：
+  1. 叶子太粗——整批 15~20 万压成一个 L0，探索展开一次面对整批原文；
+  2. 但分片会伤缓存——逐项推演发现"独立分片"第 2 片起位置错位全价
+     （压缩调用 `[S][节点][第k片]` 与聊天序列 `[S][节点][第1片][第2片]…`
+     从第 1 片处就分叉），每 20 万事件把批次大部分全价重读一遍；
+  3. 结论：**渐进前缀（X）**——第 k 次调用带"第 1..k 片原文"，逐字节复刻
+     聊天序列前缀 → **缓存全命中**；指令锚点（"从这条消息开始：「…」"）只压
+     最后一片、前面是背景；单段输出解析风险与整批相同；
+  4. **立即合并（B）**——n 片全成功后再一次调用合并成 1 个父节点进上下文
+     （树里保留分片叶子可下钻）→ 上下文观感与整批一致（一次压缩一个节点）。
+- **实现**：
+  - `_split_batch_by_tokens`：切点**优先用户消息边界**（浮动窗口 [0.75×, 1.4×]，
+    每片=完整若干轮对话）；无 human 边界时到 1.4× 在安全边界兜底收；
+  - `_summarize_leaf`：新增 `context_msgs`（渐进前缀发送序列）与
+    `anchor_quote`（锚点）；返回 node_id；details/移除/范围仍只针对本片；
+  - `_anchor_quote`：本片首条有正文消息的开头 120 字（空 ai(tool_calls) 往前扫）；
+  - `_merge_fresh_leaves`：与 `_compact_level` 同构——n 个叶子从树渲染（去标记）
+    → `_call_compress`（父层指令）→ `tree.compact(叶子ids)`（叶子转 inactive）
+    → `adds` 里 n 个叶子消息换成 1 个父节点消息；
+  - 指令模板：叶子"范围"行拆成普通/分片两形态（中英共 6 份模板）；
+  - **设置项**：`compress_chunk_tokens`（分片大小，默认 3 万，0=关闭分片整批压）、
+    `compress_merge_parent`（分片后合并父节点，默认开）——设置页「记忆压缩」新增
+    两个控件（数字输入 + 开关）。
+- **回归**：`test_compression_contract.py` 重写/新增（小批次单节点、**渐进前缀
+  增长 + 锚点 + 合并父节点 + 树里 n 叶子**、某片失败停手、切点优先 human/浮动）；
+  全量 pytest **402 passed**；e2e 全绿；release v0.1.254。
+
+### 2026-10-19 第五十五轮：分片方案四项定稿修正（用户逐条推演）
+
+1. **层级合并持续消化**：某层超阈值 → 一轮内**持续合并到低于阈值**（旧行为每层
+   每轮只合一批：10 个(6/3) 只合 3 个、剩 7 个仍超阈值挂到下一轮——用户指出）；
+   上限 8 批/轮防跑飞。
+2. **节点合并输入只带目标之前的节点**：目标之后的节点（未来信息）不进输入
+   （与叶子剔除保留尾部同一原则，防模型把后面状态混进本段摘要；cutoff = 目标
+   最大起始序号）；原始消息一律不进。
+3. **叶子锚点补尾部**：头部锚点 = 首条有正文消息前 120 字（往前扫 4 条）；
+   **新增尾部锚点** = 末条有正文消息结尾 60 字（往后扫 4 条）——防止模型把结尾
+   的工具结果误当背景提前收尾；指令改为"从…开始，直到输入最后一条…为止"。
+4. **`compress_merge_parent` 默认改为关**（用户定：分片叶子各自进 level 0、由
+   6/3 层级合并逐批消化——即用户描述的流程；开启才立即合并成单父节点）。
+- **回归**：`test_compression_contract.py` 27 例（+持续消化/目标之后排除/
+  默认不合并/双锚点断言）；全量 pytest **405 passed**；e2e 全绿；release v0.1.258。
+
+### 2026-10-19 第五十六轮：删除"分片后合并父节点"（用户确认）
+
+- **用户结论**：该功能无实际价值——① 从未要求过（是设计时自行加的）；② 阈值
+  合并本来就会往上合并，"立即合并"与它的唯一差别只是**分组边界**（合 5 个 vs
+  合 4 个），对范围/时间/探索/缓存**没有任何影响**；③ 片数本来就不固定
+  （≈批次 ÷ 分片大小），"一次压缩一个节点"的说法造成理解混乱。
+- **删除范围**：`settings.py`（DEFAULT_SETTINGS/`_BOOLS`/docstring）、设置页开关
+  + settings.js 读写、`middleware.py` 的 `_merge_fresh_leaves` 方法与
+  `_compress_batch` 里的调用；测试收敛（渐进前缀用例改为断言"n 个叶子各自进
+  上下文"、删除重复的默认用例、async 用例断言多个叶子）；AGENTS 同步。
+- **无数据迁移**：settings.json 里残留的 `compress_merge_parent` 键会被
+  load/save 自动忽略（只认 DEFAULT_SETTINGS 的键）。
+- **回归**：全量 pytest **404 passed**；e2e 全绿；release v0.1.259。
+
+### 2026-10-19 第五十七轮：合并漏摘分片叶子（用户实测"10 个 L0、范围重叠"）
+
+- **用户反馈**：节点范围乱（`node1_045` 5939-6046 与 `node0_167` 5958-5998 并存、
+  看起来重叠/不连续）；L0 数 10 超过阈值 8；压缩频率感觉高。
+- **根因（数据实证）**：`_compact_level` 只从**快照 msgs** 里摘除目标消息——
+  层级合并的目标若含**本轮刚产生的分片叶子**（消息在 `adds`、不在快照里），
+  消息没被摘除 → inactive 子节点消息与父节点并存于 buffer。证据：node1_045
+  的子节点 166-169 中，166（上一轮、在快照）被正确移除，167-169（本轮、在 adds）
+  残留；日志"删除 317 条、插入 12 节点消息"（12 = 10 分片 + 2 父节点，本该只留 2+2）。
+- **修复**：
+  1. `_compact_level` 同步从 `adds` 摘除 target_ids 的消息；
+  2. 自愈 `_drop_superseded_node_messages`（启动 + 压缩后）：清理"inactive 且父节点
+     消息在场"的旧节点消息（父节点缺失时保留——宁可重复不丢覆盖）——用户现有
+     buffer 重启后自动清干净；
+  3. **压缩指令附 JSON 形状示例**（`_JSON_SKELETON`）：用户日志显示每次叶子调用
+     都因形状漂移（lessons 写列表、user 写字典）失败重试一次（双倍模型调用，
+     这也是"频率高/慢"的体感来源）——指令末尾给出精确形状。
+- **回归**：`test_compression_contract.py` +2（adds 摘除/自愈清理）；全量 pytest
+  **406 passed**；e2e 全绿；release v0.1.261。
+
+### 2026-10-19 第五十八轮：日历页排版（用户反馈"格子好大"）
+
+- **问题**：月历格子 `aspect-ratio: 1/1` + 7 列铺满面板 → 每格 ≈90×90，占满整页
+  高度，下方日程列表被挤到看不见。
+- **改法**：格子改为固定高 **38px**；网格 `width:100% + max-width:520px +
+  align-self:center`（紧凑居中）；星期头字号/间距收紧；角标缩小（10px）。
+- **踩坑**：初版用 `margin: 0 auto` 居中——`.view` 是 flex 列容器，**auto 边距会
+  让 flex 子项收缩成内容宽度**（实测网格缩到 93px、星期头挤成一团）；改用
+  `width:100% + max-width + align-self:center` 修复。
+- **验证**：隔离实例 + CDP 截图核对（截图见开发记录）；e2e 全绿；release v0.1.262。
+- **同日补充（用户要求提高空间利用率）**：月历原本占上方整行、左右空出一大截——
+  改为**两栏布局**：`#cal-left`（月历，flex 1 1 320px）+ `#cal-day`（当天待办，
+  flex 1 1 280px），同一高度；窄面板自动换行（flex-wrap）；添加表单改为两行
+  （时间/类型/重复/添加一行、文本输入独占一行——`order: 5` + `flex-basis:100%`）。
+  release v0.1.263。
+- **再补充**：两栏下左栏较窄，格子改回**正方形**（`aspect-ratio: 1/1`，随栏宽
+  自适应）；**移除用户手动添加日程的表单**（时间/类型/文本/重复/添加——日程与
+  任务统一由小助通过日历工具管理）。截图验证；release v0.1.264。
+
+### 2026-10-19 第五十九轮：心跳语义重定义（用户定稿：只做用户嘱托的定时器）
+
+- **用户决策**：心跳不再自主搭话/自主学习——**只有用户明确要求"某时间/间隔后
+  做某事、盯着某任务"时才设**；支持**巡检循环**（醒来 → 检查 → 完成就收尾 /
+  未完成再设下一次）；生成出错**不重试**；**免打扰与自主学习整套去掉**。
+- **提示词**：`system.md` 心跳 4 条重写（用户授权定时器 / 巡检循环 / 间隔选择 /
+  钟点提醒走日历）；删除 Do Not Disturb 与 Self-directed learning 两条；日历
+  "Proactive check-ins" 改为"只做用户要求的巡检"；`heartbeat` 工具 docstring
+  同步（删除"每轮收尾都要调用它"——那正是"每轮排心跳"的来源）。
+- **调度**：`start_heartbeat` 不再自动排 30 分钟（无开机自主唤醒）；
+  `_fire_heartbeat` 醒来即消费（next=0 立即落盘、**不再保底重排**、崩溃重启不
+  重复触发）；错误路径删除 FALLBACK/学习保底排程；`_check_startup_heartbeat`
+  补触发后立即落盘 next=0。
+- **删除**：`DndGuardMiddleware`（agent 链/导入）、`set_do_not_disturb` 工具、
+  `POST /dnd`、`session.set_dnd/in_dnd`、`state_dict().dnd`、`PLANNER_DND_*`、
+  `_is_self_learning_generation`/`tts_mute`/`_generation_tool_names`/
+  `_heartbeat_set_this_generation`/`PLANNER_LEARNING_HEARTBEAT_MINUTES`；前端
+  右键/托盘"切换免打扰"、`tts_mute` 处理、`state.dnd`；日历到点提醒不再受时段限制。
+- **回归**：删除 DND 用例 5 个；重写持久化用例（消费即落盘/不自动重排/启动不排程）；
+  新增"唤醒提示带嘱托+巡检语义""模型不设心跳则不重排""启动不自动排程"；全量
+  pytest **402 passed**；release v0.1.265。
+
 ### 与方案的偏差
 
 1. 工作目录面板的"子目录"只列目录（不列文件）；文件靠 `@` 补全与 `read_file`。
@@ -1000,3 +1363,222 @@
    授权规则管理也已实现**（第五轮，库落在 `data/changes.db` 而非方案里写的 `data/changes/` 目录）；
    **`ask_user` 也已实现**（第六轮）；图片粘贴、代码块主题仍未做，见「七、后续可选」。
 
+第六十轮：心跳取消/更新 + 文档去 DND 残留（2026-10-19）
+
+- **用户需求**：心跳只有"设"没有"取消"——用户改主意/任务提前完成时没法撤销。
+- **实现**：`HeartbeatInput` 加 `cancel`（cancel=true 时允许不填间隔；否则仍
+  要求 minutes/seconds 二选一）；工具分支 `cancel → session.cancel_heartbeat()`
+  返回「已取消下一次定时唤醒」/「当前没有排定的定时唤醒」；`session.
+  cancel_heartbeat()` 清 `_next_heartbeat_at`/`_heartbeat_note` → **立即落盘**
+  （重启不复活）+ `_wake_event.set()`；**更新** = 直接再调一次 `heartbeat`
+  （新设定覆盖旧的，无需先取消）。`system.md` 心跳 bullet 补「Modify/cancel」。
+- **文档清残留**：README（工具表/能力表/环境变量表）、`docs/api-contract.md`
+  （`dnd` 事件/state 字段/`POST /dnd`/DND 中间件说明）、`docs/tour.md`（工具计数/
+  免打扰条目/中间件表/术语表/调度链）、`docs/README.md`、研究脚本
+  `docs/research/locomo/playback.py`（dnd_enabled 属性已删会崩）全部清理；
+  `android/` 按约定不动。
+- **回归**：`test_agent.py` +2（`test_heartbeat_update_overwrites`、
+  `test_heartbeat_cancel`——取消落盘/无排定提示/重启不复活）；全量 **404 passed**；
+  e2e 全绿（PATCH_OK/PASTE_OK/CF_OK）；release v0.1.266。
+
+第六十一轮：节点长度预算写进压缩指令（用户口径：设置 N ≈ 总字数 N）
+
+- **用户疑问**：模型知不知道 `node_token_budget`？确认：**不知道**——预算此前
+  只用于两处：`_get_summary_model` 的 `max_tokens=3×`、事后 `_apply_budget`
+  软裁剪（summary 上限 2×预算字符、列表项 8×200）；压缩指令里完全没提，
+  模型写多长全凭发挥。release 实测：今日 L1 1208~1568 字、最新 L2 summary
+  1035 字 + 字段共 ~3541 字；全树 247 节点平均 516 字、25 个超 1000 字。
+- **修复**：六份压缩指令（叶子普通/叶子分片/父层 × 中英）新增 `{budget_line}`
+  占位；`SummarizationMiddleware._budget_line()` 把预算写成**整节点总字数**
+  （中文口径 1:1：设置 1000 → 约 1000 字，summary ~400、其余字段 ~600；
+  英文评测路径保持 token 语义 ≈3.5 字符），并注明"是上限不是目标、内容少就
+  写短、不要凑数"。事后软裁剪 summary 上限同步从 2×预算收紧到 1×预算。
+- **设置页**：节点预算 hint 改为"整节点总字数目标（默认 1000 ≈ 1000 字，
+  会写进压缩指令；超出软裁剪）"。
+- **回归**：`test_compression_contract.py` +1（`test_instruction_carries_length_budget`
+  ——叶子/父层指令都带预算、中英双语）、`test_profile_nodes.py` 预算断言
+  2000→1000；全量 **405 passed**；e2e 全绿；release v0.1.268。
+  **旧节点不受影响**，只影响之后新压缩的节点。
+
+第六十二轮：悬浮球快速输入浮层 + 气泡显示时长设置（2026-10-19）
+
+- **用户需求**：不展开面板也能输入——全局快捷键（默认左 Alt+J）在悬浮球旁
+  弹出小输入框（输入 + 语音 + 发送 + 待发送文件），Enter 发送；气泡显示
+  时长加到设置页。
+- **实现（Electron 前端）**：
+  - `main.js`：新增 `quickWin`（380px 宽、透明无边框、置顶、skipTaskbar，
+    启动即创建隐藏）；`globalShortcut` 注册 `uiSettings.quick_input_hotkey`
+    （默认 `Alt+J`，设置页可改，保存即重新注册；被占用只记日志）；
+    `positionQuickInput()` 贴球上方（放不下放下方），`quick-resize` 随内容
+    增高且固定"贴球那侧"；失焦/Esc 收起；`broadcastMounted` 补发 quickWin。
+  - `quick-input.html/css/js`：输入（Enter 发送、Shift+Enter 换行、IME 防
+    误发）、语音按钮（mic.js → /asr 填回）、发送按钮；待发送文件 = 全局
+    mounted（显示/移除/拖入挂载）；发送走 `apiFetch('/chat')` →
+    `clearMounted()` → 收起；没有其他按钮（按需求裁剪）。
+  - `preload.js`：`onQuickShow` / `onQuickHide` / `hideQuickInput` /
+    `quickResize`。
+- **气泡时长**：main.js `TOAST_MS` 常量（30 秒）→ `toastLifetimeMs()` 读
+  `uiSettings.toast_seconds`（默认 30、3~600 秒）；设置页「交互」新增
+  「气泡显示时长」「快速输入快捷键」两行（存 `ui-settings.json`，主进程
+  本地配置，无需后端）。
+- **mock**：新增触发词「快速输入测试」（放在「补丁块」之前——全历史扫描
+  顺序，见 `llm.MockChatModel._generate` 注释）。
+- **回归**：`cdp_panel_check.js` 第 27 步（QUICK_OK：挂载显示→Enter 发送→
+  挂载清空→/history 落库 + UI 设置可读）；全量 pytest **405 passed**；
+  e2e 全绿；release v0.1.269。
+
+第六十三轮：悬浮球待处理提醒（审批/提问黄灯 + 球旁卡片就地处理，2026-10-19）
+
+- **用户需求**：对话中需要用户审核/回答时（审批、ask_user），悬浮窗状态也要
+  有提醒并能就地处理——冒气泡提醒、悬浮球中心变**黄色呼吸灯**；解决后恢复；
+  展开面板或直接在气泡里选择/授权都行（尽量保证悬浮球形态交互完整）。
+- **行为变更**：面板隐藏时**不再自动展开面板**（旧行为会强行打断用户）——
+  改为球旁持久提醒卡 + 黄灯；面板展开时仍在面板里显示审批弹窗/提问卡。
+- **实现（Electron 前端）**：
+  - `main.js`：`pendingApprovals/pendingQuestions` 跟踪事件（request 存、
+    resolved 删、`pendingSummary()`），`broadcastPending` 推给悬浮球与提醒卡；
+    `pendingWin`（340px、按内容增高、`showInactive` 不抢焦点、失焦不收起、
+    × 只收卡片黄灯保留）；`refreshPendingWindow()` 统一裁决（面板展开 /
+    快速输入浮层打开时让位；收起面板后未决请求重新冒出）；后端离线清空。
+  - `pending.html/css/js`：审批卡（工具/路径 + 允许一次/拒绝/展开面板 +
+    超时倒计时）、提问卡（选项按钮 + 自由输入 + 展开）；动作直接
+    `POST /approval` / `POST /question`，resolved 事件回来自动收起。
+  - `bubble.js` + `bubble.css`：`#core.pending` 黄灯呼吸（1.4s
+    `pending-breathe`，状态点 `#f59e0b`），`onPending`/`getPending` 驱动。
+    顺手修掉悬浮球逾期徽标读旧字段 `s.plan`（应为 `s.agenda`）。
+- **mock**：触发词「气泡提问」（放在最前）触发 ask_user；回归
+  `cdp_panel_check.js` 第 28 步（PENDING_OK：收起面板→触发→球黄灯→
+  卡片点选项→黄灯灭）。第 21 步改为「先等提问卡进隐藏 DOM → 手动展开」。
+- **回归**：全量 pytest **405 passed**；e2e 全绿（QUICK_OK + PENDING_OK）；
+  release v0.1.270。顺带：快速输入/提醒窗 `backgroundThrottling:false`
+  （隐藏时定时器不降频）。
+
+第六十四轮：悬浮球逾期红点只统计今天（2026-10-20）
+
+- **用户反馈**：修好 s.agenda 字段后重启，悬浮球左上角出现红点 9+——原来
+  是全量逾期（更早日期没做完的日程都算）；要求只统计今天。
+- **实现**：session.state_dict() 的 genda.overdue_count 从全量逾期
+  改为**今天**已过时间且未完成（list_overdue_calendar 结果按
+  date == today 过滤）；日历补提醒扫描（_check_calendar_due）仍用全量
+  逾期，不受影响。
+- **回归**：	est_calendar.py +1（昨天/今天已过点/今天全天 → 红点只计
+  今天的 1 条；全量逾期查询仍为 2）；全量 **406 passed**；e2e 全绿；
+  release v0.1.271。
+
+第六十五轮：悬浮球配色对齐桌面/托盘图标（2026-10-20）
+
+- **用户反馈**：悬浮球配色与桌面图标不一致（原来是青绿渐变
+  `#7ce8db → #2fb3a6 → #178f86`），要求改成图标同款。
+- **图标取色**（`frontend/assets/bubble.ico` 256px / `bubble_32.png`）：
+  球身天蓝 `#5fb8d6`（顶部浅蓝高光 ~`#8fd4e8`、边缘略深 `#3f9fbf`）、
+  中心绿点 `#6fd993`、白色高光/描边。
+- **改动**：`bubble.css` `#core` 渐变 `#8fd4e8→#5fb8d6→#3f9fbf`、白描边
+  0.5、辉光 `rgba(95,184,214,.35)`；状态点在线色 `#34c78a→#6fd993`；
+  `style.css` `#morph-ball`（展开/收起动画里的球）同步同款渐变与辉光、
+  `#morph-status-dot` 在线色改 `#6fd993`——动画衔接不跳色。
+- 纯 CSS；用户实例在运行，未跑 e2e；release v0.1.272。
+
+第六十六轮：拖动面板不再改变悬浮球位置（2026-10-20，用户要求）
+
+- **用户反馈**：把球拖到合适位置 → 放大 → 把面板拖到别处 → 收起后球跑到
+  面板那里了；希望球的位置不受面板拖动影响。
+- **原因**：`morphOut()` 里有"面板被拖过（`panelDragged`）→ 悬浮球重定位到
+  面板中心、原地缩小"的分支（陪伴期设计）。
+- **修复**：删除该分支——缩小目标一律 = 球当前 bounds；面板拖动只移动面板，
+  收起动画从面板位置飞回球的位置（球留在用户上次放它的地方）。
+- **回归**：CDP 探针（release + 隔离数据：记球坐标 → 展开 → `movePanel`
+  偏移 → 收起 → 球坐标一致 `BALL_STAYS_OK`）；全量 e2e 全绿；release v0.1.273。
+
+第六十七轮：快速输入浮层改到悬浮球下方（2026-10-20，用户要求）
+
+- **用户反馈**：气泡 toast 一般出现在悬浮球上方，快速输入浮层也放上方会重叠；
+  输入框放球**下方**更合适。
+- **改动**：`positionQuickInput()` 改为优先球下方（视觉球下沿 +10），下方放不下
+  （贴屏幕底）才翻到上方；待处理提醒卡（`positionPendingWindow`）同步同样
+  规则（两者本来就互斥）。`quick-resize`/`pending-resize` 增高时仍固定贴球那侧，
+  并**夹到工作区内**（贴底时向下生长不越界）。
+- **回归**：e2e 全绿（QUICK_OK / PENDING_OK 仍过）；release v0.1.274。
+
+第六十八轮：悬浮球/快速输入发送的用户消息立即出现在面板（2026-10-20）
+
+- **用户反馈**：语音输入或快速输入浮层发的消息，展开面板看不到自己的消息，
+  只有模型回答；等回答完再收起/展开才出现。
+- **原因**：面板的本地气泡只在面板自己的提交分支里渲染（`addMessage`）；
+  悬浮球语音 / 快速输入走 `/chat`（或语音直发），后端没有事件通知前端，
+  隐藏的面板 DOM 里就没有这条消息。展开时若还在生成，`loadHistory(true)` 被
+  跳过（防抹掉在途思考），所以只有等生成结束再重开才靠 `/history` 重建出来。
+- **修复**：`session.enqueue_player_message` 入 buffer 后立即
+  `push_event({"type": "user_message", "id", "text"})`；面板 `handleEvent`
+  新增分支用 `addUserMessage(text, id)` 补气泡，按 msg id 去重（面板本地提交
+  与事件几乎同时到达），事件路径 `forceScroll=false`（用户正在翻历史时不被
+  拽到底）；`addMessage` 给用户消息加 `data-msg-id`，事件带 id → 撤销按钮可用。
+- **回归**：`test_server.py` +1（`test_chat_pushes_user_message_event`）；
+  e2e 第 27 步加断言（发送后面板 DOM 立即出现该用户消息，旧代码会
+  `PANEL_NOT_RENDERED`）；全量 **407 passed**；release 直连 CDP 全绿
+  （SCROLL_OK / QUICK_OK / PENDING_OK；用户实例占用 18772 时完整 e2e 跳过）。
+
+第六十九轮：修复"桌面快捷方式打开不是 release 版本"（2026-10-20）
+
+- **现象**：用户从桌面快捷方式打开小助，历史消息全是 e2e 测试对话
+  （"这是端到端验证的测试对话""用户选择了「A」"…）。
+- **根因**：不是快捷方式/版本问题——是之前一次 **e2e 面板检查失败**
+  （滚动断言 YANKED）在脚本末尾 `throw`，**跳过了清理段** → 隔离数据的
+  **mock 后端继续监听 18772**。用户打开 release 前端时 `checkBackend`
+  发现 18772 在线，就直接连上这个测试后端（不拉起正式后端），于是看到
+  测试对话。经查 `planner-release\data` 未被写入测试数据（用户 12:20-12:44
+  的真实对话仍在 buffer_state），无需恢复。
+- **处理**：杀掉遗留 mock 后端（18772 / 37878 等 3 个孤儿进程）；确认
+  `PORT_FREE`；用户重新打开快捷方式即正常。
+- **加固**：`e2e_release.ps1` 主体包 `try/finally`——失败也执行清理：
+  杀 `$backend`、按 `--remote-debugging-port=9223` 匹配本脚本 Electron、
+  杀 18772 残留监听（开跑前已断言端口为空）、清环境变量；**不再
+  `Get-Process electron` 全杀**（会误伤其他 Electron 应用）。
+- **回归**：e2e 全绿且结束后 `PORT_FREE`；release v0.1.275。
+
+第七十轮：Markdown 表格 + 可点击链接（2026-10-20，用户要求）
+
+- **用户反馈**：模型输出的 GFM 表格原样显示竖线，不能渲染；输出里的链接
+  希望能直接点开。
+- **表格**：`md.js` 增加行级表格解析——首行 `| a | b |` + 分隔行
+  `|---|---|`（支持 `:---:` 对齐），连续 `|` 行作为表体；单元格走行内格式
+  （代码/链接/粗体）；外层 `.md-table-wrap`（可横向滚动）+ `.md-table`
+  （边框/表头浅灰底/斑马纹），面板 `style.css` 与气泡 `toast.css` 各一套；
+  单元格 `white-space: normal`，不继承 bubble 的 pre-wrap。
+- **链接**：`[label](url)` 与裸 `http(s)://` 自动转 `<a class="md-link">`；
+  **协议白名单 http(s)/mailto**（`javascript:`/`data:`/`file:` 按普通文本）；
+  md.js 在 document **capture** 阶段拦截点击（preventDefault + stopPropagation，
+  防止 file:// 导航与 toast 的"点击展开面板"）→ `openExternal` → 主进程
+  `open-external`（白名单 + `shell.openExternal`）。
+- **回归**：`cdp_panel_check.js` 第 29 步（MD_OK：表格结构/两种链接/
+  `javascript:` 不生成 `<a>` 且 openExternal 返回 `ok:false`）；e2e 全绿、
+  结束 `PORT_FREE`；release v0.1.276。
+
+第七十一轮：去掉每轮议程快照 + 逾期追问去重（2026-10-20，用户要求）
+
+- **用户疑问**：小助说"每条我说话的上下文里都会带一份未来 7 天议程快照"，
+  是不是每条消息都附带、有点浪费？→ **澄清**：并非每条新消息都注入
+  （`AgendaSnapshotMiddleware` 按议程指纹去重，变化才注入一次），但注入后
+  作为 HumanMessage **常驻上下文**，模型每轮都看得到。
+- **用户决定**：不带了。删除 `AgendaSnapshotMiddleware`、`_agenda_snapshot_text`
+  与指纹字段；`system.md` 第 2/3/5 条改为"**没有自动议程快照**，需要时用
+  `list_schedule` 查（`start_date` + 可选 `end_date`，默认单日）"。
+- **顺带修重复提醒**：用户实测 20:00 到点提醒响过之后，20:13 逾期扫描又问
+  "要不要提醒你"。根因：`list_overdue_calendar` 不看 `reminded_at` →
+  已到点提醒的项仍被当作"漏网"再问。现在加 `skip_reminded=True`
+  （`_check_calendar_overdue` 使用）；红点统计仍用默认参数（提醒过但没勾掉
+  仍算未完成）。
+- **回归**：删除 2 个议程快照测试、新增
+  `test_overdue_skip_reminded_for_nudge`；全量 **406 passed**；release 直连
+  CDP 全量检查全绿（用户实例占用 18772 时完整 e2e 跳过）；release v0.1.277。
+
+第七十二轮：Markdown 标题 / 列表 / 引用渲染（2026-10-20，用户反馈）
+
+- **用户反馈**：## 一、kernel 就是一个函数 这种标题没渲染成标题（只支持
+  加粗/代码/表格/链接）。
+- **实现**：md.js 增加行级块解析——#~###### → <h1>~<h6>；
+  -/*/+ 列表 → <ul>；1./1) → <ol>；> → <blockquote>；
+  块内仍走行内格式（加粗/代码/链接）。面板 style.css 与气泡 	oast.css
+  各补一套块级样式（标题字号、列表缩进、引用左边线；white-space: normal
+  避免 bubble 的 pre-wrap 造成块内多余空行）。
+- **回归**：e2e 第 29 步扩展（标题/无序列表/有序列表/引用断言）；
+  e2e 全绿（Markdown: MD_OK）、结束 PORT_FREE；release v0.1.278。

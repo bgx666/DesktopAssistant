@@ -75,6 +75,53 @@ def test_calendar_due_and_reminded(data_root):
         s.close()
 
 
+def test_state_overdue_counts_today_only(data_root):
+    """state_dict 的 overdue_count 只统计**今天**逾期（更早日期的逾期不进红点）。"""
+    from datetime import timedelta
+    from planner.session import _now
+
+    s = PlannerSession(data_root, mock=True)
+    try:
+        now_ = _now()
+        today = now_.strftime("%Y-%m-%d")
+        yesterday = (now_ - timedelta(days=1)).strftime("%Y-%m-%d")
+        s.db.add_calendar_item(yesterday, "昨天没做完", "20:00")
+        s.db.add_calendar_item(today, "今天已过点", "00:00")
+        s.db.add_calendar_item(today, "今天全天", None)      # 全天项 23:59 才算逾期
+        ag = s.state_dict()["agenda"]
+        assert ag["today_total"] == 2
+        assert ag["overdue_count"] == 1, "红点只应统计今天的逾期"
+        # 全量逾期查询（日历补提醒用）不受影响
+        assert len(s.db.list_overdue_calendar(now_)) == 2
+    finally:
+        s.close()
+
+
+def test_overdue_skip_reminded_for_nudge(data_root):
+    """已到点提醒过的逾期项不再触发"逾期追问"（20:00 提醒 + 20:13 又问，用户实测）。
+
+    红点统计（默认）仍算它逾期；只有调度线程的追问要跳过已提醒的。
+    """
+    from datetime import timedelta
+    from planner.session import _now
+
+    s = PlannerSession(data_root, mock=True)
+    try:
+        now_ = _now()
+        yesterday = (now_ - timedelta(days=1)).strftime("%Y-%m-%d")
+        iid = s.db.add_calendar_item(yesterday, "开会", "20:00")
+        reminded = [i for i in s.db.list_overdue_calendar(now_) if i["id"] == iid]
+        assert len(reminded) == 1
+        s.db.mark_calendar_reminded(iid, yesterday + " 20:00")
+        # 红点统计：提醒过但没勾掉，仍算逾期
+        assert any(i["id"] == iid for i in s.db.list_overdue_calendar(now_))
+        # 逾期追问：跳过已提醒的
+        assert not any(i["id"] == iid
+                       for i in s.db.list_overdue_calendar(now_, skip_reminded=True))
+    finally:
+        s.close()
+
+
 # ── planner 工具 ────────────────────────────────────────────
 
 def _tools(session):
@@ -236,7 +283,6 @@ def test_calendar_due_fires_and_marks(data_root, monkeypatch):
     """到点的项：注入提醒 + 唤醒一次；标记后不再重复投递。"""
     s = PlannerSession(data_root, mock=True)
     try:
-        s.dnd_enabled = False
         fired: list[str] = []
         monkeypatch.setattr(s, "_spawn_worker", lambda trigger: fired.append(trigger))
 
@@ -255,8 +301,8 @@ def test_calendar_due_fires_and_marks(data_root, monkeypatch):
         s.close()
 
 
-def test_calendar_due_respects_dnd_and_all_day(data_root, monkeypatch):
-    """免打扰期间不投递；全天项不参与到点提醒。"""
+def test_calendar_due_all_day_not_reminded(data_root, monkeypatch):
+    """全天项不参与到点提醒；带时刻的照常投递（已无免打扰窗口拦截）。"""
     s = PlannerSession(data_root, mock=True)
     try:
         fired: list[str] = []
@@ -264,19 +310,13 @@ def test_calendar_due_respects_dnd_and_all_day(data_root, monkeypatch):
 
         # 全天项：不提醒
         s.db.add_calendar_item("2020-01-01", "买牛奶", None)
-        s.dnd_enabled = False
         s._check_calendar_due()
         assert fired == [], "全天项不参与到点提醒"
 
-        # 免打扰：到点也不投递（用一次性 dnd_until——测试环境窗口是 0-0，永不在 DND）
-        from datetime import timedelta
-        from planner.session import _now
+        # 带时刻的到点项：照常投递
         s.db.add_calendar_item("2020-01-01", "交房租", "10:00")
-        s.dnd_until = _now() + timedelta(minutes=10)
         s._check_calendar_due()
-        assert fired == [], "免打扰期间不投递"
-        # 未投递 = 未标记，等 DND 结束还能补上
-        assert s.db.list_calendar_due(_now())
+        assert fired == ["reminder"], "到点项应投递提醒"
     finally:
         s.close()
 

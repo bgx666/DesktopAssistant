@@ -1,7 +1,9 @@
-// md.js —— 轻量 Markdown 渲染（加粗 + 行内代码 + 代码块[含轻量语法高亮]），XSS 安全
+// md.js —— 轻量 Markdown 渲染（标题 + 加粗 + 行内代码 + 代码块[轻量高亮] + 表格 + 列表/引用 + 链接），XSS 安全
 // 用法：window.md.render(text) → HTML；window.md.escapeHtml(text)
 // 高亮是"够用就好"的极简 tokenizer（关键字/字符串/注释/数字），覆盖 py/js/ts/json/sh/yaml；
 // 先按原始文本切 token，再逐个转义包裹——不存在把用户内容当 HTML 解析的路径。
+// 链接只放行 http(s)/mailto；点击走 window.planner.openExternal（系统浏览器），
+// 不让 file:// 页面自己导航（会顶掉面板）。
 (() => {
   'use strict';
 
@@ -108,8 +110,136 @@
     return out;
   }
 
+  // ── 行内格式：代码 / 链接 / 粗体（安全：先占位再转义）──
+  // 只有 http(s)/mailto 才是合法链接（javascript:/data:/file: 一律按普通文本）
+  function safeUrl(raw) {
+    let u = String(raw || '').trim();
+    if (u.startsWith('<') && u.endsWith('>')) u = u.slice(1, -1).trim();
+    if (!/^(https?:\/\/|mailto:)/i.test(u)) return '';
+    return u;
+  }
+
+  function linkHtml(href, label) {
+    const text = escapeHtml(label)
+      .replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
+    return '<a class="md-link" href="' + escapeHtml(href) + '"'
+      + ' title="' + escapeHtml(href) + '">' + text + '</a>';
+  }
+
+  function inline(raw) {
+    const slots = [];
+    const keep = (html) => {
+      slots.push(html);
+      return '\u0001' + (slots.length - 1) + '\u0001';
+    };
+    let s = String(raw == null ? '' : raw);
+    // 1) 行内代码（内部不再解析链接/粗体）
+    s = s.replace(/`([^`\n]+)`/g, (m, code) => keep('<code>' + escapeHtml(code) + '</code>'));
+    // 2) Markdown 链接 [label](url)
+    s = s.replace(/\[([^\]\n]+)\]\(([^)\s]+)\)/g, (m, label, href) => {
+      const u = safeUrl(href);
+      if (!u) return m;
+      return keep(linkHtml(u, label));
+    });
+    // 3) 裸链接（自动识别；尾部标点/右括号还给文本）
+    s = s.replace(/(https?:\/\/[^\s<>"'）】]+)/g, (m, url) => {
+      let trail = '';
+      while (/[.,;:!?，。；：！？）)\]】]$/.test(url)) {
+        trail = url.slice(-1) + trail;
+        url = url.slice(0, -1);
+      }
+      if (url.length < 12) return m;
+      return keep(linkHtml(url, url)) + escapeHtml(trail);
+    });
+    // 4) 剩余文本转义 + 粗体
+    s = escapeHtml(s);
+    s = s.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
+    // 5) 还原占位
+    s = s.replace(/\u0001(\d+)\u0001/g, (m, i) => slots[+i]);
+    return s;
+  }
+
+  // ── GFM 表格 ──────────────────────────────────────────────
+  function splitRow(line) {
+    let s = String(line || '').trim();
+    if (s.startsWith('|')) s = s.slice(1);
+    if (s.endsWith('|') && !s.endsWith('\\|')) s = s.slice(0, -1);
+    const cells = [];
+    let cur = '';
+    for (let i = 0; i < s.length; i += 1) {
+      const ch = s[i];
+      if (ch === '\\' && s[i + 1] === '|') { cur += '|'; i += 1; continue; }
+      if (ch === '|') { cells.push(cur.trim()); cur = ''; continue; }
+      cur += ch;
+    }
+    cells.push(cur.trim());
+    return cells;
+  }
+
+  function isDelimRow(line) {
+    const s = String(line || '').trim();
+    if (!s.startsWith('|') || !s.includes('-')) return false;
+    return /^\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)+\|?$/.test(s);
+  }
+
+  function parseTable(lines, start) {
+    const header = splitRow(lines[start]);
+    const delim = splitRow(lines[start + 1]);
+    if (header.length !== delim.length) return null;   // 不是合法表格
+    const aligns = delim.map((d) => {
+      const l = d.startsWith(':');
+      const r = d.endsWith(':');
+      return l && r ? 'center' : (r ? 'right' : (l ? 'left' : ''));
+    });
+    const rows = [];
+    let i = start + 2;
+    while (i < lines.length && /^\s*\|/.test(lines[i])) {
+      rows.push(splitRow(lines[i]));
+      i += 1;
+    }
+    const alignAttr = (k) => (aligns[k] ? ' style="text-align:' + aligns[k] + '"' : '');
+    const th = header.map((c, k) => '<th' + alignAttr(k) + '>' + inline(c) + '</th>').join('');
+    const body = rows.map((r) => '<tr>' + header.map((_, k) =>
+      '<td' + alignAttr(k) + '>' + inline(r[k] || '') + '</td>').join('') + '</tr>').join('');
+    return {
+      html: '<div class="md-table-wrap"><table class="md-table"><thead><tr>' + th + '</tr></thead>'
+        + '<tbody>' + body + '</tbody></table></div>',
+      next: i,
+    };
+  }
+
   // ── Markdown 渲染 ─────────────────────────────────────────
-  // 先抽出代码块（保留原文给高亮），其余按转义文本渲染。
+  // 先抽出代码块（保留原文给高亮），其余按行渲染（表格/标题/列表/引用整块，
+  // 其余行内）。blank 行保持原样（气泡是 pre-wrap）。
+  const RE_UL = /^\s*[-*+]\s+(.+)$/;
+  const RE_OL = /^\s*\d+[.)]\s+(.+)$/;
+  const RE_QUOTE = /^\s*>\s?(.*)$/;
+
+  function renderList(lines, start, re, tag) {
+    const items = [];
+    let i = start;
+    while (i < lines.length) {
+      const m = lines[i].match(re);
+      if (!m) break;
+      items.push(inline(m[1].trim()));
+      i += 1;
+    }
+    return { html: '<' + tag + '>' + items.map((s) => '<li>' + s + '</li>').join('')
+      + '</' + tag + '>', next: i };
+  }
+
+  function renderQuote(lines, start) {
+    const parts = [];
+    let i = start;
+    while (i < lines.length) {
+      const m = lines[i].match(RE_QUOTE);
+      if (!m) break;
+      parts.push(inline(m[1]));
+      i += 1;
+    }
+    return { html: '<blockquote>' + parts.join('<br>') + '</blockquote>', next: i };
+  }
+
   function render(text) {
     const blocks = [];
     let raw = String(text == null ? '' : text);
@@ -117,9 +247,45 @@
       blocks.push({ lang: (info || '').trim().split(/\s+/)[0], code });
       return '\u0000' + (blocks.length - 1) + '\u0000';
     });
-    let html = escapeHtml(raw);
-    html = html.replace(/`([^`\n]+)`/g, '<code>$1</code>');
-    html = html.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
+    const lines = raw.split('\n');
+    const out = [];
+    for (let i = 0; i < lines.length; i += 1) {
+      const line = lines[i];
+      if (/^\s*\|/.test(line) && i + 1 < lines.length && isDelimRow(lines[i + 1])) {
+        const tbl = parseTable(lines, i);
+        if (tbl) {
+          out.push(tbl.html);
+          i = tbl.next - 1;
+          continue;
+        }
+      }
+      const h = line.match(/^(#{1,6})\s+(.+?)\s*#*\s*$/);
+      if (h) {
+        const n = h[1].length;
+        out.push('<h' + n + '>' + inline(h[2]) + '</h' + n + '>');
+        continue;
+      }
+      if (RE_UL.test(line)) {
+        const list = renderList(lines, i, RE_UL, 'ul');
+        out.push(list.html);
+        i = list.next - 1;
+        continue;
+      }
+      if (RE_OL.test(line)) {
+        const list = renderList(lines, i, RE_OL, 'ol');
+        out.push(list.html);
+        i = list.next - 1;
+        continue;
+      }
+      if (RE_QUOTE.test(line)) {
+        const q = renderQuote(lines, i);
+        out.push(q.html);
+        i = q.next - 1;
+        continue;
+      }
+      out.push(inline(line));
+    }
+    let html = out.join('\n');
     html = html.replace(/\u0000(\d+)\u0000/g, (m, i) => {
       const b = blocks[+i];
       return '<pre class="md-code" data-lang="' + escapeHtml(b.lang || '') + '"><code>'
@@ -128,5 +294,26 @@
     return html;
   }
 
-  window.md = { render, escapeHtml, highlight };
+  // ── 链接点击 → 系统浏览器（capture：先于 toast 的"点击展开面板"）──
+  if (typeof document !== 'undefined') {
+    document.addEventListener('click', (e) => {
+      const t = e.target;
+      const a = (t && typeof t.closest === 'function') ? t.closest('a') : null;
+      if (!a) return;
+      const href = a.getAttribute('href') || '';
+      e.preventDefault();          // file:// 页面内导航会顶掉面板
+      e.stopPropagation();         // 别让气泡把点击当成"展开面板"
+      const u = safeUrl(href);
+      if (!u) return;
+      try {
+        if (window.planner && window.planner.openExternal) {
+          window.planner.openExternal(u);
+        } else if (window.open) {
+          window.open(u, '_blank', 'noopener');
+        }
+      } catch { /* 忽略 */ }
+    }, true);
+  }
+
+  window.md = { render, escapeHtml, highlight, inline };
 })();

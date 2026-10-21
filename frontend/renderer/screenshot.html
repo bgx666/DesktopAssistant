@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:;" />
+<title>截屏</title>
+<link rel="stylesheet" href="screenshot.css" />
+</head>
+<body>
+  <!-- 全屏底图（选区外变暗由 #sel 的 box-shadow 实现） -->
+  <div id="shot"></div>
+  <!-- 选区：露出原图 + 外圈遮暗（在画笔层**下面**，笔迹才能画在选区图上） -->
+  <div id="sel" class="hidden"></div>
+  <!-- 涂鸦层（画笔模式）：必须在 #sel 之上 -->
+  <canvas id="ink"></canvas>
+  <div id="hint">拖动鼠标框选区域 · Esc / 右键取消</div>
+
+  <div id="tools" class="hidden">
+    <span id="size" class="size">0 × 0</span>
+    <button id="pen" type="button" title="画笔（涂涂画画）">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/><path d="M2 2l7.586 7.586"/><circle cx="11" cy="11" r="2"/></svg>
+    </button>
+    <button id="undo" type="button" title="撤销上一笔（Ctrl+Z）">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13"/></svg>
+    </button>
+    <button id="ok" type="button" title="确认（Enter）">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
+    </button>
+    <button id="cancel" type="button" title="取消（Esc）">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+    </button>
+  </div>
+
+  <script src="screenshot.js"></script>
+</body>
+</html>

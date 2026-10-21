@@ -1,6 +1,6 @@
 """进程内工具注册表（langchain @tool 工厂，参照 yaya backend 选型）。
 
-工具集：任务录入/拆解/跟进/改期 + 记忆树翻阅 + heartbeat + 免打扰
+工具集：任务录入/拆解/跟进/改期 + 记忆树翻阅 + heartbeat（定时/巡检）
 + 文件读取 + 代码工作区读写/检索（仅 workspace_root 非空时注册）。
 输入模型用 pydantic（多参数 + 枚举/范围约束），闭包捕获 session。
 """
@@ -47,37 +47,25 @@ def _now_str() -> str:
 
 
 class HeartbeatInput(BaseModel):
-    """heartbeat 输入：**下一次醒来的间隔**——短用 seconds，长用 minutes，二选一。
-
-    间隔由 LLM 按"接下来要做什么 + 用户当前状态（从时间信息判断）"自主决定
-    （session.set_heartbeat_state 统一 clamp 到
-    [PLANNER_HEARTBEAT_MIN_SECONDS, PLANNER_HEARTBEAT_MAX_MINUTES]）。
-    """
+    """heartbeat 输入：下一次定时唤醒的时间（二选一）+ 可选的取消开关。"""
     minutes: float | None = Field(
         default=None,
-        description="多少分钟后醒来（空闲待命用这个：自己判断用户在忙还是想聊，最大 720 分钟）")
+        description="多少分钟后醒来（巡检/定时检查用，最大 720 分钟）")
     seconds: float | None = Field(
         default=None,
         description="多少秒后醒来（过一小会儿要回来看看时用；最短 1 分钟 = 60 秒）")
-    note: str = Field(default="", description="接下来想做的事（可选），如「接着读下一个文件」")
+    note: str = Field(default="", description="用户当时的嘱托 / 下次醒来要看什么（取消时忽略）")
+    cancel: bool = Field(
+        default=False,
+        description="true = 取消已排定的下一次唤醒（用户说「不用提醒了 / 算了 / 已经好了」时用）")
 
     @model_validator(mode="after")
     def require_one(self):
+        if self.cancel:
+            return self   # 取消不需要间隔
         if self.minutes is None and self.seconds is None:
             raise ValueError("minutes 与 seconds 至少填一个：短间隔填 seconds，长间隔填 minutes")
         return self
-
-
-class DndInput(BaseModel):
-    enabled: bool = Field(description="是否开启免打扰")
-    until_hour: int | None = Field(default=None, description="免打扰到几点（0-23，可选）；不填用默认窗口（22-8）")
-
-    @field_validator("until_hour", mode="before")
-    @classmethod
-    def clamp_hour(cls, v):
-        if v is None:
-            return None
-        return max(0, min(23, int(v)))
 
 
 class AskUserInput(BaseModel):
@@ -104,22 +92,29 @@ def build_tools(session) -> list[BaseTool]:
 
     @tool(args_schema=HeartbeatInput)
     def heartbeat(minutes: float | None = None, note: str = "",
-                  seconds: float | None = None) -> str:
-        """设置「下一次醒来」的间隔，然后结束本轮。到点后你会被唤醒。
+                  seconds: float | None = None, cancel: bool = False) -> str:
+        """设置/修改/取消「下一次定时唤醒」（**只有用户明确要求时才用**），然后结束本轮。
 
-        心跳是个**定时器**，不是继续干活的手段——同一轮里要继续做事，
-        直接接着调工具就行（循环会一直跑到你不再调工具为止）。每轮收尾都要调用它。
-        间隔按"接下来要做什么 + 用户现在什么状态"自己判断：
-        - **一批事做完了**，没什么要紧的 → 用 `minutes` 设几十分钟到几小时
-          （用户在忙或空闲时更长，最多 720 分钟 = 12 小时）；
-        - **过一小会儿要回来看看**（如稍后再查一次）→ 用 `seconds` 设很短；
-        - **要定时提醒**（如"晚上 8 点提醒我"）→ **用日历的 `add_schedule`（time 填 "20:00"）**，
-          到点系统会自己叫你；心跳不做这件事，别再把时钟折算成分钟数。
+        心跳是**用户授权的定时器/巡检**（2026-10-19 起）：
+        - **用户让你"过 X 分钟/半小时后做某事、盯着某任务看进度"** → 设一个间隔；
+        - **普通对话结束不要调用它**（不会被唤醒，等用户开口即可）；
+        - **不要用它主动搭话/稍后主动提起/自主学习**——这些行为已移除。
 
-        用户状态靠**时间信息**判断：每条用户消息带 `[HH:MM]` 和"距上次说话多久"，
-        心跳提示里也会给你"现在几点"和"距用户上次说话多久"。聊得热络就设短些，
-        明显在忙自己的事就设长些——没有固定规则，你自己定。
-        不要因为"刚跟用户说过话"就设短心跳去跟进。"""
+        巡检循环：醒来后会带着用户当时的嘱托；你去检查/做事——**做完了就正常
+        收尾（不要再设心跳）**；**还没完成**（在等用户、等外部状态）→ 再调用
+        本工具设下一次，`note` 写明「还没完成什么、下次醒来要看什么」。
+
+        **修改/取消**：用户说"不用提醒了 / 算了 / 已经好了" → 传 `cancel=true`
+        取消已排定的唤醒；要改时间/改嘱托 → 直接再调一次本工具（新设定会覆盖旧的，
+        不用先取消）。
+
+        定时提醒（钟点，如"晚上 8 点提醒我"）用日历 `add_schedule`（time 填
+        "20:00"）——到点系统自己叫，不占心跳；本工具只用于间隔性的定时/巡检
+        （`seconds` 适合很短的重查，`minutes` 适合几十分钟到 12 小时）。"""
+        if cancel:
+            had = session.cancel_heartbeat()
+            return ("（已取消下一次定时唤醒。）" if had
+                    else "（当前没有排定的定时唤醒。）")
         m = float(minutes) if minutes is not None else float(seconds or 0.0) / 60.0
         session.set_heartbeat_state(m, str(note))
         return f"（我 {session._fmt_duration(session._heartbeat_minutes)}后再醒，{note or '到点再醒'}。）"
@@ -146,17 +141,6 @@ def build_tools(session) -> list[BaseTool]:
         options 给 1~4 个候选，短而互斥（用户也可以无视选项自己打字）；
         用户超时没答就继续做别的，不要反复追问。"""
         return session.ask_user(question, options or [])
-
-
-    @tool(args_schema=DndInput)
-    def set_do_not_disturb(enabled: bool, until_hour: int | None = None) -> str:
-        """开启或关闭免打扰。开启后这段时间内你不会主动打扰用户（用户找你仍然回复）。"""
-        session.set_dnd(enabled, until_hour)
-        if enabled:
-            desc = f"直到 {until_hour}:00" if until_hour is not None else "（默认 22:00-08:00 窗口）"
-            return f"已开启免打扰{desc}。期间我不会主动打扰你。"
-        return "已关闭免打扰，恢复正常提醒。"
-
 
 
     # ── 日历（日程 / 提醒）──────────────────────────────────────
@@ -388,26 +372,47 @@ def build_tools(session) -> list[BaseTool]:
 
     @tool(parse_docstring=True)
     def explore_memory_tree(node_id: str = "") -> str:
-        """翻阅记忆树，查看某个历史节点下的记录（对话浓缩摘要）。回忆过去说过的话、做过的决定时用。
+        """翻阅记忆树，逐层下钻找回过去对话的具体内容。回忆往事、确认约定/决策时用。
 
-        搜索策略：先想清楚要找的内容大概发生在什么时间；如果对单次搜索结果
-        不够自信，不要只查一次就放弃——从根节点（node2_xxx）开始逐层往下
-        多搜几次，或直接选一个时间范围覆盖目标时段的中间节点（node1_xxx）
-        展开；每看一层概要，再决定继续展开哪个子节点，直到找到对应的
-        叶子（node0_xxx，含原文）。节点都带时间范围，可按时间缩小范围。
+        记忆树是**自下而上生长的摘要树**：最底层 `node0_xxx` 最**具体**（展开是
+        当时的**原始对话**），越往上越**抽象**（node1 是多个 node0 的合并、node2
+        更浓缩）。**上下文里的 node 消息就是树当前的顶层节点**（压缩替换时放进
+        来的，带条数/时间范围）——翻树从它们开始。
+
+        展开一个节点 X = 返回 X **下一层**所有子节点的摘要（每个都带条数/时间
+        范围），由你判断该往哪支钻；逐层下钻到 `node0_xxx` 叶子时，返回该叶子
+        覆盖范围的**原始对话**。这是一个循环（通常 2~4 次调用，**查一次没找到
+        别放弃**）：没找到就换分支、换时间段再试。返回"找不到节点"是**编号问题**
+        （拼错/已被合并的旧编号），不是"记忆里没有"——改用上下文里的 node 编号
+        再试。
 
         Args:
-            node_id: 节点编号（node0_xxx / node1_xxx / node2_xxx）。
-                     留空或传 "root" 时返回根节点概览（整棵树的浓缩与各分支摘要）。
+            node_id: 要展开的节点编号（node0_xxx / node1_xxx / node2_xxx …）。
+                     留空或传 "root"/"根" 时返回**整树顶层概览**（记不清有哪些
+                     节点时的备用视图）。
         """
         tree = session.get_memory_tree()
         if not node_id or node_id.strip().lower() in ("root", "根"):
-            node_id = tree.get_root_id() or ""
-            if not node_id:
+            overview = tree.get_root_overview()
+            if not overview:
                 return "记忆树还没有节点（对话尚未触发压缩）。"
+            lines = [f"记忆树顶层概览（共 {len(overview)} 支；这些就是上下文里的"
+                     "顶层节点，越往下展开越具体，node0 叶子展开是当时的原文）："]
+            for n in overview:
+                span = ""
+                if n.get("round_start") is not None:
+                    span = f"，第{n['round_start']}-{n['round_end']}条"
+                tr = ""
+                if n.get("time_start") and n.get("time_end"):
+                    tr = f"，{n['time_start']} ~ {n['time_end']}"
+                lines.append(f"- {n['node_id']}（L{n['level']}{span}{tr}）：{n['summary']}")
+            lines.append('选一支展开：explore_memory_tree("nodeX_xxx")')
+            return "\n".join(lines)
         info = tree.get_node_children_info(node_id)
         if info is None:
-            return f"找不到节点 {node_id} 的记录。"
+            return (f"找不到节点 {node_id}——该编号不存在（可能拼错或来自已被合并的"
+                    "旧消息），不是记忆里没有。留空调用看顶层概览，或改用上下文里"
+                    "出现过的 node 编号再试。")
         # 大输出（叶子 details 含原文）落盘，上下文只留预览 + 指针
         return _offload_if_large(json.dumps(info, ensure_ascii=False), session,
                                  "explore_memory_tree")
@@ -804,7 +809,7 @@ def build_tools(session) -> list[BaseTool]:
             out += "\n\n【页面链接】\n" + "\n".join(f"- {t}：{href}" for t, href in links)
         return out
 
-    return [heartbeat, continue_speaking, ask_user, set_do_not_disturb,
+    return [heartbeat, continue_speaking, ask_user,
             list_schedule, add_schedule, update_schedule, cancel_schedule,
             explore_memory_tree, list_dir, read_file, capture_screen, view_image,
             render_page, web_search, fetch_web] + build_code_tools(session)
@@ -1117,12 +1122,17 @@ def build_code_tools(session) -> list[BaseTool]:
                 return
             try:
                 from .changes import MAX_SNAPSHOT_CHARS
+                # after=None 即"操作后文件不存在"（delete / move 源 / 补丁删除）——
+                # 曾经漏传 after_missing：删除的文件在「改动文件」块里仍显示「打开」
+                # 按钮，点了没反应（用户实测）
+                after_missing = after is None
                 if ((before is not None and len(before) > MAX_SNAPSHOT_CHARS)
                         or (after is not None and len(after) > MAX_SNAPSHOT_CHARS)):
                     before, after, no_snapshot = None, None, True
                 cid = session.get_changes_db().record(
                     tool_name, str(path), _rel(path), before, after,
-                    before_missing=before_missing, no_snapshot=no_snapshot)
+                    before_missing=before_missing, after_missing=after_missing,
+                    no_snapshot=no_snapshot)
                 try:
                     session._pending_changes.append({"tool": tool_name, "id": int(cid)})
                 except Exception:
@@ -1640,6 +1650,27 @@ def build_code_tools(session) -> list[BaseTool]:
                 except Exception:
                     pass
 
+        def _persist_image(src: _Path) -> str | None:
+            """展示前把图片复制到 data/images/ 持久副本（内容哈希命名，重复展示去重）。
+
+            历史重建（/history）按原路径重新拉图——工作区原文件之后被删/改/移动，
+            历史里的图片就会「加载失败」（用户实测：简历预览图被清理后回看报错）。
+            /file 的允许根含 data/images，展示时先落副本，原文件怎么变都不影响回看。
+            """
+            import hashlib
+            try:
+                data = src.read_bytes()
+                root = _Path(getattr(session, "data_root", "") or ".")
+                cache = root / "images"
+                name = hashlib.sha1(data).hexdigest()[:16] + src.suffix.lower()
+                dest = cache / name
+                if not dest.exists():
+                    cache.mkdir(parents=True, exist_ok=True)
+                    dest.write_bytes(data)
+                return str(dest)
+            except Exception:
+                return None
+
         def _show_remote_image(url: str, caption: str) -> str:
             """网络图片：下载到 data/images/ 缓存后展示（外链失效/防盗链时历史仍可看）。"""
             import hashlib
@@ -1688,7 +1719,8 @@ def build_code_tools(session) -> list[BaseTool]:
             - **网络图片直链**（http/https）：先用 `web_search` / `fetch_web` 找到图片
               直链（通常是 .png/.jpg 结尾的地址，或页面里的图片链接），再交给本工具——
               会下载到本地缓存后展示，外链失效也不影响已展示过的历史。
-            支持 png/jpg/jpeg/gif/webp/bmp，≤15MB。
+            支持 png/jpg/jpeg/gif/webp/bmp，≤15MB。展示时会自动把图片复制到本地
+            持久缓存（data/images/）——之后原文件被删除/修改/移动，历史回看不受影响。
 
             Args:
                 source: 图片路径（相对当前工作目录）或 http(s) 图片直链
@@ -1715,7 +1747,9 @@ def build_code_tools(session) -> list[BaseTool]:
                 return f"（读取失败：{exc}）"
             if size > IMAGE_MAX_BYTES:
                 return f"（图片过大（{size // 1024}KB > 15MB），已拒绝：{_rel(p)}）"
-            _queue_image(str(p), _rel(p), caption)
+            # 先落持久副本再展示：之后原文件被删/改/移动不影响历史回看
+            persisted = _persist_image(p) if session is not None else None
+            _queue_image(persisted or str(p), _rel(p), caption)
             return f"已展示图片给用户：{_rel(p)}（{size // 1024}KB）。"
 
         code_tools = [get_cwd, apply_patch, write_file, edit_file, create_dir,

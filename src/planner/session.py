@@ -7,8 +7,7 @@
 - 记忆树 + buffer 持久化（SQLiteMemoryTree.save_buffer_state，重启恢复）。
 
 planner 特有：
-- 议程快照注入（AgendaSnapshotMiddleware，数据源＝日历）；
-- 免打扰窗口（DND）：默认 22:00-08:00，可一次性 override；
+- 日历是唯一的待办概念（模型需要时用 list_schedule 查，不再每轮注入议程快照）；
 - 心跳 = 「下一次主动唤醒」的定时器，clamp 到 [1 分钟, 720 分钟]。
 """
 
@@ -51,24 +50,17 @@ BACKEND_TAG = "planner/1"
 _TZ = timezone(timedelta(hours=8))
 FALLBACK_HEARTBEAT_MINUTES = _config.PLANNER_FALLBACK_MINUTES
 MAX_WORKER_ROUNDS = 3            # 生成期间到达的新消息最多再补 N 轮
-DEFAULT_WAKE_MINUTES = 30        # 首次启动/未调度时的默认唤醒间隔
-STARTUP_GRACE_SECONDS = 120      # 启动宽限期：打开后 2 分钟内不自动说话（心跳/逾期都不触发）
+STARTUP_GRACE_SECONDS = 120      # 启动宽限期：打开后 2 分钟内不触发定时提醒
 
-# ── 心跳节奏 ─────────────────────────────────────────────────
-# 一轮对话内的「调工具 → 观察 → 再调工具」由 create_agent 的**原生 ReAct 循环**
-# 完成，**与心跳无关**。心跳只剩一件事：**这一轮结束了，下一次什么时候醒**。
-# 它是定时器，不是"进入下一轮"的路径——要继续干活直接在同一轮里接着调工具。
-#
-# 用法是**按需**的（master 2026-09-10 定）：
-#   · 有未来要主动做的事（定时提醒 / 想主动关心 / 自主学习）→ 设一个间隔；
-#   · 纯一问一答、答完就等用户开口 → 什么都不用设（沿用上次的约定即可）。
-#
-# **间隔完全由模型自己定**，系统不替它做「沉默递进」。做法是把**时间事实**摆到
-# 模型面前，让它自己判断用户的状态——
-#   · 每条玩家消息带 `[HH:MM]` 前缀 + 「距上次说话 X」；
-#   · 心跳提示里给出「现在几点」以及「距用户上次说话多久」。
-# 模型据此判断用户是在忙自己的、还是正热络地聊，再决定说什么、下次隔多久醒。
-# 系统只在模型没设心跳时用 FALLBACK_HEARTBEAT_MINUTES 兜底（不再递增加长）。
+# ── 心跳（用户授权的定时器，2026-10-19 起）────────────────────
+# 心跳**不再是自主搭话/自学习的节律**——只有用户明确要求"某个时间/间隔后做某事、
+# 盯住某个任务"时才由模型通过 heartbeat 工具设置；普通回合结束不排心跳，
+# 系统也**不做任何自动排程**（启动不排、醒来不保底重复、出错不重试）。
+#   · 巡检循环：醒来 → 按用户嘱托检查 → 完成则收尾（不设下一次）→ 未完成则
+#     再设下一次（note 写明原因）；
+#   · 定时提醒（钟点）仍走日历（add_schedule），到点系统自己叫，不占心跳槽位；
+#   · 一轮内的「调工具 → 观察 → 再调工具」由原生 ReAct 循环完成，与心跳无关。
+# 醒来提示里给出「现在几点 + 距用户上次说话多久」，供模型判断任务是否该做。
 
 # 调度线程轮询间隔：按待触发心跳的剩余时间自适应（见 _schedule_tick_seconds）。
 SCHEDULER_IDLE_TICK_SECONDS = 5.0      # 无待触发心跳时
@@ -100,7 +92,7 @@ def _close_stream_bg(gen) -> None:
 
 
 class PlannerSession:
-    """小助的会话状态：任务库、对话 buffer、事件队列、调度线程、免打扰、记忆树。"""
+    """小助的会话状态：任务库、对话 buffer、事件队列、调度线程、记忆树。"""
 
     def __init__(self, data_root: Path | None = None, mock: bool | None = None) -> None:
         self.data_root = Path(data_root) if data_root else _config.data_root()
@@ -135,6 +127,7 @@ class PlannerSession:
         # 写操作留底的待关联队列（tools._record_change 入队，_emit_tool_events 消费）：
         # 把 change id 附到对应 tool_result（前端显示修改前后 diff、/history 重建）
         self._pending_changes: list[dict] = []
+        self._turn_change_ids: list[int] = []   # 本轮回复改动过的文件（快捷块用）
         # show_image 的待关联队列（tools.show_image 入队）：图片事件 + 历史重建
         self._pending_images: list[dict] = []
 
@@ -191,25 +184,9 @@ class PlannerSession:
         # 待注入的屏幕截图（capture_screen 工具写入 data URL，ScreenShotInjectMiddleware
         # 在下次模型调用前作为 user 消息注入并清空；生成开始前清残留防陈旧注入）
         self._pending_screenshots: list[dict] = []   # 待注入图片（截屏/读图：{url, text, viewed?}）
-        # 本次生成调用过的工具名（用于识别“自主学习”心跳，决定是否朗读）
-        self._generation_tool_names: set[str] = set()
-        # 是否已向前端发送“自主学习静音”信号
-        self._self_learning_mute_sent: bool = False
-        # 本次生成是否由模型主动设置了 heartbeat（用于自主学习兜底判断）
-        self._heartbeat_set_this_generation: bool = False
         # 异步压缩：达到阈值后由后台线程压缩，空闲时原子替换 buffer
         self._compressing: bool = False
         self._closing: bool = False   # close 信号：压缩线程尽快应用退出
-
-        # 免打扰
-        self.dnd_enabled: bool = True
-        self.dnd_until: datetime | None = None      # 一次性免打扰截止时间
-
-        # 用户正在输入（瞬态，不持久化；由前端输入框状态驱动）
-        self.typing: bool = False
-
-        # 计划快照注入
-        self._last_agenda_fingerprint: str = ""
 
         # 懒加载
         self._llm = None
@@ -299,8 +276,9 @@ class PlannerSession:
     def _get_summary_model(self):
         """压缩用独立模型（与主会话同一份配置）；max_tokens 按节点预算留余量。
 
-        节点预算 node_token_budget（默认 1000，整节点目标）→ max_tokens 设 1.5 倍，
-        避免 JSON 被硬截断（超出预算的软裁剪由 middleware._apply_budget 兜底）。
+        节点预算 node_token_budget（默认 1000，整节点目标）→ max_tokens 设 3 倍，
+        避免 JSON 被硬截断（超出预算的软裁剪由 middleware._apply_budget 兜底；
+        预算本身也会写进压缩指令作为总字数上限，模型不是蒙着写）。
         """
         if self._summary_model is None:
             if self.mock:
@@ -783,40 +761,6 @@ class PlannerSession:
         self.thinking = value
         self.push_event({"type": "thinking", "value": value})
 
-    # ── 免打扰 ────────────────────────────────────────────────
-
-    def set_typing(self, typing: bool) -> None:
-        """前端输入框状态：非空 = 正在输入（瞬态，不持久化）。"""
-        self.typing = bool(typing)
-
-    def set_dnd(self, enabled: bool, until_hour: int | None = None) -> None:
-        with self.buffer_lock:
-            self.dnd_enabled = enabled
-            if enabled and until_hour is not None:
-                now = _now()
-                until = now.replace(hour=until_hour, minute=0, second=0, microsecond=0)
-                if until <= now:
-                    until += timedelta(days=1)
-                self.dnd_until = until
-            elif not enabled:
-                self.dnd_until = None
-        self.push_event({"type": "dnd", "enabled": self.dnd_enabled})
-        self._wake_event.set()
-
-    def in_dnd(self, at: datetime | None = None) -> bool:
-        at = at or _now()
-        with self.buffer_lock:
-            if self.dnd_until is not None:
-                return at < self.dnd_until
-            if not self.dnd_enabled:
-                return False
-            start = _config.PLANNER_DND_START_HOUR
-            end = _config.PLANNER_DND_END_HOUR
-            h = at.hour
-            if start <= end:
-                return start <= h < end
-            return h >= start or h < end  # 跨天窗口（如 22-8）
-
     # ── 心跳状态 ──────────────────────────────────────────────
 
     def set_heartbeat_state(self, minutes: float, note: str = "") -> None:
@@ -831,6 +775,21 @@ class PlannerSession:
 
     def schedule_heartbeat(self, minutes: float, note: str = "") -> None:
         self.set_heartbeat_state(minutes, note)
+
+    def cancel_heartbeat(self) -> bool:
+        """取消已排定的下一次定时唤醒（用户改主意/任务提前完成）。
+
+        返回是否确实取消了（当前没有排定 → False）。取消立即落盘（重启不会复活）。
+        """
+        with self.buffer_lock:
+            had = self._next_heartbeat_at > 0
+            self._next_heartbeat_at = 0.0
+            self._heartbeat_note = ""
+        if had:
+            self._save_buffer_state()
+            _logger.info("[heartbeat] 已取消下一次唤醒")
+        self._wake_event.set()
+        return had
 
     @staticmethod
     def _fmt_duration(minutes: float) -> str:
@@ -877,62 +836,6 @@ class PlannerSession:
                     "in_minutes": max(0, int(in_seconds / 60)),
                     "note": self._heartbeat_note}
 
-    # ── 议程快照（日历）────────────────────────────────────────
-
-    def _agenda_snapshot_text(self) -> str | None:
-        """今日议程指纹变化时生成注入文本（None = 无变化）。
-
-        数据源＝calendar_items（现在**唯一**的待办概念）。注入「今天 + 未来 7 天」，
-        让模型每轮都清楚接下来有什么，不必每次先调 list_schedule 去查。
-        指纹只取可变字段（id/date/time/status），所以勾完成、改期、取消都会触发刷新。
-        """
-        try:
-            today = _now().date()
-            start = today.isoformat()
-            end = (today + timedelta(days=7)).isoformat()
-            items = self.db.list_calendar_range(start, end)
-            fingerprint = json.dumps(
-                [(i["id"], i["date"], i["time"], i["status"]) for i in items],
-                ensure_ascii=False)
-            if fingerprint == self._last_agenda_fingerprint:
-                return None
-            self._last_agenda_fingerprint = fingerprint
-
-            lines = [f"[当前议程]（{start}，{_now().strftime('%H:%M')}）"]
-            todo = [i for i in items if i["status"] == "todo"]
-            if not items:
-                lines.append("（日历上未来 7 天还是空的。）")
-                return "\n".join(lines)
-            lines.append(f"未来 7 天共 {len(items)} 项，其中未完成 {len(todo)} 项：")
-            if todo:
-                # 重复项折叠成一行：不然"每天吃药"会把未来 7 天全占满，纯噪声
-                series: dict[str, list[dict]] = {}
-                plain: list[dict] = []
-                for i in todo:
-                    if i.get("series_id"):
-                        series.setdefault(i["series_id"], []).append(i)
-                    else:
-                        plain.append(i)
-                rows = sorted(plain + [v[0] for v in series.values()],
-                              key=lambda x: (x["date"], x["time"] or ""))
-                for i in rows[:10]:
-                    tag = ""
-                    if i.get("series_id"):
-                        rep = {"daily": "每天", "weekly": "每周",
-                               "weekdays": "工作日"}.get(i.get("repeat") or "", "重复")
-                        n = len(series[i["series_id"]])
-                        tag = f"（{rep}，本窗口还有 {n} 期）" if n > 1 else f"（{rep}）"
-                    lines.append(f"  #{i['id']} {i['date']} {i['time'] or '全天'} "
-                                 f"{i['content']}{tag}")
-                if len(rows) > 10:
-                    lines.append(f"  …另有 {len(rows) - 10} 项（用 list_schedule 细看）")
-            else:
-                lines.append("（全部已完成。）")
-            return "\n".join(lines)
-        except Exception:
-            _logger.exception("[session] 议程快照生成失败")
-            return None
-
     # ── buffer 维护 ───────────────────────────────────────────
 
     def _append_to_buffer(self, msg) -> None:
@@ -950,6 +853,13 @@ class PlannerSession:
         撤销按钮依赖消息 id 在入队时就稳定存在。
         消息带 metadata.ts 时间戳（秒级，UTC+8）——压缩节点起止时间的数据来源。
         """
+        # 新消息边界：上一段未出块的改动先统一落块（含自主回合累积的）——
+        # 与 /history 在 human 边界 flush 的口径一致，避免旧改动并进新回复的块
+        if self._turn_change_ids:
+            files = self.changed_files_for_ids(self._turn_change_ids)
+            self._turn_change_ids = []
+            if files:
+                self.push_event({"type": "changed_files", "files": files})
         msg = HumanMessage(content=content, id=uuid.uuid4().hex,
                            metadata={"ts": self._ts_now()})
         # 玩家消息 = 立即打断 continue 分段暂停（让位给用户）
@@ -1014,6 +924,40 @@ class PlannerSession:
                         pass
         if healed:
             _logger.info("[repair] 已剥壳 %d 条节点消息的 JSON 摘要", healed)
+
+    def _drop_superseded_node_messages(self) -> int:
+        """清除 buffer 里"已被父节点取代"的旧节点消息（inactive 且父节点消息在场）。
+
+        历史 bug（2026-10-19 修复）：层级合并的目标若是**本轮刚产生的分片叶子**
+        （消息在 adds、不在快照里），其消息没被摘除 → inactive 的 L0 消息与父节点
+        并存于 buffer（看起来范围重叠/不连续、L0 数超过阈值）。修复后不再新增；
+        此方法清理旧数据。只删"父节点消息也在 buffer"的——父节点消息缺失时保留
+        （宁可重复，不丢覆盖）。
+        """
+        with self.buffer_lock:
+            ids = [(getattr(m, "metadata", None) or {}).get("node_id")
+                   for m in self.recent_buffer]
+            ids = [i for i in ids if i]
+            if not ids:
+                return 0
+            try:
+                status = self.get_memory_tree().get_node_status(ids)
+            except Exception:
+                return 0
+            present = set(ids)
+            drop = {nid for nid in ids
+                    if not (status.get(nid) or {}).get("is_active", True)
+                    and (status.get(nid) or {}).get("parent_id") in present}
+            if not drop:
+                return 0
+            before = len(self.recent_buffer)
+            self.recent_buffer = [
+                m for m in self.recent_buffer
+                if (getattr(m, "metadata", None) or {}).get("node_id") not in drop]
+            removed = before - len(self.recent_buffer)
+            if removed:
+                _logger.info("[repair] 已清理 %d 条被父节点取代的旧节点消息", removed)
+            return removed
 
     def _repair_buffer(self) -> None:
         """检查 buffer 末尾是否有孤儿 tool_call，自动补 tool 消息（防御用）。"""
@@ -1106,6 +1050,7 @@ class PlannerSession:
                 self.recent_buffer = msgs
                 self._stamp_missing_ts()   # 旧数据/缺时间戳的消息补打（压缩时间字段的数据来源）
                 self._heal_wrapped_node_summaries()   # 事故批次：JSON 外壳摘要剥壳
+                self._drop_superseded_node_messages()  # 事故批次：被父节点取代的旧节点消息清理
                 self._msg_counter = state.get("_msg_counter", len(msgs))
                 self.round = state.get("round", 0)
                 self._last_activity_at = state.get("last_activity_at", 0.0) or 0.0
@@ -1142,7 +1087,8 @@ class PlannerSession:
 
         需求：跨重启继承心跳进度，而不是完全重置。
         - 离线时长未超过剩余时间 → 保留原到期时刻（剩余时间自动扣减离线时长）。
-        - 离线时长已超过剩余时间 → 启动时立即触发一次心跳，并落保底调度。
+        - 离线时长已超过剩余时间 → 启动时立即触发一次心跳，并立即落盘（next=0，
+          重启不会重复触发；要不要再醒由模型决定）。
         """
         if self._next_heartbeat_at <= 0:
             return
@@ -1152,6 +1098,7 @@ class PlannerSession:
             return   # 还没到期：保留原到期时刻（剩余时间已扣减离线时长）
         _logger.info("[heartbeat] 启动时心跳已到期，立即补触发")
         self._fire_heartbeat()
+        self._save_buffer_state()   # 落盘 next=0：崩溃重启不重复补触发
 
     # ── 异步压缩（后台线程，不阻塞生成）──────────────────────
 
@@ -1215,6 +1162,7 @@ class PlannerSession:
                 self.recent_buffer.extend(adds)
                 self._strip_orphan_tool_messages()   # 防御：压缩切段可能留孤儿 tool
                 self._place_node_messages()
+            self._drop_superseded_node_messages()   # 兜底：清理被本轮父节点取代的旧消息
             self._save_buffer_state()
             self.push_event({"type": "memory_update"})
             _logger.info("[compress] 异步压缩完成：删除 %d 条，插入 %d 节点消息",
@@ -1245,15 +1193,13 @@ class PlannerSession:
     # ── 调度线程 ──────────────────────────────────────────────
 
     def start_heartbeat(self) -> None:
-        """启动调度 daemon 线程（幂等）。"""
+        """启动调度 daemon 线程（幂等）。不自动排心跳——心跳只由用户嘱托设置。"""
         if self._heartbeat_thread and self._heartbeat_thread.is_alive():
             return
         self._stop_event.clear()
         self._heartbeat_thread = threading.Thread(
             target=self._schedule_loop, name="planner-scheduler", daemon=True)
         self._heartbeat_thread.start()
-        if self._next_heartbeat_at <= 0:
-            self.schedule_heartbeat(DEFAULT_WAKE_MINUTES)
 
     def stop_heartbeat(self) -> None:
         self._stop_event.set()
@@ -1307,6 +1253,12 @@ class PlannerSession:
         return time.time() - self._started_at < STARTUP_GRACE_SECONDS
 
     def _fire_heartbeat(self) -> None:
+        """用户授权的定时唤醒到点：注入"该做嘱托的事了"并唤醒一次生成。
+
+        新的心跳语义（2026-10-19）：只由模型在用户明确要求定时/巡检时设置；
+        醒来后**不会自动重排**——模型不设下一次就停（完成即收尾），
+        生成出错也不重试（这次提醒丢掉）。
+        """
         with self.chat_lock:
             with self.buffer_lock:
                 if self._generating or self.pending_response:
@@ -1317,47 +1269,30 @@ class PlannerSession:
                 minutes = self._heartbeat_minutes or FALLBACK_HEARTBEAT_MINUTES
                 note = self._heartbeat_note
                 self._heartbeat_note = ""
-            if self.in_dnd():
-                # 免打扰：到点也不打扰，顺延一个原间隔再醒（不生成、不说话）。
-                # 心跳下界是 1 分钟（config.PLANNER_HEARTBEAT_MIN_SECONDS），
-                # 顺延不会退化成空轮询。
-                self.schedule_heartbeat(minutes, note)
-                _logger.info("[heartbeat] 免打扰时段，顺延 %s", self._fmt_duration(minutes))
-                return
-            # 唤醒：**只把时间事实交给模型**，用户状态与下次间隔都由它自己判断
-            _logger.info("[heartbeat] 触发自主生成（距上次 %s：%s）",
+            self._save_buffer_state()   # 落盘 next=0：醒过就算消费（不自动重排/不重试）
+            # 唤醒：只把时间事实 + 用户当时的嘱托交给模型，做不做/是否再设由它判断
+            _logger.info("[heartbeat] 定时唤醒（距设置 %s：%s）",
                          self._fmt_duration(minutes), note)
-            # 先落一个保底调度（生成中 LLM 会重新设置覆盖）：
-            # 防止触发后进程退出/中断导致 next=0 落盘 → 重启后心跳被重置；
-            # 保底沿用原心跳间隔，避免"重置感"
-            self.schedule_heartbeat(minutes, note)
-            self._save_buffer_state()   # 立即落盘：退出/中断后重开恢复新计时
             text = (
-                f"（系统：你定的定时唤醒到点了。现在是 {self._now_desc()}，"
+                f"（系统：你为用户设定的定时唤醒到点了。现在是 {self._now_desc()}，"
                 f"{self._silence_desc()}"
-                f"你根据这些时间信息判断用户现在的状态——是在忙自己的事、还是正想跟你说话，"
-                f"再自己决定要做什么：1) 主动跟用户说话（一两句、简短自然即可，别长篇大论）；"
-                f"2) 自主学习：用 web_search / fetch_web / explore_memory_tree / read_file "
-                f"去了解你好奇的东西，把学到的内容用文字写下来，它会进入你的长期记忆"
-                f"（自主学习时文字正常显示，但不要朗读）；"
-                f"3) 什么都不做，只是待命。"
-                f"做完后照常用 heartbeat 定下一次什么时候醒——间隔也由你自己判断。"
-                f"{note + '。' if note else ''}）")
+                f"用户当时的嘱托/你设闹钟的原因：{note or '（没写原因）'}。"
+                f"现在按嘱托去做：该检查的检查、该提醒的提醒。"
+                f"**做完了就正常收尾，不要再设心跳**；"
+                f"如果还没完成（比如在等用户、等外部状态），再调 heartbeat 设下一次"
+                f"（note 写明「还没完成什么、下次醒来要看什么」）。）")
             self._receive(text, trigger=True)
             self._spawn_worker("heartbeat")
 
     def _check_calendar_due(self) -> None:
         """日历上到点的安排 → 注入并唤醒一次（这是用户明确要的提醒）。
 
-        与 heartbeat 的区别：心跳是"我隔多久自省一次"的节律，而这是**定点承诺**——
-        所以它有自己独立的触发源，不占心跳那一个槽位，也不会被后续的心跳覆盖掉。
+        与 heartbeat 的区别：心跳是用户嘱托的"隔多久检查一次"，而这是**定点
+        承诺**——所以它有自己独立的触发源，不占心跳那一个槽位，也不会被后续的
+        心跳覆盖掉；两者都不受时段限制（用户自己安排的提醒必须到点执行）。
 
         判据：status='todo' 且带 time 且 (date,time) 已过 且 reminded_at 为空。
-        免打扰期间**不投递也不标记**，等 DND 结束再补（提示里会带上"原定"，
-        让模型知道这条迟到了）。
         """
-        if self.in_dnd():
-            return
         # 正在生成 / 有排队消息 → 让位，下一次轮询再投递（不会重复：未标记前不写库）
         with self.buffer_lock:
             if self._generating or self._inbox:
@@ -1410,10 +1345,8 @@ class PlannerSession:
           · 这里管"**日期已经过去、还没做**"的漏网项——每天扫一次，别让它悄悄沉底。
         去重集合 `_reminded_overdue` 随 buffer_state 持久化，避免重启后重复提醒。
         """
-        if self.in_dnd():
-            return
         try:
-            overdue = self.db.list_overdue_calendar(_now())
+            overdue = self.db.list_overdue_calendar(_now(), skip_reminded=True)
         except Exception:
             return
         pending = [i for i in overdue
@@ -1480,9 +1413,14 @@ class PlannerSession:
             content = prefix
         msg = self._receive(content, trigger=True)
         self._save_log("user", message or "（拖入文件）")
+        # 通知前端渲染这条用户消息：悬浮球语音输入 / 快速输入浮层发送时，面板
+        # 没有走自己的本地 addMessage —— 之前展开面板看不到自己发的消息（用户实测）。
+        msg_id = getattr(msg, "id", None) or ""
+        self.push_event({"type": "user_message", "id": msg_id,
+                         "text": message or "（拖入文件）"})
         self._wake_event.set()
         threading.Thread(target=self._player_worker, name="planner-player", daemon=True).start()
-        return getattr(msg, "id", None) or ""
+        return msg_id
 
     def _render_attachments(self, files: list) -> str | dict:
         """按 kind 分流注入挂载文件（标注来源；失败降级为仅路径）。
@@ -1637,15 +1575,11 @@ class PlannerSession:
             self._generating = True
             self._stop_requested = False   # 每次生成重置停止标志
             self._pending_screenshots = []   # 防上一轮中断残留的陈旧截图注入
-            self._generation_tool_names = set()
-            self._self_learning_mute_sent = False
-            self._heartbeat_set_this_generation = False
             self.current_trigger = trigger
         self._set_thinking(True)
         try:
             self._run_agent()
         finally:
-            was_self_learning = self._is_self_learning_generation()
             self._set_thinking(False)
             with self.buffer_lock:
                 self._generating = False
@@ -1657,24 +1591,6 @@ class PlannerSession:
                     self._msg_counter += 1
                     self.pending_response = True
             self._save_buffer_state()
-            if self._self_learning_mute_sent:
-                self.push_event({"type": "tts_mute", "value": False})
-            # 自主学习且模型没设置下一次心跳 → 用学习保底间隔兜底
-            if was_self_learning and not self._heartbeat_set_this_generation:
-                self.schedule_heartbeat(
-                    _config.PLANNER_LEARNING_HEARTBEAT_MINUTES,
-                    "自主学习后继续学习")
-
-    def _is_self_learning_generation(self) -> bool:
-        """判断本次心跳是否属于“自主学习”：使用了搜索/阅读/记忆类工具。
-
-        自主学习时文字正常显示并进入记忆树，但不朗读，避免打扰用户。
-        """
-        if self.current_trigger != "heartbeat":
-            return False
-        learning_tools = {"web_search", "fetch_web", "explore_memory_tree",
-                          "read_file", "list_dir"}
-        return bool(self._generation_tool_names & learning_tools)
 
     def _run_agent(self) -> None:
         """agent.stream：跑一轮**原生 ReAct 循环**（model → tools → model → …）。
@@ -1698,7 +1614,6 @@ class PlannerSession:
                 self.push_error(
                     f"没有配置 {cfg['provider']} 的 API Key，无法调用模型。",
                     "点输入框上方 🤖 切换服务商，或去 设置 → 模型 API 填当前服务商的 Key。")
-                self.schedule_heartbeat(FALLBACK_HEARTBEAT_MINUTES)
                 return
 
         self._repair_buffer()
@@ -1714,6 +1629,8 @@ class PlannerSession:
         gen_cache_known = False
         usage_calls = 0
         gen_t0 = time.time()
+        # 注：_turn_change_ids 不在回合开始时清空——它要跨回合累积（多轮工具、
+        # 自主续聊），只在「回应用户的回合结束」或新消息边界时统一出块（见下）
         # 已见消息 id（而非 seen_count=len(msgs)）：压缩中间件会 RemoveMessage
         # 收缩消息列表，按长度增量会漏掉压缩后新增的 ToolMessage → 工具卡片
         # 永远停在"正在执行"转圈。按消息 id 去重，与列表收缩无关。
@@ -1722,7 +1639,7 @@ class PlannerSession:
         try:
             # 无 checkpointer：每次 invoke 都是全新 state，字段必须显式初始化
             stream = self._agent.stream(
-                {"messages": input_msgs, "model_call_count": 0, "set_heartbeat_called": False},
+                {"messages": input_msgs, "set_heartbeat_called": False},
                 stream_mode=["messages", "values"],
             )
             for item in stream:
@@ -1801,8 +1718,7 @@ class PlannerSession:
                         self._last_text_len = len(full_text)   # continue 分段暂停按此计算
                         self.push_text(full_text)
                         self._save_log("assistant", full_text)
-                        if not self._is_self_learning_generation():
-                            self._maybe_speak(full_text)
+                        self._maybe_speak(full_text)
                         current_chunks = []
                         current_msg_id = None
                     # 一个超步结束（模型/工具节点收束）→ 下一段思考开新块
@@ -1813,13 +1729,7 @@ class PlannerSession:
             self.push_error(
                 f"调用模型失败（{cfg['provider']} / {cfg['model']}）：{self._short_error(exc)}",
                 self._llm_error_hint(exc))
-            if self._is_self_learning_generation():
-                self.schedule_heartbeat(
-                    _config.PLANNER_LEARNING_HEARTBEAT_MINUTES,
-                    "自主学习后继续学习")
-            else:
-                # 生成出错、模型没来得及定心跳 → 用固定兜底间隔，不再做沉默递进
-                self.schedule_heartbeat(FALLBACK_HEARTBEAT_MINUTES)
+            # 新心跳语义：不自动重排（这次提醒丢掉，用户可再要求）
             return
         if interrupted:
             _logger.info("[agent] 用户打断，立即停止当前生成")
@@ -1870,6 +1780,16 @@ class PlannerSession:
                 self.recent_buffer = filtered + extra
             self._stamp_missing_ts()   # agent 生成的 ai/tool 消息补时间戳
             self._place_node_messages()
+        # 改动过的文件 → 回复下方快捷块。**只在"回应用户"的回合结束时统一出块**：
+        # 多轮工具调用、heartbeat 续聊都会先累积到这里，不会中途冒多个块
+        # （用户反馈"中途的一些回答也会显示多轮修改情况"）；自主回合
+        # （heartbeat/scheduled/nudge）的改动继续累积，等下一次"回应用户"
+        # 或新消息边界（_receive）时统一出块——与 /history 的聚合口径一致。
+        if self._turn_change_ids and self.current_trigger == "player":
+            files = self.changed_files_for_ids(self._turn_change_ids)
+            self._turn_change_ids = []
+            if files:
+                self.push_event({"type": "changed_files", "files": files})
         self.push_agenda_update()
 
     def _neutralize_limit_message(self, m) -> bool:
@@ -1921,16 +1841,6 @@ class PlannerSession:
         if mtype == "ai" and getattr(m, "tool_calls", None):
             for tc in m.tool_calls:
                 name = tc.get("name", "?")
-                if name:
-                    self._generation_tool_names.add(name)
-                    if name == "heartbeat":
-                        self._heartbeat_set_this_generation = True
-                    if (name in {"web_search", "fetch_web", "explore_memory_tree",
-                                 "read_file", "list_dir"}
-                            and not self._self_learning_mute_sent):
-                        # 检测到自主学习：通知前端本次生成静音（不朗读）
-                        self._self_learning_mute_sent = True
-                        self.push_event({"type": "tts_mute", "value": True})
                 if name == "continue_speaking":
                     continue   # 分段工具不展示卡片（视觉上就是连续说话）
                 try:
@@ -1952,6 +1862,8 @@ class PlannerSession:
                 ak = getattr(m, "additional_kwargs", None)
                 if isinstance(ak, dict):
                     ak["change_ids"] = change_ids   # 白名单转换 → 不会发回模型端点
+                # 本轮改动汇总（回复下方「改动文件」快捷块：打开 / 打开所在目录）
+                self._turn_change_ids.extend(change_ids)
             diff = self.change_diff(change_ids, tool=name) if change_ids else None
             self.push_event({"type": "tool_result", "id": getattr(m, "tool_call_id", ""),
                              "content": str(getattr(m, "content", "") or ""),
@@ -2023,6 +1935,37 @@ class PlannerSession:
             _logger.warning("[changes] diff 生成失败", exc_info=True)
             return None
 
+    def changed_files_for_ids(self, change_ids: list[int]) -> list[dict]:
+        """一组变更 id → 去重聚合的改动文件列表（回复下方快捷块用）。
+
+        返回 [{path, rel, name, count, missing}]，**按改动次数降序**（同次数按
+        相对路径排）——谁改得多排前面；missing = 该文件最后一次变更后已不存在
+        （delete_file / move 的源），前端只给「打开所在目录」。
+        """
+        try:
+            db = self.get_changes_db()
+            agg: dict[str, dict] = {}
+            for cid in list(change_ids or []):
+                row = db.get(int(cid))
+                if row is None:
+                    continue
+                key = str(row["path"])
+                item = agg.get(key)
+                if item is None:
+                    item = {"path": key, "rel": str(row["rel"]),
+                            "name": Path(key).name, "count": 0, "missing": False}
+                    agg[key] = item
+                item["count"] += 1
+                # 按时间序迭代，最后一条变更的 after_missing 为准（可能被重新写回）；
+                # 再兜底查一次磁盘实际存在性（覆盖用 run_command 等非留底方式删除的文件）
+                item["missing"] = bool(row.get("after_missing")) or not Path(key).is_file()
+            files = list(agg.values())
+            files.sort(key=lambda f: (-f["count"], f["rel"].lower()))
+            return files
+        except Exception:
+            _logger.warning("[changes] 改动文件聚合失败", exc_info=True)
+            return []
+
     # ── 对外状态 ──────────────────────────────────────────────
 
     # ── 上下文统计（token 估算）────────────────────────────────
@@ -2063,20 +2006,23 @@ class PlannerSession:
 
     def state_dict(self) -> dict:
         with self.buffer_lock:
-            today = _now().strftime("%Y-%m-%d")
+            now_ = _now()
+            today = now_.strftime("%Y-%m-%d")
             today_items = self.db.list_calendar_range(today, today)
+            # 悬浮球/标题栏红点：**只统计今天**逾期未做的项（更早日期的逾期不再刷屏；
+            # 日历提醒扫描（_check_calendar_due）仍用全量逾期，不受影响）。
+            overdue_today = sum(
+                1 for i in self.db.list_overdue_calendar(now_) if i["date"] == today)
             return {
                 "mode": self.mode,
                 "thinking": self.thinking,
                 "compressing": bool(getattr(self, "_compressing", False)),
                 "heartbeat": self.heartbeat_dict(),
-                "dnd": {"enabled": self.dnd_enabled, "in_dnd": self.in_dnd(),
-                        "until": self.dnd_until.isoformat() if self.dnd_until else None},
                 "agenda": {
                     "today": today,
                     "today_total": len(today_items),
                     "today_todo": sum(1 for i in today_items if i["status"] == "todo"),
-                    "overdue_count": len(self.db.list_overdue_calendar(_now())),
+                    "overdue_count": overdue_today,
                 },
                 "context": self.context_stats(),
                 "activity": self._activity,

@@ -61,6 +61,56 @@ html, body {
   overflow-x: auto;
   white-space: pre;
 }
+/* 表格：气泡窄，允许横向滚动 */
+#toast-text .md-table-wrap {
+  margin: 4px 0;
+  max-width: 100%;
+  overflow-x: auto;
+  white-space: normal;
+}
+#toast-text .md-table {
+  border-collapse: collapse;
+  min-width: 100%;
+  font-size: 12px;
+  line-height: 1.45;
+}
+#toast-text .md-table th,
+#toast-text .md-table td {
+  border: 1px solid #e5e7eb;
+  padding: 3px 6px;
+  text-align: left;
+  vertical-align: top;
+  white-space: normal;
+  word-break: break-word;
+}
+#toast-text .md-table th { background: #f6f7f9; font-weight: 600; }
+/* 链接：点击 → 系统浏览器（md.js capture；不会展开面板） */
+#toast-text a.md-link {
+  color: #2563eb;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+/* 标题 / 列表 / 引用 */
+#toast-text h1, #toast-text h2, #toast-text h3,
+#toast-text h4, #toast-text h5, #toast-text h6 {
+  margin: 4px 0 2px;
+  line-height: 1.35;
+  font-weight: 700;
+  white-space: normal;
+}
+#toast-text h1 { font-size: 15px; }
+#toast-text h2 { font-size: 14px; }
+#toast-text h3, #toast-text h4, #toast-text h5, #toast-text h6 { font-size: 13px; }
+#toast-text ul, #toast-text ol { margin: 3px 0; padding-left: 18px; white-space: normal; }
+#toast-text li { margin: 1px 0; }
+#toast-text blockquote {
+  margin: 4px 0;
+  padding-left: 8px;
+  border-left: 2px solid #e5e7eb;
+  color: #6b7280;
+  white-space: normal;
+}
 
 /* 小三角：指向悬浮球（默认气泡在球上方，箭头朝下） */
 #toast-arrow {

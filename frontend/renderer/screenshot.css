@@ -1,0 +1,63 @@
+/* 截屏覆盖层：全屏底图 + 选区（box-shadow 遮暗外部）+ 涂鸦层 + 工具条 */
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body {
+  height: 100%; overflow: hidden;
+  user-select: none; -webkit-user-select: none;
+  cursor: crosshair;
+  background: #000;
+}
+
+#shot {
+  position: fixed; inset: 0; z-index: 0;
+  background-repeat: no-repeat;
+  background-size: 100% 100%;
+  pointer-events: none;
+}
+
+/* 选区：内部显示原图对应区域（背景定位），box-shadow 把外部压暗。
+   层级必须在画笔层（#ink）之下——否则笔迹会被选区图盖住
+   （用户实测：笔只能画在选区外面） */
+#sel {
+  position: fixed; z-index: 1;
+  border: 1px solid #2f6fed;
+  background-repeat: no-repeat;
+  box-shadow: 0 0 0 9999px rgba(10, 14, 22, 0.45);
+  pointer-events: none;
+}
+#sel.hidden { display: none; }
+
+#ink {
+  position: fixed; inset: 0; z-index: 2;
+  pointer-events: none;   /* 事件统一走 window 监听 */
+}
+
+#hint {
+  position: fixed; left: 50%; top: 18px; transform: translateX(-50%);
+  background: rgba(20, 22, 28, 0.85); color: #e5e7eb;
+  font-size: 12px; padding: 6px 14px; border-radius: 8px;
+  pointer-events: none;
+}
+#hint.hidden { display: none; }
+
+#tools {
+  position: fixed; display: flex; align-items: center; gap: 4px;
+  background: #1f2329; border-radius: 9px; padding: 5px 7px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+#tools.hidden { display: none; }
+#tools .size {
+  font-size: 11px; color: #9aa0aa; padding: 0 6px 0 2px;
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+#tools button {
+  width: 28px; height: 28px; border: none; border-radius: 7px;
+  background: transparent; color: #d3d7de; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+#tools button:hover { background: rgba(255, 255, 255, 0.12); }
+#tools button.active { background: #2f6fed; color: #fff; }
+#tools button svg { width: 15px; height: 15px; display: block; }
+#tools #ok { color: #34d399; }
+#tools #ok:hover { background: rgba(52, 211, 153, 0.18); }
+#tools #cancel { color: #f87171; }
+#tools #cancel:hover { background: rgba(248, 113, 113, 0.18); }

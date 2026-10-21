@@ -2,13 +2,12 @@
 
 端点：
 - GET  /init      下发 char / state / mode
-- GET  /state     轻量状态（heartbeat 倒计时、DND、今日议程摘要）
+- GET  /state     轻量状态（heartbeat 倒计时、今日议程摘要）
 - GET  /dequeue   一次性 drain 事件流（顶层带状态）
 - GET  /history   对话历史（聊天区渲染用）
 - GET  /calendar  日历按范围查（?from=YYYY-MM-DD&to=YYYY-MM-DD&cancelled=0/1）
 - POST /chat      玩家消息（立即返回，异步生成）
 - POST /calendar/add|update|cancel|series/cancel  日历的增改/取消（含整个重复系列）
-- POST /dnd       免打扰开关（{enabled, until_hour?}）
 - POST /nudge     手动戳一下：立即触发一次自主生成
 - POST /toggle_mock 运行时切换 Mock/真实 LLM
 - GET  /workspace 代码工作区状态与授权规则概要
@@ -435,6 +434,18 @@ class _Handler(BaseHTTPRequestHandler):
             # 对话历史（渲染聊天区用）：玩家消息 / 小助回复 / 工具卡片，
             # 以及压缩节点（role=memory，早期对话的记忆摘要，显示在对话框顶部）
             msgs = []
+            turn_change_ids: list[int] = []   # 本轮改动汇总（挂在回复下面的快捷块）
+            turn_autonomous = False           # 当前回合是否自主回合（注入消息触发）
+
+            def _flush_changed() -> None:
+                """把本轮改动聚合条目挂进消息流（在最终回复之后）。"""
+                if not turn_change_ids:
+                    return
+                files = self.session.changed_files_for_ids(turn_change_ids)
+                if files:
+                    msgs.append({"role": "changed_files", "files": files})
+                turn_change_ids.clear()
+
             for m in self.session.recent_buffer:
                 meta = getattr(m, "metadata", None) or {}
                 if "node_id" in meta:
@@ -453,6 +464,18 @@ class _Handler(BaseHTTPRequestHandler):
                 if not content and not tool_calls and not tool_ref:
                     continue
                 if role == "human":
+                    # 只有**真正的回合边界**才 flush / 更新自主标记：view_image 注入
+                    # （这是小助读取的图片…）、[当前议程]、历史遗留的 nudge 提示
+                    # （（你已经忙了一小会儿了…），中间件已移除但旧 buffer 里还有）
+                    # 都是**回合中途**的注入——当成边界会把一个回合的改动切成多个块
+                    # （用户实测），也会把玩家回合误判成自主回合（最终回复不出块）
+                    is_real_user = ("对你说：" in content
+                                    or (not content.startswith("（")
+                                        and not content.startswith("[")))
+                    is_system_start = content.startswith("（系统：")
+                    if is_real_user or is_system_start:
+                        _flush_changed()   # 回合边界：上一段未出块的改动先统一落块
+                        turn_autonomous = not is_real_user
                     # 内部注入（[当前待办]/[早晨]/[提醒]/（心跳…））
                     if content.startswith("（") or content.startswith("[当前"):
                         continue
@@ -472,6 +495,8 @@ class _Handler(BaseHTTPRequestHandler):
                         msgs.append({"role": "thinking", "content": reasoning})
                     if content:
                         msgs.append({"role": "assistant", "content": content})
+                        if not tool_calls and not turn_autonomous:
+                            _flush_changed()   # 玩家回合的最终回复 → 改动块挂它下面
                     # 历史工具调用卡片（与实时事件 _emit_tool_events 保持一致）
                     for tc in tool_calls:
                         name = tc.get("name", "?")
@@ -479,6 +504,11 @@ class _Handler(BaseHTTPRequestHandler):
                             continue   # 分段工具不展示卡片（视觉上就是连续说话）
                         msgs.append({"role": "tool_call", "id": tc.get("id", ""),
                                      "name": name, "args": tc.get("args", {})})
+                    # 玩家回合以 heartbeat 收尾（调度下一条消息）→ 也是回合终点：
+                    # 改动块挂在它后面（与实时侧"player 回合结束即出块"一致）
+                    if not turn_autonomous and any(
+                            tc.get("name") == "heartbeat" for tc in tool_calls):
+                        _flush_changed()
                 elif role == "tool":
                     if getattr(m, "name", "") == "continue_speaking":
                         continue
@@ -486,6 +516,7 @@ class _Handler(BaseHTTPRequestHandler):
                     # → 历史重建也显示「修改前后」diff
                     ak = getattr(m, "additional_kwargs", None) or {}
                     ids = ak.get("change_ids") or []
+                    turn_change_ids.extend(int(i) for i in ids)
                     diff = (self.session.change_diff([int(i) for i in ids],
                                                      tool=getattr(m, "name", "") or "")
                             if ids else None)
@@ -500,6 +531,7 @@ class _Handler(BaseHTTPRequestHandler):
                         msgs.append({"role": "image",
                                      "url": _image_url(str(img_path)),
                                      "caption": str(captions[i]) if i < len(captions) else ""})
+            _flush_changed()   # 兜底：改动发生在最后、回复没带正文时
             self._send_json({"ok": True, "messages": msgs})
         else:
             self._send_json({"ok": False, "error": f"unknown endpoint: {path}"}, status=404)
@@ -624,15 +656,6 @@ class _Handler(BaseHTTPRequestHandler):
             self._calendar_note(
                 f"取消了重复日程「{item['content']}」自 {item['date']} 起共 {n} 期")
             self._send_json({"ok": True, "count": n})
-        elif path == "/dnd":
-            body = self._read_json_body()
-            self.session.set_dnd(bool(body.get("enabled", True)),
-                                 body.get("until_hour"))
-            self._send_json({"ok": True, "dnd": self.session.state_dict()["dnd"]})
-        elif path == "/typing":
-            body = self._read_json_body()
-            self.session.set_typing(bool(body.get("typing", False)))
-            self._send_json({"ok": True})
         elif path == "/settings":
             body = self._read_json_body()
             try:

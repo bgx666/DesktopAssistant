@@ -1,7 +1,7 @@
 // main.js —— Electron 悬浮球主进程
 // 悬浮球（常驻置顶，可拖拽） + 对话面板（点击球"变形"展开，失焦"变形"收回）
 
-const { app, BrowserWindow, Tray, Menu, nativeImage, screen, ipcMain, session, dialog, shell } = require('electron');
+const { app, BrowserWindow, Tray, Menu, nativeImage, screen, ipcMain, session, dialog, shell, desktopCapturer, globalShortcut } = require('electron');
 const { spawn } = require('child_process');
 const crypto = require('crypto');
 const path = require('path');
@@ -50,7 +50,7 @@ let panelState = 'hidden';
 let panelLoaded = false;   // 面板页面是否加载完成（listener 就绪）
 let pendingMorph = null;   // 页面加载完成前暂存的变形请求 {kind, from, to, showFirst}
 let ignoreBlurUntil = 0;   // morph-in 完成后短暂忽略 blur（focus 延迟失败的兜底）
-let panelDragged = false;  // 面板是否被拖离过展开位置（决定缩小是否跟随面板）
+let panelDragged = false;  // 面板是否被拖离过展开位置（仅用于统计/调试，不再影响球位置）
 
 const BUBBLE_STATE_FILE = () => path.join(app.getPath('userData'), 'bubble-pos.json');
 
@@ -418,6 +418,7 @@ function morphIn() {
   if (!panelWin || panelWin.isDestroyed()) createPanel();
   panelDragged = false;                       // 每次展开重置拖动标记
   clearAllToasts();                           // 展开面板时清掉所有气泡
+  hidePendingWindow();                        // 面板里有审批弹窗/提问卡，浮层让位
   const from = bubbleWin.getBounds();            // 球当前矩形（renderer 起始 transform 用）
   const size = panelSize();
   const to = { ...panelTargetPos(), w: size.w, h: size.h };
@@ -440,17 +441,9 @@ function morphOut() {
     return;
   }
   const from = panelWin.getBounds();
-  // 缩小目标：
-  // - 面板被拖离过展开位置 → 悬浮球移到面板当前位置，原地缩成球（跟随面板）
-  // - 面板没动过 → 球保持原位，缩回展开前的位置（不漂移）
-  if (panelDragged && bubbleWin && !bubbleWin.isDestroyed()) {
-    // 球窗口对齐面板中心（窗口比视觉球大，球视觉居中 → 视觉球落在面板中心）
-    const bw = bubbleWin.getBounds();
-    bubbleWin.setPosition(
-      Math.round(from.x + (from.width - bw.width) / 2),
-      Math.round(from.y + (from.height - bw.height) / 2),
-    );
-  }
+  // 缩小目标 = 悬浮球的**原位置**（2026-10-20 用户要求）：
+  // 拖动展开的面板不改变球的位置——收起时球留在用户上次放它的地方，
+  // 面板动画飞回球的位置。不要再按"面板中心"重定位球。
   const to = bubbleWin.getBounds();
   panelState = 'morphing_out';
   sendMorph('out', from, to);
@@ -520,7 +513,14 @@ function killBackend() {
 // 每个气泡生存 TOAST_MS 后自动消失；点击气泡展开面板。
 const TOAST_W = 280;
 const TOAST_H = 110;                 // 初始高度（内容多高窗口自适应多高）
-const TOAST_MS = 30000;              // 每个气泡生存 30 秒
+const TOAST_MS_DEFAULT = 30000;      // 默认每个气泡生存 30 秒（设置页可调）
+
+// 气泡显示时长：设置页「交互 → 气泡显示时长」（ui-settings.json，无需后端）
+function toastLifetimeMs() {
+  const s = Number(uiSettings.toast_seconds);
+  const sec = Number.isFinite(s) && s > 0 ? s : TOAST_MS_DEFAULT / 1000;
+  return Math.max(3000, Math.min(600000, Math.round(sec * 1000)));
+}
 
 let toastWins = [];                     // 堆叠的气泡窗口（[0] 最靠近球=最新）
 
@@ -548,7 +548,7 @@ function createToastWin(text, offset = 0, history = false) {
   // 气泡层级低于悬浮球（floating > 普通窗口，但 < pop-up-menu）：
   // 悬浮球永远不被气泡遮挡
   win.setAlwaysOnTop(true, 'floating');
-  const timer = setTimeout(() => destroyToastWin(win), TOAST_MS);
+  const timer = setTimeout(() => destroyToastWin(win), toastLifetimeMs());
   win.on('closed', () => {
     clearTimeout(timer);
     const i = toastWins.indexOf(win);
@@ -633,6 +633,274 @@ function showToast(text, offset = 0, history = false) {
   createToastWin(String(text).trim(), offset, history);
 }
 
+// ── 快速输入窗（悬浮球模式：全局快捷键 → 球旁小输入框）─────────
+// 需求（2026-10-19 用户）：不展开面板也能输入——左 Alt+J 在球附近弹出
+// 小输入框（输入 + 语音 + 发送 + 待发送文件），Enter 发送、Esc 收起。
+// 快捷键可在设置页改（Electron 加速键写法，默认 Alt+J）。
+const QUICK_W = 380;
+const QUICK_MIN_H = 64;
+let quickWin = null;
+let quickAnchor = 'above';   // 'above' | 'below'：高度变化时固定哪条边（贴球那侧）
+
+function createQuickInput() {
+  if (quickWin && !quickWin.isDestroyed()) return;
+  quickWin = new BrowserWindow({
+    width: QUICK_W,
+    height: QUICK_MIN_H,
+    frame: false,
+    transparent: true,
+    hasShadow: false,
+    resizable: false,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    show: false,
+    backgroundColor: '#00000000',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      autoplayPolicy: 'no-user-gesture-required',   // 语音输入/播报
+      backgroundThrottling: false,   // 隐藏窗口也要正常跑定时器（发送/计数不拖慢）
+    },
+  });
+  quickWin.loadFile(path.join(__dirname, 'renderer', 'quick-input.html'));
+  quickWin.setAlwaysOnTop(true, 'pop-up-menu');
+  // 点到别处 → 收起（临时浮层，不常驻）
+  quickWin.on('blur', () => { if (!quitting) hideQuickInput(); });
+  quickWin.on('closed', () => { quickWin = null; });
+  appLog('[win] quick input created');
+}
+
+function quickVisible() {
+  return !!(quickWin && !quickWin.isDestroyed() && quickWin.isVisible());
+}
+
+function hideQuickInput() {
+  if (!quickVisible()) return;
+  try { quickWin.webContents.send('quick-hide'); } catch { /* 忽略 */ }
+  quickWin.hide();
+  refreshPendingWindow();   // 关闭输入浮层后，未处理的请求重新冒出来
+}
+
+function positionQuickInput() {
+  if (!quickWin || quickWin.isDestroyed()) return;
+  const b = (bubbleWin && !bubbleWin.isDestroyed())
+    ? bubbleWin.getBounds()
+    : { x: screen.getCursorScreenPoint().x, y: screen.getCursorScreenPoint().y, width: 0, height: 0 };
+  const disp = screen.getDisplayNearestPoint(
+    { x: b.x + b.width / 2, y: b.y + b.height / 2 }).workArea;
+  const h = quickWin.getBounds().height;
+  let x = Math.round(b.x + b.width / 2 - QUICK_W / 2);
+  x = Math.max(disp.x + 8, Math.min(x, disp.x + disp.width - QUICK_W - 8));
+  // 视觉球上下沿（窗口比视觉球大：44px 球居中）
+  const ballTop = b.y + Math.round((b.height - 44) / 2);
+  const ballBottom = ballTop + 44;
+  // 优先放在球**下方**（气泡 toast 都堆在球上方；2026-10-20 用户要求），
+  // 下方放不下（贴屏幕底）再放上方。
+  let y = ballBottom + 10;
+  quickAnchor = 'below';
+  if (y + h > disp.y + disp.height - 8) {
+    y = ballTop - h - 10;
+    quickAnchor = 'above';
+  }
+  y = Math.max(disp.y + 8, Math.min(y, disp.y + disp.height - h - 8));
+  quickWin.setBounds({ x, y, width: QUICK_W, height: h });
+}
+
+function showQuickInput() {
+  if (quitting) return;
+  if (panelState !== 'hidden') return;   // 面板展开时自带输入框，不弹浮层
+  hidePendingWindow();                   // 两个浮层都在球旁，先让位给输入
+  if (!quickWin || quickWin.isDestroyed()) createQuickInput();
+  positionQuickInput();
+  quickWin.show();
+  quickWin.focus();
+  try { quickWin.webContents.focus(); } catch { /* 忽略 */ }
+  try { quickWin.webContents.send('quick-show'); } catch { /* 忽略 */ }
+  appLog('[quick] shown');
+}
+
+function toggleQuickInput() {
+  if (quickVisible()) { hideQuickInput(); return; }
+  showQuickInput();
+}
+
+// 全局快捷键：设置页可改（Electron 加速键，默认 Alt+J）
+let quickHotkey = null;
+function registerQuickInputShortcut() {
+  if (quickHotkey) {
+    try { globalShortcut.unregister(quickHotkey); } catch { /* 忽略 */ }
+    quickHotkey = null;
+  }
+  const wanted = String(uiSettings.quick_input_hotkey || 'Alt+J').trim() || 'Alt+J';
+  try {
+    if (globalShortcut.register(wanted, () => toggleQuickInput())) {
+      quickHotkey = wanted;
+      appLog('[quick] hotkey registered: ' + wanted);
+    } else {
+      appLog('[quick] hotkey 注册失败（可能被其他程序占用）: ' + wanted);
+    }
+  } catch (e) {
+    appLog('[quick] hotkey 注册异常: ' + (e && e.message ? e.message : String(e)));
+  }
+}
+
+ipcMain.on('quick-hide', () => hideQuickInput());
+// 内容高度变化 → 窗口自适应（贴着球的那条边固定）
+ipcMain.on('quick-resize', (e, h) => {
+  const win = BrowserWindow.fromWebContents(e.sender);
+  if (!win || win !== quickWin || win.isDestroyed()) return;
+  const nh = Math.max(QUICK_MIN_H, Math.min(420, Math.round(Number(h) || QUICK_MIN_H)));
+  const b = win.getBounds();
+  if (Math.abs(b.height - nh) < 2) return;
+  let y = quickAnchor === 'above' ? b.y + b.height - nh : b.y;
+  // 贴球那侧固定生长；再夹到屏幕内（贴底时下方生长不越界）
+  const disp = screen.getDisplayNearestPoint(
+    { x: b.x + b.width / 2, y: y + nh / 2 }).workArea;
+  y = Math.max(disp.y + 8, Math.min(y, disp.y + disp.height - nh - 8));
+  win.setBounds({ x: b.x, y, width: QUICK_W, height: nh });
+});
+
+// ── 待处理请求（审批 / ask_user 提问）：悬浮球形态的提醒与就地处理 ──
+// 2026-10-19 用户需求：面板隐藏时不再强行展开面板；在球旁冒一个提醒浮层，
+// 悬浮球同时黄灯呼吸；允许/拒绝/选项/自由回答都能就地完成（复杂授权选项点
+// 「展开面板」）。处理完（approval_resolved / question_resolved）自动恢复。
+const pendingApprovals = new Map();
+const pendingQuestions = new Map();
+const PENDING_W = 340;
+let pendingWin = null;
+let pendingAnchor = 'above';
+
+function pendingSummary() {
+  const approvals = Array.from(pendingApprovals.values());
+  const questions = Array.from(pendingQuestions.values());
+  return {
+    approval: approvals[approvals.length - 1] || null,
+    question: questions[questions.length - 1] || null,
+    count: pendingApprovals.size + pendingQuestions.size,
+  };
+}
+
+function broadcastPending() {
+  const p = pendingSummary();
+  try {
+    if (bubbleWin && !bubbleWin.isDestroyed()) bubbleWin.webContents.send('pending', p);
+    if (pendingWin && !pendingWin.isDestroyed()) pendingWin.webContents.send('pending', p);
+  } catch { /* 窗口销毁中忽略 */ }
+}
+
+function trackPending(ev) {
+  const id = ev && ev.id;
+  if (!id) return;
+  if (ev.type === 'approval_request') pendingApprovals.set(id, ev);
+  else if (ev.type === 'question_request') pendingQuestions.set(id, ev);
+  else if (ev.type === 'approval_resolved') pendingApprovals.delete(id);
+  else if (ev.type === 'question_resolved') pendingQuestions.delete(id);
+}
+
+function clearPendingAll() {
+  if (!pendingApprovals.size && !pendingQuestions.size) return;
+  pendingApprovals.clear();
+  pendingQuestions.clear();
+  broadcastPending();
+  hidePendingWindow();
+}
+
+function createPendingWindow() {
+  if (pendingWin && !pendingWin.isDestroyed()) return;
+  pendingWin = new BrowserWindow({
+    width: PENDING_W,
+    height: 150,
+    frame: false,
+    transparent: true,
+    hasShadow: false,
+    resizable: false,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    show: false,
+    backgroundColor: '#00000000',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      autoplayPolicy: 'no-user-gesture-required',
+      backgroundThrottling: false,   // 倒计时/高度自适应在隐藏时不降频
+    },
+  });
+  pendingWin.loadFile(path.join(__dirname, 'renderer', 'pending.html'));
+  pendingWin.setAlwaysOnTop(true, 'pop-up-menu');
+  // 不因失焦收起：这是"有任务需要处理"的持续提醒；× 或处理完才消失
+  pendingWin.on('closed', () => { pendingWin = null; });
+  appLog('[win] pending created');
+}
+
+function pendingVisible() {
+  return !!(pendingWin && !pendingWin.isDestroyed() && pendingWin.isVisible());
+}
+
+function hidePendingWindow() {
+  if (!pendingVisible()) return;
+  pendingWin.hide();
+}
+
+function positionPendingWindow() {
+  if (!pendingWin || pendingWin.isDestroyed()) return;
+  const b = (bubbleWin && !bubbleWin.isDestroyed())
+    ? bubbleWin.getBounds()
+    : { x: screen.getCursorScreenPoint().x, y: screen.getCursorScreenPoint().y, width: 0, height: 0 };
+  const disp = screen.getDisplayNearestPoint(
+    { x: b.x + b.width / 2, y: b.y + b.height / 2 }).workArea;
+  const h = pendingWin.getBounds().height;
+  let x = Math.round(b.x + b.width / 2 - PENDING_W / 2);
+  x = Math.max(disp.x + 8, Math.min(x, disp.x + disp.width - PENDING_W - 8));
+  // 优先球**下方**（与快速输入一致；球上方留给 toast 气泡），下方放不下再放上方
+  const ballTop = b.y + Math.round((b.height - 44) / 2);
+  const ballBottom = ballTop + 44;
+  let y = ballBottom + 10;
+  pendingAnchor = 'below';
+  if (y + h > disp.y + disp.height - 8) {
+    y = ballTop - h - 10;
+    pendingAnchor = 'above';
+  }
+  y = Math.max(disp.y + 8, Math.min(y, disp.y + disp.height - h - 8));
+  pendingWin.setBounds({ x, y, width: PENDING_W, height: h });
+}
+
+function showPendingWindow() {
+  if (!pendingWin || pendingWin.isDestroyed()) createPendingWindow();
+  if (!pendingWin || pendingWin.isDestroyed()) return;
+  positionPendingWindow();
+  pendingWin.showInactive();   // 不抢当前焦点（只提醒，用户点它才交互）
+  try { pendingWin.webContents.send('pending', pendingSummary()); } catch { /* 忽略 */ }
+}
+
+function refreshPendingWindow() {
+  const count = pendingApprovals.size + pendingQuestions.size;
+  if (!count) { hidePendingWindow(); return; }
+  // 面板展开时面板里有审批弹窗/提问卡；正在用快速输入浮层时也不打扰
+  if (panelState !== 'hidden' || quickVisible()) { hidePendingWindow(); return; }
+  showPendingWindow();
+}
+
+ipcMain.handle('get-pending', () => pendingSummary());
+ipcMain.on('pending-close', () => hidePendingWindow());
+ipcMain.on('pending-expand', () => {
+  hidePendingWindow();
+  if (panelState === 'hidden') morphIn();
+});
+ipcMain.on('pending-resize', (e, h) => {
+  const win = BrowserWindow.fromWebContents(e.sender);
+  if (!win || win !== pendingWin || win.isDestroyed()) return;
+  const nh = Math.max(100, Math.min(460, Math.round(Number(h) || 150)));
+  const b = win.getBounds();
+  if (Math.abs(b.height - nh) < 2) return;
+  let y = pendingAnchor === 'above' ? b.y + b.height - nh : b.y;
+  const disp = screen.getDisplayNearestPoint(
+    { x: b.x + b.width / 2, y: y + nh / 2 }).workArea;
+  y = Math.max(disp.y + 8, Math.min(y, disp.y + disp.height - nh - 8));
+  win.setBounds({ x: b.x, y, width: PENDING_W, height: nh });
+});
+
 // ── 托盘 ────────────────────────────────────────────────────
 function createTray() {
   if (tray && !tray.isDestroyed()) return;   // 幂等：避免重复创建
@@ -646,7 +914,6 @@ function createTray() {
   tray.setToolTip('小助 —— 学习工作助手');
   const menu = Menu.buildFromTemplate([
     { label: '打开小助', click: () => { showBubble(); togglePanel(); } },
-    { label: '切换免打扰', click: () => toggleDndFromMain() },
     { label: '设置', click: () => openSettings() },
     { type: 'separator' },
     { label: '退出', click: () => doQuit() },
@@ -715,6 +982,14 @@ async function pollDequeue() {
     broadcastState(data.state);
     broadcastPanelState();
     if (!events.length) return;
+    // 审批/提问的挂起状态（悬浮球黄灯 + 提醒浮层的数据源）
+    const pendingRelated = events.filter((ev) => ev.type === 'approval_request'
+      || ev.type === 'question_request' || ev.type === 'approval_resolved'
+      || ev.type === 'question_resolved');
+    if (pendingRelated.length) {
+      pendingRelated.forEach(trackPending);
+      broadcastPending();
+    }
     // 面板窗口（**含隐藏态**）能收就实时收：隐藏期间 DOM 与对话流保持一致，展开时
     // 不必依赖 /history 重建——在途的思考/工具调用还没写进 buffer，重建会把它们抹掉
     // （用户实测：生成中收/展面板，工具行和思考流全丢了）。audio 除外（按形态单播）。
@@ -728,17 +1003,21 @@ async function pollDequeue() {
         (ev) => ev.type !== 'text_stream' && ev.type !== 'thinking_stream'));
       if (pendingEvents.length > 200) pendingEvents.splice(0, pendingEvents.length - 200);
     }
-    // 审批/提问请求：面板隐藏时没人能看到弹窗 → 会静默等到超时（默认拒绝/跳过）。
-    // 隐藏 → 自动展开；已展开但可能被其他窗口压住（面板不常驻最前）→ 置前。
+    // 审批/提问请求：面板隐藏时**不强行展开**（2026-10-19 用户需求）——
+    // 球旁冒提醒浮层 + 悬浮球黄灯，可在浮层里直接授权/选择；复杂授权选项
+    // 点「展开面板」。面板已展开 → 置前（它不常驻最前，可能被别的窗口压住）。
     const needsPopup = events.some((ev) => ev.type === 'approval_request' || ev.type === 'question_request');
     if (needsPopup) {
       if (panelState === 'hidden') {
-        appLog('[popup] 收到审批/提问请求，面板隐藏 → 自动展开');
-        morphIn();
+        appLog('[popup] 审批/提问请求 → 悬浮球提醒（不自动展开）');
+        refreshPendingWindow();
       } else if (panelState === 'shown') {
-        appLog('[popup] 收到审批/提问请求 → 面板置前');
+        appLog('[popup] 审批/提问请求 → 面板置前');
         focusPanel();
       }
+    } else if (pendingRelated.some(
+      (ev) => ev.type === 'approval_resolved' || ev.type === 'question_resolved')) {
+      refreshPendingWindow();
     }
     if (panelState === 'hidden') {
       // 悬浮球形态：文本事件冒气泡；audio 事件 → 气泡窗口播放；
@@ -764,6 +1043,7 @@ async function pollDequeue() {
     // 后端不可达 → 广播离线状态，各窗口状态点变红
     setBackendOnline(false);
     broadcastState({ offline: true });
+    clearPendingAll();   // 挂起请求随后端不可达而失效（等待会超时）
   } finally {
     // 在线 → 立即发起下一次长轮询；离线 → 回到健康检查，等后端恢复后快速变绿
     if (!quitting) {
@@ -813,20 +1093,6 @@ function startDequeuePoll() {
 function startBackendMonitor() {
   if (dequeueTimer) return;
   checkBackend();
-}
-
-function toggleDndFromMain() {
-  fetch(BACKEND_URL + '/state')
-    .then((r) => r.json())
-    .then((d) => {
-      const enabled = !d.state.dnd.enabled;
-      return fetch(BACKEND_URL + '/dnd', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled }),
-      });
-    })
-    .catch(() => {});
 }
 
 // ── IPC：渲染进程 ↔ 主进程 ──────────────────────────────────
@@ -927,13 +1193,49 @@ ipcMain.on('refocus-window', (event) => {
   }
 });
 
-// 在系统文件管理器中打开目录（工作目录面板「打开文件夹」）
+// 外部链接（Markdown 里的 http/https/mailto）→ 系统默认浏览器。
+// 渲染层是 file:// 页面，直接让 <a> 导航会把面板顶掉；协议白名单防 javascript:/data:。
+ipcMain.handle('open-external', async (e, url) => {
+  const u = String(url || '').trim();
+  if (!/^(https?:\/\/|mailto:)/i.test(u)) return { ok: false, error: 'blocked_scheme' };
+  try {
+    await shell.openExternal(u);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+});
+
+// 在系统文件管理器中打开目录（工作目录面板「打开文件夹」/「改动文件」块的「打开」）
 ipcMain.handle('open-path', async (e, p) => {
   const target = String(p || '');
   if (!target) return { ok: false, error: 'empty' };
   try {
+    // 先查存在性：shell.openPath 对不存在的路径会触发 Windows 系统报错框
+    // （"Windows 找不到文件…"，用户/测试都踩过）——直接返回失败，由前端给提示
+    if (!fs.existsSync(target)) return { ok: false, error: 'not_found' };
     const err = await shell.openPath(target);   // 成功返回空串，失败返回错误描述
     return err ? { ok: false, error: err } : { ok: true };
+  } catch (err) {
+    return { ok: false, error: String((err && err.message) || err) };
+  }
+});
+
+// 在资源管理器中定位文件（选中高亮 + 打开所在目录；「改动文件」快捷块的「目录」按钮）
+ipcMain.handle('show-in-folder', async (e, p) => {
+  const target = String(p || '');
+  if (!target) return { ok: false, error: 'empty' };
+  try {
+    if (fs.existsSync(target)) {
+      shell.showItemInFolder(target);
+      return { ok: true };
+    }
+    const dir = path.dirname(target);   // 文件已删除/移动 → 退而打开其所在目录
+    if (fs.existsSync(dir)) {
+      const err = await shell.openPath(dir);
+      return err ? { ok: false, error: err } : { ok: true };
+    }
+    return { ok: false, error: 'not_found' };
   } catch (err) {
     return { ok: false, error: String((err && err.message) || err) };
   }
@@ -1037,6 +1339,9 @@ function broadcastMounted() {
     if (panelWin && !panelWin.isDestroyed()) {
       panelWin.webContents.send('mounted-files', mountedFiles);
     }
+    if (quickWin && !quickWin.isDestroyed()) {
+      quickWin.webContents.send('mounted-files', mountedFiles);
+    }
   } catch { /* 窗口销毁中忽略 */ }
 }
 
@@ -1058,9 +1363,224 @@ ipcMain.on('remove-mounted', (e, index) => {
   }
 });
 ipcMain.handle('get-mounted', () => mountedFiles);
+
+// ── 加号按钮：选文件挂载（与拖拽/截图同一套 mounted 机制）──────────
+// 扩展名分类与 renderer/fileDrop.js 的 classify 保持一致
+const _PICK_TEXT_EXT = new Set([
+  'txt', 'md', 'markdown', 'py', 'js', 'ts', 'jsx', 'tsx', 'json', 'csv', 'log',
+  'ini', 'conf', 'cfg', 'yaml', 'yml', 'toml', 'html', 'htm', 'css', 'xml', 'sql',
+  'sh', 'bat', 'ps1', 'c', 'cpp', 'h', 'hpp', 'java', 'go', 'rs', 'rb', 'php',
+  'kt', 'swift', 'vue', 'svelte', 'gitignore', 'env', 'properties', 'reg',
+]);
+const _PICK_DOC_EXT = new Set(['pdf', 'docx', 'doc']);
+const _PICK_IMAGE_EXT = new Set(['png', 'jpg', 'jpeg', 'bmp', 'gif', 'webp', 'tiff', 'ico']);
+
+function classifyPath(name) {
+  const ext = String(name || '').split('.').pop().toLowerCase();
+  if (_PICK_IMAGE_EXT.has(ext)) return 'image';
+  if (_PICK_DOC_EXT.has(ext)) return 'doc';
+  if (_PICK_TEXT_EXT.has(ext)) return 'text';
+  return 'other';
+}
+
+ipcMain.handle('pick-files', async (event) => {
+  try {
+    const senderWin = BrowserWindow.fromWebContents(event.sender);
+    const parent = (senderWin && !senderWin.isDestroyed()) ? senderWin
+      : (panelWin && !panelWin.isDestroyed()) ? panelWin
+        : (bubbleWin && !bubbleWin.isDestroyed()) ? bubbleWin : null;
+    const r = await dialog.showOpenDialog(parent, {
+      title: '添加文件（随下一条消息一起发送）',
+      properties: ['openFile', 'multiSelections'],
+    });
+    // Windows 原生对话框关闭后键盘焦点兜底（同 pick-directory）
+    if (parent && !parent.isDestroyed()) {
+      try { parent.focus(); } catch { /* 忽略 */ }
+    }
+    if (r.canceled || !r.filePaths.length) return [];
+    return r.filePaths.map((p) => {
+      const name = path.basename(p);
+      const kind = classifyPath(name);
+      let content = null;
+      if (kind === 'text') {
+        try {
+          if (fs.statSync(p).size <= 32 * 1024) {   // 与 fileDrop 同口径
+            const buf = fs.readFileSync(p);
+            if (!buf.includes(0)) content = buf.toString('utf-8') || null;
+          }
+        } catch { content = null; }
+      }
+      return { name, path: p, kind, content };
+    });
+  } catch (err) {
+    appLog('[pick-files] 失败: ' + (err && err.message));
+    return [];
+  }
+});
+
+// ── 输入框粘贴（Ctrl+V）：剪贴板位图无磁盘路径 → 落盘后挂载 ──────────
+// 场景：微信/QQ/Snipaste/Win+Shift+S 截图后直接 Ctrl+V。从资源管理器复制的
+// 文件有路径（fileDrop 原路走），只有"剪贴板位图"没有路径、必须主进程落盘。
+const _PASTE_EXT = {
+  'image/png': '.png', 'image/jpeg': '.jpg', 'image/gif': '.gif',
+  'image/webp': '.webp', 'image/bmp': '.bmp', 'image/tiff': '.tiff',
+};
+
+function prunePasted(dir, keep = 50) {
+  try {
+    const files = fs.readdirSync(dir)
+      .map((f) => ({ f, t: fs.statSync(path.join(dir, f)).mtimeMs }))
+      .sort((a, b) => b.t - a.t);
+    for (const { f } of files.slice(keep)) {
+      try { fs.unlinkSync(path.join(dir, f)); } catch { /* 忽略 */ }
+    }
+  } catch { /* 忽略 */ }
+}
+
+ipcMain.handle('save-pasted-file', async (event, name, mime, buf) => {
+  try {
+    const dir = path.join(app.getPath('userData'), 'pasted');
+    fs.mkdirSync(dir, { recursive: true });
+    const ext = _PASTE_EXT[String(mime || '').toLowerCase()]
+      || (path.extname(String(name || '')) || '.png');
+    const base = `paste-${Date.now()}${ext}`;
+    const dest = path.join(dir, base);
+    fs.writeFileSync(dest, Buffer.from(buf));
+    prunePasted(dir);
+    appLog(`[paste] 剪贴板文件已落盘: ${dest}`);
+    return { path: dest, name: String(name || '') || base };
+  } catch (err) {
+    appLog('[paste] 落盘失败: ' + (err && err.message));
+    return null;
+  }
+});
+
+// ── 截屏（悬浮球右键菜单）：覆盖层选区/涂鸦 → 挂载为待发送文件 ──────
+// 流程：藏气泡 → 截取光标所在屏幕 → 覆盖层页面选区（✓/✗/画笔）→
+// ✓ 后**不直接发送**：挂进 mountedFiles（面板在输入框上方显示；悬浮球
+// 长按语音发送时也会带上——与拖拽文件完全同一套机制）。
+let screenshotWin = null;
+let pendingScreenshot = null;   // { dataUrl, scale }
+
+function pruneScreenshots(dir, keep = 50) {
+  try {
+    const files = fs.readdirSync(dir).filter((f) => f.endsWith('.png'))
+      .map((f) => ({ f, t: fs.statSync(path.join(dir, f)).mtimeMs }))
+      .sort((a, b) => b.t - a.t);
+    for (const { f } of files.slice(keep)) {
+      try { fs.unlinkSync(path.join(dir, f)); } catch { /* 忽略 */ }
+    }
+  } catch { /* 忽略 */ }
+}
+
+async function startScreenshot() {
+  // 残影窗口清理：上次覆盖层没能显示出来（事件竞态/加载失败）时窗口对象还在，
+  // 直接 return 会让"再点没反应"（用户实测过）——不可见的残留窗口清掉重来
+  if (screenshotWin && !screenshotWin.isDestroyed()) {
+    if (screenshotWin.isVisible()) return;
+    try { screenshotWin.destroy(); } catch { /* 忽略 */ }
+    screenshotWin = null;
+  }
+  const cursor = screen.getCursorScreenPoint();
+  const disp = screen.getDisplayNearestPoint(cursor);
+  try {
+    const sources = await desktopCapturer.getSources({
+      types: ['screen'],
+      thumbnailSize: {
+        width: Math.round(disp.bounds.width * disp.scaleFactor),
+        height: Math.round(disp.bounds.height * disp.scaleFactor),
+      },
+    });
+    const src = sources.find((s) => String(s.display_id) === String(disp.id)) || sources[0];
+    if (!src || src.thumbnail.isEmpty()) throw new Error('empty thumbnail');
+    pendingScreenshot = {
+      dataUrl: src.thumbnail.toDataURL(),
+      scale: src.thumbnail.getSize().width / disp.bounds.width,
+    };
+    appLog(`[screenshot] 捕获成功 ${disp.bounds.width}x${disp.bounds.height} `
+      + `scale=${pendingScreenshot.scale.toFixed(2)}`);
+  } catch (err) {
+    appLog('[screenshot] 截屏失败: ' + (err && err.message));
+    showToast('截屏失败：拿不到屏幕画面');
+    return;
+  }
+  if (bubbleWin && !bubbleWin.isDestroyed()) bubbleWin.hide();   // 别把自己截进去
+  clearAllToasts();
+  try {
+    const win = new BrowserWindow({
+      x: disp.bounds.x, y: disp.bounds.y,
+      width: disp.bounds.width, height: disp.bounds.height,
+      frame: false, resizable: false, movable: false,
+      minimizable: false, maximizable: false, fullscreenable: false,
+      skipTaskbar: true, alwaysOnTop: true, hasShadow: false,
+      enableLargerThanScreen: true, show: false,
+      backgroundColor: '#000000',
+      webPreferences: { preload: path.join(__dirname, 'preload.js') },
+    });
+    screenshotWin = win;
+    win.setAlwaysOnTop(true, 'screen-saver');
+    win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+    // 显示兜底：**先挂监听再 loadFile**——本地小页面加载极快时 ready-to-show
+    // 可能抢在监听器挂上之前发出（用户实测：悬浮球消失但覆盖层没出来），
+    // 所以 ready-to-show / did-finish-load / 定时器三重触发，任一生效即可。
+    const reveal = () => {
+      if (win.isDestroyed()) return;
+      if (!win.isVisible()) win.show();
+      try { win.focus(); } catch { /* 忽略 */ }
+    };
+    win.once('ready-to-show', reveal);
+    win.webContents.once('did-finish-load', reveal);
+    win.webContents.on('did-fail-load', (e, code, desc) => {
+      appLog(`[screenshot] 覆盖层页面加载失败: ${code} ${desc}`);
+      showToast('截屏页面加载失败');
+      if (!win.isDestroyed()) win.close();
+    });
+    win.once('closed', () => {
+      if (screenshotWin === win) screenshotWin = null;
+      if (panelState === 'hidden') showBubble();   // 截屏期间藏了气泡：恢复
+    });
+    win.loadFile(path.join(__dirname, 'renderer', 'screenshot.html'));
+    setTimeout(reveal, 600);   // 兜底：任何事件都没来也必须显示
+  } catch (err) {
+    appLog('[screenshot] 覆盖层创建失败: ' + (err && err.message));
+    showToast('截屏失败：无法创建截屏窗口');
+    screenshotWin = null;
+    if (panelState === 'hidden') showBubble();
+  }
+}
+
+ipcMain.on('start-screenshot', () => startScreenshot());
+ipcMain.handle('screenshot-get', () => pendingScreenshot);
+ipcMain.on('screenshot-cancel', () => {
+  pendingScreenshot = null;
+  if (screenshotWin && !screenshotWin.isDestroyed()) screenshotWin.close();
+});
+ipcMain.on('screenshot-done', (e, dataUrl) => {
+  pendingScreenshot = null;
+  try {
+    const m = /^data:image\/png;base64,(.+)$/.exec(String(dataUrl || ''));
+    if (!m) throw new Error('bad data url');
+    const dir = path.join(app.getPath('userData'), 'screenshots');
+    fs.mkdirSync(dir, { recursive: true });
+    const stamp = new Date().toISOString().replace(/\D/g, '').slice(0, 17);
+    const file = path.join(dir, `screenshot-${stamp}.png`);
+    fs.writeFileSync(file, Buffer.from(m[1], 'base64'));
+    pruneScreenshots(dir);
+    mountedFiles = mountedFiles.concat([{
+      name: `截图-${stamp}.png`, path: file, kind: 'image', content: null,
+    }]);
+    broadcastMounted();
+    showToast('截图已挂载：发消息或长按语音时一起带上');
+  } catch (err) {
+    appLog('[screenshot] 保存失败: ' + (err && err.message));
+    showToast('截图保存失败');
+  }
+  if (screenshotWin && !screenshotWin.isDestroyed()) screenshotWin.close();
+});
+
 // ── 前端 UI 设置（长按时间等，纯前端参数不走后端，启动即用）──
 const UI_SETTINGS_FILE = () => path.join(app.getPath('userData'), 'ui-settings.json');
-let uiSettings = { press_ms: 200 };
+let uiSettings = { press_ms: 200, toast_seconds: 30, quick_input_hotkey: 'Alt+J' };
 (function initUiSettings() {
   try {
     // 优先读本地 ui-settings.json（持久化）
@@ -1086,7 +1606,14 @@ let uiSettings = { press_ms: 200 };
       const p = path.join(dataRoot, 'settings.json');
       if (fs.existsSync(p)) {
         const raw = JSON.parse(fs.readFileSync(p, 'utf-8'));
-        if (raw && typeof raw.press_ms === 'number') uiSettings.press_ms = raw.press_ms;
+      if (raw && typeof raw.press_ms === 'number') uiSettings.press_ms = raw.press_ms;
+      // 气泡显示时长（秒）与快速输入快捷键（悬浮球模式全局热键）
+      if (raw && typeof raw.toast_seconds === 'number') {
+        uiSettings.toast_seconds = Math.max(3, Math.min(600, Math.round(raw.toast_seconds)));
+      }
+      if (raw && typeof raw.quick_input_hotkey === 'string' && raw.quick_input_hotkey.trim()) {
+        uiSettings.quick_input_hotkey = raw.quick_input_hotkey.trim();
+      }
       }
     }
   } catch { /* 用默认值 */ }
@@ -1107,6 +1634,16 @@ ipcMain.on('save-ui-settings', (e, updates) => {
   const u = updates || {};
   if (typeof u.press_ms === 'number') {
     uiSettings.press_ms = Math.max(50, Math.min(5000, Math.round(u.press_ms)));
+  }
+  if (typeof u.toast_seconds === 'number') {
+    uiSettings.toast_seconds = Math.max(3, Math.min(600, Math.round(u.toast_seconds)));
+  }
+  if (typeof u.quick_input_hotkey === 'string') {
+    const v = u.quick_input_hotkey.trim() || 'Alt+J';
+    if (v !== (uiSettings.quick_input_hotkey || '')) {
+      uiSettings.quick_input_hotkey = v;
+      registerQuickInputShortcut();
+    }
   }
   saveUiSettingsFile();
   broadcastUiSettings();
@@ -1306,15 +1843,6 @@ function broadcastSettings(settings) {
     if (panelWin && !panelWin.isDestroyed()) panelWin.webContents.send('settings', settings);
   } catch { /* 忽略 */ }
 }
-// 输入框状态同步：非空 = 正在输入（模型生成前提示，临时注入不落库）
-ipcMain.on('typing-state', (e, typing) => {
-  fetch(BACKEND_URL + '/typing', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ typing: !!typing }),
-    signal: AbortSignal.timeout(3000),
-  }).catch(() => {});
-});
 // 单击悬浮球 = 按住说话：录音识别在 bubble.js 直接走后端，主进程无需中转
 // （nudge 端点保留供未来使用，前端入口已移除）
 ipcMain.handle('get-panel-state', () => panelState);
@@ -1359,7 +1887,7 @@ ipcMain.on('set-panel-bounds', (e, b) => {
 ipcMain.on('move-panel', (e, x, y) => {
   if (panelWin && !panelWin.isDestroyed() && panelState === 'shown') {
     panelWin.setPosition(Math.round(x), Math.round(y));
-    panelDragged = true;   // 拖过面板：缩小跟随面板位置
+    panelDragged = true;   // 拖过面板（球位置不受影响，见 morphOut）
   }
 });
 ipcMain.on('morph-in-done', () => {
@@ -1393,6 +1921,7 @@ ipcMain.on('morph-out-done', () => {
   panelState = 'hidden';
   if (panelWin && !panelWin.isDestroyed()) panelWin.hide();
   showBubble();
+  refreshPendingWindow();   // 收起后仍有未处理的审批/提问 → 回到球旁提醒
 });
 ipcMain.handle('get-bubble-pos', () => {
   if (bubbleWin && !bubbleWin.isDestroyed()) {
@@ -1416,9 +1945,9 @@ ipcMain.on('move-bubble', (e, x, y) => {
 ipcMain.on('quit-app', () => doQuit());ipcMain.on('bubble-menu', (e) => {
   const items = [
     { label: '放大', click: () => togglePanel() },
+    { label: '截屏', click: () => startScreenshot() },
     { label: '语音对话模式', type: 'checkbox', checked: !!uiSettings.voice_mode,
       click: () => toggleVoiceMode() },
-    { label: '切换免打扰', click: () => toggleDndFromMain() },
     { label: '设置', click: () => openSettings() },
   ];
   if (mountedFiles.length) {
@@ -1463,6 +1992,9 @@ if (!gotSingleLock) {
       callback(permission === 'media');
     });
     createBubble();
+    createQuickInput();          // 快速输入浮层：提前创建（隐藏），热键按下即弹
+    createPendingWindow();       // 审批/提问提醒浮层：提前创建（隐藏）
+    registerQuickInputShortcut();
     createTray();
     cleanupTtsCache(); // 启动时清理旧 TTS 缓存
     ensureBackend(); // 后端不在线则自动拉起
@@ -1488,6 +2020,7 @@ app.on('before-quit', () => {
 });
 
 app.on('will-quit', () => {
+  try { globalShortcut.unregisterAll(); } catch { /* 忽略 */ }
 });
 
 

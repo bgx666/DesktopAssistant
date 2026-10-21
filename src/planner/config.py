@@ -55,10 +55,6 @@ PLANNER_HEARTBEAT_MIN_SECONDS: float = float(os.getenv("PLANNER_HEARTBEAT_MIN_SE
 PLANNER_HEARTBEAT_MIN_MINUTES: float = PLANNER_HEARTBEAT_MIN_SECONDS / 60.0
 PLANNER_HEARTBEAT_MAX_MINUTES: int = int(os.getenv("PLANNER_HEARTBEAT_MAX_MINUTES", "720"))
 
-# 免打扰默认窗口（24h 制闭区间 [start, end)，跨天处理）
-PLANNER_DND_START_HOUR: int = int(os.getenv("PLANNER_DND_START_HOUR", "22"))
-PLANNER_DND_END_HOUR: int = int(os.getenv("PLANNER_DND_END_HOUR", "8"))
-
 # 定时触发点（本地时间，UTC+8）
 PLANNER_MORNING_HOUR: int = int(os.getenv("PLANNER_MORNING_HOUR", "8"))
 PLANNER_EVENING_HOUR: int = int(os.getenv("PLANNER_EVENING_HOUR", "21"))
@@ -81,10 +77,6 @@ PLANNER_MIMO_VOICE: str = os.getenv("PLANNER_MIMO_VOICE", "mimo_default").strip(
 
 # LLM 兜底心跳（LLM 没调 heartbeat 时）
 PLANNER_FALLBACK_MINUTES: int = int(os.getenv("PLANNER_FALLBACK_MINUTES", "60"))
-# 自主学习保底间隔（模型自主学习后忘记设置心跳时兜底）
-PLANNER_LEARNING_HEARTBEAT_MINUTES: int = int(
-    os.getenv("PLANNER_LEARNING_HEARTBEAT_MINUTES", "30"))
-
 
 def data_root() -> Path:
     """解析运行时数据根目录（默认项目根/data）。"""

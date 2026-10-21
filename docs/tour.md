@@ -31,7 +31,7 @@
 | 文件 | 规模 | 职责 |
 |---|---|---|
 | `session.py` | 2003 行 | **核心**：并发锁、消息收发、生成调度、心跳/日历调度线程、异步压缩、审批挂起、事件队列、状态 |
-| `tools.py` | 1864 行 | 14 个基础工具（日历×4、心跳、分段说话、ask_user 提问、DND、记忆树、文件×2、截屏、**view_image 读图**、搜索×2）+ **代码工作区工具**（`get_cwd`、`apply_patch` 多文件补丁、读写/检索、`run_command`、`show_image`，仅 `workspace_root` 非空时注册） |
+| `tools.py` | 1864 行 | 13 个基础工具（日历×4、心跳（定时/巡检，可取消）、分段说话、ask_user 提问、记忆树、文件×2、截屏、**view_image 读图**、搜索×2）+ **代码工作区工具**（`get_cwd`、`apply_patch` 多文件补丁、读写/检索、`run_command`、`show_image`，仅 `workspace_root` 非空时注册） |
 | `middleware.py` | 1217 行 | 11 个业务中间件（含 `ApprovalMiddleware` 审批、截屏/读图注入）+ 记忆树压缩实现（`SummarizationMiddleware`） |
 | `server.py` | 904 行 | ThreadingHTTPServer + JSON 端点（`/workspace` `/approval` `/permissions` `/changes` `/llm` `/file` 等）+ 启动自检（端口清理） |
 | `workspace.py` | 299 行 | 代码工作区：路径校验 / 黑名单 / 命令黑名单 / 权限规则存储（`data/permissions.json`） |
@@ -102,7 +102,6 @@ flowchart LR
 ```
 
 - **心跳**＝「下一次何时醒来」的定时器，由模型通过 `heartbeat` 工具设置（clamp 1~720 分钟），模型没设时兜底 60 分钟。
-- **免打扰**（默认 22:00-08:00）：`DndGuardMiddleware` 只拦自主触发；`player` / `nudge`（用户戳球）永远不限。
 - **启动宽限**：打开后 2 分钟内不自主说话（`STARTUP_GRACE_SECONDS`）。
 - **自主学习**：心跳生成中调用了搜索/阅读/记忆类工具 → 文字照常显示与入树，但**不朗读**，并用 30 分钟学习保底心跳续期。
 
@@ -151,7 +150,6 @@ flowchart LR
 
 | 中间件 | 钩子 | 职责 |
 |---|---|---|
-| `DndGuardMiddleware` | before_agent | 免打扰时段非玩家触发 → 跳 end |
 | `AgendaSnapshotMiddleware` | before_agent | 议程指纹变化 → 注入 `[当前议程]`（今天+未来 7 天） |
 | `PlayerPriorityMiddleware` | before_model | `_inbox` 有消息 → 跳 end（让位给用户） |
 | `ScreenShotInjectMiddleware` | before_model | `_pending_screenshots` → 以 user 消息注入图片块 |
@@ -173,7 +171,7 @@ flowchart LR
 - **锁**：`chat_lock`（同一时刻只有一条生成）＋ `buffer_lock`（保护 `recent_buffer`/`_inbox`/状态字段；RLock）。
 - **`_inbox`**：生成期间用户消息的暂存区；`_generate_response` 的 finally 里消费（并入 buffer → `pending_response=True` → 下一轮生成）。
 - **`_stop_requested`**：只对当前生成有效，每次生成开始重置；流消费循环里也会立即 break（半句不落 buffer）。
-- **`current_trigger`**：`player` / `heartbeat` / `scheduled` / `nudge`——决定 DND 是否拦截、是否算自主学习。
+- **`current_trigger`**：`player` / `heartbeat` / `scheduled` / `nudge`——决定让位/停止/心跳的触发方式。
 - **模型解析链**（`llm.py::resolve_model_name`）：`settings.llm_model` > env `PLANNER_LLM_MODEL` > `deepseek-flash`。共享 `.env` 的 `LLM_MODEL` 是 xiaob 游戏的，**不影响 planner**。
 - **视觉**：图片以 `image_url` 块随 user 消息**常驻 buffer**（每张 ≤384 token，每轮重发计费）；`/history` 与压缩摘要只取文本块。
 - **数据隔离**：dev（18771 + 开发 `data/`）与 release（18772 + `planner-release/data`）互不触碰；测试一律 mock + `tmp_path`。
@@ -204,7 +202,6 @@ flowchart LR
 | trigger | 生成触发类型：`player` / `heartbeat` / `scheduled` / `nudge` |
 | heartbeat | 「下一次何时醒来」的定时器（1~720 分钟），**不是轮询** |
 | nudge | 用户戳悬浮球 → 立即触发一次自主生成 |
-| DND | 免打扰窗口（默认 22:00-08:00），只拦自主触发 |
 | 自主学习 | 心跳生成中调用了 `web_search`/`read_file`/`explore_memory_tree` 等 → 不朗读 |
 | node0 / node1 | 记忆树层级：level0 叶子（一次叶子压缩产物）/ level1 父节点（4 合 1） |
 | `future_notes` | 压缩时借助「未来消息」对摘要/画像的事后校正字段 |
@@ -218,7 +215,7 @@ flowchart LR
 
 1. **用户消息线**：`server.py` → `session.py`（`_receive` / `enqueue_player_message` / `_generate_response` / `_run_agent`）→ `agent.py` → `middleware.py`。
 2. **机制专题**：
-   - 2a 心跳与日历调度（`_schedule_loop` / `_fire_heartbeat` / `in_dnd` / 启动宽限）
+   - 2a 心跳与日历调度（`_schedule_loop` / `_fire_heartbeat` / `cancel_heartbeat` / 启动宽限）
    - 2b 压缩与记忆树（`_maybe_compress_async` / `_run_async_compression` / `SummarizationMiddleware`）
    - 2c 打断与停止（`_inbox` 让位 / `StopRequestMiddleware` / 流 break / `request_stop`）
 3. **前端链路**：`main.js`（`ensureBackend` / `pollDequeue`）→ `preload.js` → `renderer/app.js` → `voiceMode.js` / `mic.js`。

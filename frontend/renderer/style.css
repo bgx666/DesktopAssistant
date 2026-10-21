@@ -73,8 +73,8 @@ body {
   width: var(--stage-w);
   height: var(--stage-w);
   transform: translate(-50%, -50%);
-  background: radial-gradient(circle at 32% 28%, #7ce8db, #2fb3a6 62%, #178f86);
-  box-shadow: 0 8px 24px rgba(23, 143, 134, 0.28), inset 0 1px 2px rgba(255, 255, 255, 0.45);
+  background: radial-gradient(circle at 32% 28%, #8fd4e8, #5fb8d6 62%, #3f9fbf);
+  box-shadow: 0 8px 24px rgba(95, 184, 214, 0.30), inset 0 1px 2px rgba(255, 255, 255, 0.45);
   overflow: hidden;
   display: flex;
   align-items: center;
@@ -95,7 +95,7 @@ body {
   width: 18%; height: 18%;
   min-width: 8px; min-height: 8px;
   border-radius: 50%;
-  background: var(--accent);
+  background: #6fd993;   /* 在线：与图标中心绿点同色 */
   border: 2px solid rgba(255, 255, 255, 0.9);
   box-sizing: border-box;
 }
@@ -196,14 +196,14 @@ body {
 /* ── 聊天 ── */
 #messages { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; padding-bottom: 12px; }
 
-/* 已挂载文件条（对话框上方）：拖入的文件，发送时自动附带 */
+/* 已挂载文件条（输入框正上方）：拖入/截屏/加号选的文件，发送时自动附带 */
 #mounted-bar {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 5px;
   padding: 7px 10px;
-  margin-bottom: 8px;
+  margin-bottom: 6px;
   border: 1px solid var(--line);
   border-radius: 10px;
   background: #ffffff;
@@ -377,6 +377,58 @@ body.drop-overlay::after {
   border: 1px solid var(--line);
   border-bottom-left-radius: 4px;
 }
+/* GFM 表格：外层可横向滚动（单元格内正常换行，不继承 bubble 的 pre-wrap） */
+.bubble .md-table-wrap {
+  margin: 6px 0;
+  max-width: 100%;
+  overflow-x: auto;
+  white-space: normal;
+}
+.bubble .md-table {
+  border-collapse: collapse;
+  min-width: 100%;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.bubble .md-table th,
+.bubble .md-table td {
+  border: 1px solid var(--line);
+  padding: 4px 8px;
+  text-align: left;
+  vertical-align: top;
+  white-space: normal;
+  word-break: break-word;
+}
+.bubble .md-table th { background: #f6f7f9; font-weight: 600; }
+.bubble .md-table tr:nth-child(even) td { background: #fafbfc; }
+/* 链接：点击 → 系统浏览器（md.js capture 处理，不走页面导航） */
+.bubble a.md-link {
+  color: #2563eb;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.bubble a.md-link:hover { color: #1d4ed8; }
+/* 标题 / 列表 / 引用（GFM 常用块） */
+.bubble h1, .bubble h2, .bubble h3, .bubble h4, .bubble h5, .bubble h6 {
+  margin: 8px 0 4px;
+  line-height: 1.4;
+  font-weight: 700;
+  white-space: normal;
+}
+.bubble h1 { font-size: 18px; }
+.bubble h2 { font-size: 16px; }
+.bubble h3 { font-size: 15px; }
+.bubble h4, .bubble h5, .bubble h6 { font-size: 14px; }
+.bubble ul, .bubble ol { margin: 4px 0; padding-left: 22px; white-space: normal; }
+.bubble li { margin: 2px 0; }
+.bubble blockquote {
+  margin: 6px 0;
+  padding: 2px 10px;
+  border-left: 3px solid var(--line);
+  color: var(--text-soft);
+  white-space: normal;
+}
 .msg.log { align-self: center; font-size: 12px; color: var(--text-soft); }
 .msg.log .bubble { box-shadow: none; background: transparent; border: none; padding: 2px 6px; }
 /* 记忆摘要（早期对话压缩进记忆树后的浓缩卡片，显示在对话框顶部） */
@@ -479,7 +531,7 @@ body.drop-overlay::after {
 #jump-bottom {
   position: absolute;
   right: 14px;
-  bottom: 100px;                      /* 输入框（含底部一行）上方 */
+  bottom: 132px;                      /* 输入框（含挂载条/底部一行）上方 */
   width: 32px; height: 32px;
   border: 1px solid var(--line);
   border-radius: 50%;
@@ -519,9 +571,9 @@ body.drop-overlay::after {
 #send:active { background: #1e40af; }
 #send:disabled { opacity: 0.5; }
 
-/* 语音按钮（🎤，SVG 麦克风）：录音开关；active = 「连续对话模式」，
-   .recording = 「正在录音」（点击开始 / 再点结束 → 转文字进输入框） */
-#voice-btn {
+/* 语音/加号按钮（幽灵图标按钮，34×34）：加号=选文件挂载；
+   #voice-btn 下划线状态 = active 是「连续对话模式」，.recording 是「正在录音」 */
+#voice-btn, #plus-btn {
   border: 1px solid var(--line); border-radius: 9px; padding: 0; cursor: pointer;
   width: 34px; height: 34px; font-size: 14px; line-height: 1;
   background: #ffffff;
@@ -529,8 +581,8 @@ body.drop-overlay::after {
   display: inline-flex; align-items: center; justify-content: center;
   transition: border-color 0.15s, color 0.15s, background 0.15s;
 }
-#voice-btn svg { width: 15px; height: 15px; display: block; }
-#voice-btn:hover { border-color: var(--line-strong); color: var(--text); background: var(--surface-2); }
+#voice-btn svg, #plus-btn svg { width: 15px; height: 15px; display: block; }
+#voice-btn:hover, #plus-btn:hover { border-color: var(--line-strong); color: var(--text); background: var(--surface-2); }
 #voice-btn.recording {
   border-color: rgba(220, 38, 38, 0.45);
   color: var(--danger);
@@ -702,9 +754,15 @@ body.drop-overlay::after {
 }
 
 /* ── 日历（日程 / 当天任务） ── */
+/* 两栏布局：左月历 / 右当天待办——同一高度，提高空间利用率；窄面板自动换行 */
+#calendar.view.active {
+  display: flex; flex-direction: row; flex-wrap: wrap;
+  gap: 16px; align-items: flex-start;
+}
+#cal-left { flex: 1 1 320px; min-width: 0; display: flex; flex-direction: column; }
 #cal-header {
   display: flex; align-items: center; gap: 8px;
-  padding: 2px 2px 10px;
+  padding: 2px 2px 8px;
 }
 #cal-title { flex: 1; font-weight: 600; color: var(--text); }
 #cal-header button {
@@ -721,18 +779,25 @@ body.drop-overlay::after {
 #cal-grid {
   display: grid;
   grid-template-columns: repeat(7, 1fr);
-  gap: 3px;
+  gap: 2px;
+  /* 紧凑月历：限制最大宽度并居中——原来 7 列铺满面板时格子 ≈90×90，太大。
+     注意：父级 .view 是 flex 列容器，不能用 margin:auto 居中——auto 边距会让
+     flex 子项收缩成内容宽度（曾缩到 93px）；用 width:100% + max-width +
+     align-self: center。 */
+  width: 100%;
+  max-width: 520px;
+  align-self: center;
 }
 #cal-weekdays {
-  margin-bottom: 4px;
-  font-size: 12px; color: var(--text-soft); text-align: center;
+  margin-bottom: 3px;
+  font-size: 11.5px; color: var(--text-soft); text-align: center;
 }
 .cal-cell {
   position: relative;
-  aspect-ratio: 1 / 1;
+  aspect-ratio: 1 / 1;     /* 两栏布局下左栏较窄：格子用正方形（大小随栏宽自适应） */
   display: flex; align-items: center; justify-content: center;
-  border-radius: 8px;
-  font-size: 13px;
+  border-radius: 7px;
+  font-size: 12.5px;
   color: var(--text);
   cursor: pointer;
   user-select: none;
@@ -745,13 +810,13 @@ body.drop-overlay::after {
 .cal-cell.has-items .cal-dnum { color: var(--primary); }
 .cal-dot {
   position: absolute; right: 3px; bottom: 2px;
-  min-width: 12px; height: 12px;
+  min-width: 10px; height: 10px;
   padding: 0 3px;
-  border-radius: 6px;
+  border-radius: 5px;
   background: var(--primary); color: #fff;
-  font-size: 9px; line-height: 12px; text-align: center;
+  font-size: 8.5px; line-height: 10px; text-align: center;
 }
-#cal-day { margin-top: 12px; }
+#cal-day { flex: 1 1 280px; min-width: 0; margin-top: 0; }
 #cal-day-title { font-size: 12.5px; color: var(--text-soft); margin-bottom: 6px; }
 #cal-day-list { display: flex; flex-direction: column; gap: 7px; }
 .cal-item {
@@ -806,15 +871,7 @@ body.drop-overlay::after {
 }
 .cal-confirm button.ok { color: var(--danger); border-color: #fecaca; }
 .cal-confirm button:hover { background: var(--surface-2); }
-#cal-add-form {
-  display: flex; gap: 5px; align-items: center; flex-wrap: wrap;
-  margin-top: 10px;
-}
-#cal-add-form input[type="time"] { width: 74px; }
-#cal-add-form select { width: 58px; }
-#cal-add-form select#cal-repeat { width: 66px; }
-#cal-add-form input[type="text"] { flex: 1; min-width: 90px; }
-#cal-add-form button { flex: none; }
+/* 添加日程的表单已移除：日程/任务由小助通过日历工具管理 */
 .empty-tip { color: var(--text-soft); text-align: center; padding: 24px 0; }
 
 /* ── 任务 ── */
@@ -972,6 +1029,33 @@ body.drop-overlay::after {
   font-size: 11px; color: var(--text-soft); line-height: 1.5;
   max-width: 100%; word-break: break-word;
 }
+
+/* ── 改动文件快捷块（回复下面）：默认一行（点开看每文件的 打开/目录）── */
+.msg.changed-files { align-self: flex-start; max-width: 82%; }
+.cf-box {
+  border: 1px solid var(--line); border-radius: 10px; background: #fff;
+  padding: 7px 10px; min-width: 260px; max-width: 100%;
+}
+.cf-line {
+  font-size: 12px; color: var(--text-soft); cursor: pointer;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.cf-line:hover { color: var(--text); }
+.cf-body { display: none; margin-top: 6px; }
+.changed-files.open .cf-body { display: block; }
+.cf-row { display: flex; align-items: center; gap: 8px; padding: 3px 0; }
+.cf-name {
+  flex: 1; min-width: 0; font-size: 12.5px; color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.cf-count { font-size: 11px; color: var(--text-soft); }
+.cf-missing { font-size: 11px; color: #b45309; }
+.cf-btn {
+  font-size: 11.5px; padding: 2px 9px; border: 1px solid var(--line);
+  background: #fff; border-radius: 6px; cursor: pointer; color: var(--text);
+  font-family: inherit;
+}
+.cf-btn:hover { border-color: #9ca3af; background: var(--glass-strong); }
 
 /* 边缘拖拽调整大小 */
 #resize-handles { position: absolute; inset: 0; pointer-events: none; z-index: 50; }

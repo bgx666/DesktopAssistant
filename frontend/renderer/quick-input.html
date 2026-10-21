@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; connect-src http://127.0.0.1:*; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:; media-src http://127.0.0.1:* file:;" />
+  <title>快速输入</title>
+  <link rel="stylesheet" href="quick-input.css" />
+</head>
+<body>
+  <div id="quick">
+    <!-- 待发送文件（全局挂载，与面板/悬浮球共用） -->
+    <div id="quick-files" class="hidden"></div>
+    <div id="quick-row">
+      <textarea id="quick-input" rows="1" placeholder="对小助说…（Enter 发送，Esc 关闭）"></textarea>
+      <button id="quick-mic" type="button" title="点击开始录音，再点一下结束并转成文字">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+             stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+          <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+          <line x1="12" y1="19" x2="12" y2="23"/>
+          <line x1="8" y1="23" x2="16" y2="23"/>
+        </svg>
+      </button>
+      <button id="quick-send" type="button">发送</button>
+    </div>
+    <div id="quick-status" class="hidden"></div>
+  </div>
+  <script src="mic.js"></script>
+  <script src="fileDrop.js"></script>
+  <script src="quick-input.js"></script>
+</body>
+</html>

@@ -140,9 +140,11 @@
   let current = {};
   async function loadSettings() {
     try {
-      // 长按时间：主进程本地配置（无需等后端）
+      // 长按时间 / 气泡时长 / 快速输入快捷键：主进程本地配置（无需等后端）
       const ui = await window.planner.getUiSettings();
       if (ui && ui.press_ms != null) $('#press_ms').value = ui.press_ms;
+      if (ui && ui.toast_seconds != null) $('#toast_seconds').value = ui.toast_seconds;
+      if (ui && ui.quick_input_hotkey) $('#quick_input_hotkey').value = ui.quick_input_hotkey;
     } catch { /* 主进程不可用 */ }
     try {
       const r = await window.planner.apiFetch('/settings');
@@ -150,11 +152,11 @@
       current = d.settings || {};
       for (const k of ['compress_keep',
                        'compact_threshold', 'compact_factor',
-                       'compress_token_budget', 'node_token_budget',
+                       'compress_token_budget', 'compress_chunk_tokens',
+                       'node_token_budget',
                        'model_call_limit']) {
         $(`#${k}`).value = current[k] ?? '';
       }
-      $('#llm_provider').value = current.llm_provider || 'deepseek';
       try {
         const pr = await window.planner.apiFetch('/llm/providers');
         const pd = JSON.parse(pr.text);
@@ -356,16 +358,24 @@
     btn.disabled = true;
     $('#msg').className = '';
     const errs = [];
-    // 1) 长按时间（主进程本地配置）
+    // 1) 长按时间 / 气泡时长 / 快速输入快捷键（主进程本地配置）
     try {
       const v = parseInt($('#press_ms').value, 10);
-      if (!isNaN(v)) window.planner.saveUiSettings({ press_ms: v });
-    } catch { errs.push('长按时间保存失败'); }
+      const ui = {};
+      if (!isNaN(v)) ui.press_ms = v;
+      const ts = parseInt($('#toast_seconds').value, 10);
+      if (!isNaN(ts)) ui.toast_seconds = ts;
+      const hot = $('#quick_input_hotkey').value.trim();
+      ui.quick_input_hotkey = hot || 'Alt+J';
+      if (!hot) $('#quick_input_hotkey').value = 'Alt+J';
+      window.planner.saveUiSettings(ui);
+    } catch { errs.push('长按时间/气泡时长/快捷键保存失败'); }
     // 2) 压缩参数 + LLM（后端）
     const updates = {};
     for (const k of ['compress_keep',
                      'compact_threshold', 'compact_factor',
-                     'compress_token_budget', 'node_token_budget',
+                     'compress_token_budget', 'compress_chunk_tokens',
+                     'node_token_budget',
                      'model_call_limit']) {
       const v = parseInt($(`#${k}`).value, 10);
       if (!isNaN(v)) updates[k] = v;

@@ -352,12 +352,21 @@ class CalendarDb:
         self._exec("UPDATE calendar_items SET reminded_at = ? WHERE id = ?",
                    (at, item_id), mode="write")
 
-    def list_overdue_calendar(self, now_: datetime) -> list[dict]:
-        """已过时刻但还没做也没提醒的项（跨重启补提醒用，含 status='todo'）。"""
+    def list_overdue_calendar(self, now_: datetime, skip_reminded: bool = False) -> list[dict]:
+        """已过时刻但还没做的项（跨重启补提醒 / 红点统计用，含 status='todo'）。
+
+        skip_reminded=True：排除**已在到点提醒过**的项（调度线程的"逾期追问"用）
+        ——否则 20:00 的到点提醒刚响完，20:13 的逾期扫描会再问用户一次
+        "要不要提醒你"（2026-10-20 用户实测）。
+        红点统计（state_dict）保持默认 False：提醒过但没勾掉的仍算未完成。
+        """
         stamp = now_.strftime("%Y-%m-%d %H:%M")
+        where = "status = 'todo'"
+        if skip_reminded:
+            where += " AND reminded_at IS NULL"
         rows = self._exec(
-            "SELECT * FROM calendar_items WHERE status = 'todo' "
-            "AND (date || COALESCE(' ' || time, ' 23:59')) < ? ORDER BY date, time",
+            "SELECT * FROM calendar_items WHERE " + where +
+            " AND (date || COALESCE(' ' || time, ' 23:59')) < ? ORDER BY date, time",
             (stamp,), mode="all")
         return [dict(r) for r in rows]
 

@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; connect-src http://127.0.0.1:*; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:;" />
+  <title>待处理请求</title>
+  <link rel="stylesheet" href="pending.css" />
+</head>
+<body>
+  <div id="pending">
+    <div id="pn-head">
+      <span id="pn-title">需要你处理</span>
+      <button id="pn-close" type="button" title="收起（悬浮球黄灯仍会提示）">×</button>
+    </div>
+
+    <!-- 审批（代码工作区写操作 / 区外读取） -->
+    <div id="pn-approval" class="hidden">
+      <div id="pn-tool"></div>
+      <div id="pn-paths"></div>
+      <div class="pn-row">
+        <button id="pn-allow" class="pn-btn primary" type="button">允许一次</button>
+        <button id="pn-deny" class="pn-btn danger" type="button">拒绝</button>
+        <button id="pn-expand-a" class="pn-btn ghost" type="button">展开面板</button>
+      </div>
+      <div class="pn-note">更多选项（记住并允许等）请展开面板</div>
+    </div>
+
+    <!-- ask_user 提问 -->
+    <div id="pn-question" class="hidden">
+      <div id="pn-qtext"></div>
+      <div id="pn-options"></div>
+      <div class="pn-row">
+        <input id="pn-answer" type="text" placeholder="也可以直接打字回答…" autocomplete="off" />
+        <button id="pn-send" class="pn-btn primary" type="button">发送</button>
+      </div>
+      <div class="pn-row">
+        <button id="pn-expand-q" class="pn-btn ghost" type="button">展开面板</button>
+      </div>
+    </div>
+
+    <div id="pn-note" class="pn-note"></div>
+  </div>
+  <script src="pending.js"></script>
+</body>
+</html>

@@ -18,7 +18,6 @@
     {"type": "text", "content": "…", "from": "assistant"},
     {"type": "log", "text": "…"},
     {"type": "thinking", "value": true},
-    {"type": "dnd", "enabled": true},
     {"type": "plan_update", "date": "2026-08-05"}
   ],
   "state": { "...": "见 GET /state" }
@@ -27,9 +26,8 @@
 
 事件类型：
 - `text`：小助的发言（流式：每轮 LLM 返回即推送，不等整个 ReAct 循环结束）
-- `log`：系统日志（任务建立/状态变更/免打扰跳过等）
+- `log`：系统日志（任务建立/状态变更等）
 - `thinking`：生成中状态（前端驱动"思考中"动画）
-- `dnd`：免打扰状态变化
 - `plan_update`：计划/任务数据变化（前端触发刷新）
 - `text_stream`：逐 token 流式文本（语音连续对话模式的流式 TTS 与面板逐字渲染用）
 - `audio`：整句 TTS 合成完成（语音连续对话模式下被前端抑制，改由流式 TTS 接管）
@@ -51,15 +49,14 @@
 {"ok": true, "state": {
   "mode": "mock|llm",
   "thinking": false,
-  "heartbeat": {"in_minutes": 60, "note": "到点提醒用户做习题"},
-  "dnd": {"enabled": true, "in_dnd": false, "until": null},
-  "plan": {"today": "2026-08-05",
-           "tasks": {"todo": 2, "in_progress": 1, "done": 0, "abandoned": 0},
-           "today_plan_total": 3, "today_plan_done": 1,
-           "overdue_count": 1},
+  "heartbeat": {"in_minutes": 60, "in_seconds": 3600, "note": "到点提醒用户做习题"},
+  "agenda": {"today": "2026-08-05", "today_total": 3, "today_todo": 2,
+             "overdue_count": 1},
   "activity": ""
 }}
 ```
+`agenda.overdue_count` 只统计**今天**已过时间且未完成的日历项（悬浮球红点/标题栏徽标）；
+更早日期的逾期不计入（日历补提醒仍按全量逾期扫描）。
 
 ### POST /chat
 `{"message": "…"}` → `{"ok": true}`（异步生成，回复走 /dequeue 流式）。
@@ -76,9 +73,6 @@
 
 ### POST /plan/done
 `{"plan_id": 1}` → 勾选完成（任务所有条目完成时任务自动 done），并通知 agent 跟进（agent 会主动回复）。→ `{"ok": true}`。
-
-### POST /dnd
-`{"enabled": true, "until_hour": 14}`（until_hour 可选）→ `{"ok": true, "dnd": {…}}`。
 
 ### POST /nudge
 手动戳一下：注入一条消息并触发一次自主生成 → `{"ok": true}`。
@@ -131,7 +125,6 @@ role ∈ user / assistant / **thinking**（AI 消息的思考过程，独立条�
 - **打开时静默**：启动 2 分钟宽限期不触发任何自主行为；启动时心跳到期只顺延不补说。
 - **玩家消息优先**：`_inbox` 有排队消息时 agent 提前结束自主回合让位；生成期间到达的
   消息最多补 3 轮。
-- **免打扰**：`in_dnd` 时段内自主触发被 `DndGuardMiddleware` 拦截（玩家消息不受限）。
 - **计划快照注入**：每次生成开始时，任务库指纹变化才注入 `[当前计划]` 文本（省 token）。
 
 ## 代码工作区（审批制）

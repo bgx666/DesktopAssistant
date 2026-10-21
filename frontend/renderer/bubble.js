@@ -335,7 +335,7 @@
     fileBadge.textContent = n > 9 ? '9+' : n;
   });
 
-  // 右键 → 菜单（放大 / 语音对话模式 / 免打扰 / 设置 / 显示最近的气泡 / 清除气泡 / 退出）
+  // 右键 → 菜单（放大 / 截屏 / 语音对话模式 / 设置 / 显示最近的气泡 / 清除气泡 / 退出）
   core.addEventListener('contextmenu', (e) => {
     e.preventDefault();
     window.planner.bubbleMenu();
@@ -356,11 +356,19 @@
     dot.classList.toggle('thinking', !!s.thinking);
     core.classList.toggle('thinking', !!s.thinking);   // 呼吸式闪烁（球体辉光）
     dot.classList.remove('offline');
-    const overdue = (s.plan && s.plan.overdue_count) || 0;
+    const overdue = (s.agenda && s.agenda.overdue_count) || 0;
     badge.classList.toggle('hidden', !overdue);
     badge.textContent = overdue > 9 ? '9+' : overdue;
   }
   window.planner.onState(applyState);
+
+  // 待处理请求（审批/提问）：球体黄灯呼吸 = "有任务需要你处理"（悬浮球形态）
+  function applyPending(p) {
+    const on = !!((p && p.count) > 0);
+    core.classList.toggle('pending', on);
+  }
+  window.planner.onPending(applyPending);
+  window.planner.getPending().then(applyPending).catch(() => {});
 
   // ── 语音播报（气泡朗读）：audio 事件 → 主进程下载为 file:// 后播放 ──
   const ttsAudio = document.getElementById('tts-audio');

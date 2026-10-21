@@ -177,6 +177,33 @@ class SQLiteMemoryTree:
         row = cur.fetchone()
         return row["id"] if row else None
 
+    def get_root_overview(self, summary_chars: int = 200) -> list[dict[str, Any]]:
+        """顶层概览（森林根）：所有 is_active=1 且无父节点的节点，按时间排序。
+
+        记忆树是自下而上生长的摘要森林——底层 node0 最具体（展开是原文），
+        越往上越抽象；被合并的老节点 is_active=0，不再出现在概览里。
+        摘要截断到 summary_chars（够挑分支即可，细节靠展开）。
+        """
+        from ..middleware import clean_wrapped_summary   # 懒导入防循环
+
+        cur = self._execute_with_retry(
+            "SELECT id, level, summary, round_start, round_end, time_start, time_end "
+            "FROM nodes WHERE character_id = ? AND is_active = 1 AND parent_id IS NULL "
+            "ORDER BY round_start",
+            (self._character_id,),
+        )
+        out: list[dict[str, Any]] = []
+        for r in cur.fetchall():
+            s = clean_wrapped_summary(str(r["summary"] or ""))
+            if len(s) > summary_chars:
+                s = s[:summary_chars] + "…"
+            out.append({
+                "node_id": r["id"], "level": r["level"], "summary": s,
+                "round_start": r["round_start"], "round_end": r["round_end"],
+                "time_start": r["time_start"], "time_end": r["time_end"],
+            })
+        return out
+
     def get_effective_time_range(self, node_id: str) -> tuple[str, str] | None:
         """节点有效时间范围 (start, end)：自身 time_start/time_end 优先；
         为 NULL（时间范围功能上线前压缩的历史节点）时递归聚合子节点 min/max。"""
@@ -207,9 +234,17 @@ class SQLiteMemoryTree:
         return (start, end) if (start and end) else None
 
     def get_node_children_info(self, node_id: str) -> dict | None:
-        """获取节点的子节点信息或叶子详情（含画像、后续说明与 meta）。"""
+        """获取节点的子节点信息或叶子详情（含画像、后续说明与 meta）。
+
+        返回里带查询节点自身的 id/level/条数范围；非叶节点的每个 child 带
+        level / round_start / round_end / time_start / time_end——模型据此
+        按时间范围挑选要下钻的分支（此前 children 没有时间信息，无法按时间导航）。
+        """
+        from ..middleware import clean_wrapped_summary   # 懒导入防循环
+
         cur = self._execute_with_retry(
-            "SELECT level, details, profile, meta, time_start, time_end FROM nodes WHERE id = ? AND character_id = ?",
+            "SELECT level, summary, details, profile, meta, round_start, round_end, "
+            "time_start, time_end FROM nodes WHERE id = ? AND character_id = ?",
             (node_id, self._character_id),
         )
         row = cur.fetchone()
@@ -230,6 +265,11 @@ class SQLiteMemoryTree:
             except json.JSONDecodeError:
                 meta = None
 
+        base = {"node_id": node_id, "level": row["level"],
+                "round_start": row["round_start"], "round_end": row["round_end"],
+                "time_start": row["time_start"], "time_end": row["time_end"],
+                "summary": clean_wrapped_summary(str(row["summary"] or ""))}
+
         if row["level"] == 0:
             details = []
             future_notes = None
@@ -242,11 +282,13 @@ class SQLiteMemoryTree:
             if isinstance(details, dict):
                 future_notes = details.get("future_notes")
                 details = details.get("messages", [])
-            return {"details": details, "profile": profile, "future_notes": future_notes,
-                    "meta": meta, "time_start": row["time_start"], "time_end": row["time_end"]}
+            return {**base, "details": details, "profile": profile,
+                    "future_notes": future_notes, "meta": meta}
 
         cur = self._execute_with_retry(
-            "SELECT id, summary, profile FROM nodes WHERE parent_id = ? AND character_id = ? ORDER BY round_start",
+            "SELECT id, level, summary, profile, round_start, round_end, "
+            "time_start, time_end FROM nodes WHERE parent_id = ? AND character_id = ? "
+            "ORDER BY round_start",
             (node_id, self._character_id),
         )
         children = []
@@ -257,9 +299,14 @@ class SQLiteMemoryTree:
                     cp = json.loads(r["profile"])
                 except json.JSONDecodeError:
                     cp = None
-            children.append({"node_id": r["id"], "summary": r["summary"], "profile": cp})
-        return {"children": children, "profile": profile, "meta": meta,
-                "time_start": row["time_start"], "time_end": row["time_end"]}
+            children.append({
+                "node_id": r["id"], "level": r["level"],
+                "round_start": r["round_start"], "round_end": r["round_end"],
+                "time_start": r["time_start"], "time_end": r["time_end"],
+                "summary": clean_wrapped_summary(str(r["summary"] or "")),
+                "profile": cp,
+            })
+        return {**base, "children": children, "profile": profile, "meta": meta}
 
     # ── 写入接口 ──────────────────────────────────────────────
 
@@ -411,6 +458,26 @@ class SQLiteMemoryTree:
             (self._character_id, level),
         )
         return cur.fetchone()["cnt"]
+
+    def get_node_status(self, ids: list[str]) -> dict[str, dict[str, Any]]:
+        """批量查询节点状态：{id: {"is_active": bool, "parent_id": str | None}}。
+
+        供 buffer 清理"已被父节点取代的旧节点消息"用（启动自愈/压缩后清理）。
+        """
+        out: dict[str, dict[str, Any]] = {}
+        ids = [str(i) for i in (ids or []) if i]
+        if not ids:
+            return out
+        marks = ",".join("?" * len(ids))
+        cur = self._execute_with_retry(
+            f"SELECT id, is_active, parent_id FROM nodes "
+            f"WHERE character_id = ? AND id IN ({marks})",
+            (self._character_id, *ids),
+        )
+        for r in cur.fetchall():
+            out[r["id"]] = {"is_active": bool(r["is_active"]),
+                            "parent_id": r["parent_id"]}
+        return out
 
     # ── buffer 状态（重启恢复）────────────────────────────────
 

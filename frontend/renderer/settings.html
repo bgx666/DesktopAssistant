@@ -148,6 +148,16 @@
             <input type="number" id="press_ms" min="50" max="5000" step="10" />
             <span class="hint">毫秒（按住多久进入语音输入）</span>
           </div>
+          <div class="row">
+            <label>气泡显示时长</label>
+            <input type="number" id="toast_seconds" min="3" max="600" step="1" />
+            <span class="hint">秒（悬浮球旁主动说话的气泡停留多久，默认 30）</span>
+          </div>
+          <div class="row">
+            <label>快速输入快捷键</label>
+            <input type="text" id="quick_input_hotkey" placeholder="Alt+J" spellcheck="false" />
+            <span class="hint">悬浮球模式下按此键在球旁弹出输入框（如 Alt+J / Ctrl+Shift+Space；被其他软件占用时不生效）</span>
+          </div>
         </section>
         <section>
           <h2>工作循环</h2>
@@ -197,6 +207,11 @@
             <span class="hint">原始消息估算 token 超该值就压缩（唯一触发条件）</span>
           </div>
           <div class="row">
+            <label>分片大小（token）</label>
+            <input type="number" id="compress_chunk_tokens" min="0" max="100000" step="5000" />
+            <span class="hint">批次超过该大小就切成多片分别压缩——叶子更细、探索回原文更容易；0 = 关闭分片（整批压）</span>
+          </div>
+          <div class="row">
             <label>压缩后保留条数</label>
             <input type="number" id="compress_keep" min="5" max="200" />
             <span class="hint">压缩后保留最近多少条原文</span>
@@ -214,7 +229,7 @@
           <div class="row">
             <label>节点 token 预算</label>
             <input type="number" id="node_token_budget" min="200" max="4000" step="100" />
-            <span class="hint">压缩节点的大小上限（超出软裁剪）</span>
+            <span class="hint">整节点总字数目标（默认 1000 ≈ 1000 字，会写进压缩指令；超出软裁剪）</span>
           </div>
         </section>
         <section>

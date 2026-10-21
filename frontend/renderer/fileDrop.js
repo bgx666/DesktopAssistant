@@ -53,5 +53,27 @@
     return out;
   }
 
-  window.fileDrop = { handleFiles };
+  // 剪贴板文件 → 挂载数据。与拖拽的差别：剪贴板里的**位图**（微信/QQ/Snipaste/
+  // Win+Shift+S 截图后 Ctrl+V）没有磁盘路径（getPathForFile 拿不到）——交给主进程
+  // 落盘 userData/pasted/ 后再按图片挂载；从资源管理器复制的文件有路径，走原路。
+  async function handleClipboardFiles(files) {
+    const out = [];
+    for (const f of Array.from(files || [])) {
+      const item = await handleFile(f);
+      if (item.path || item.content) { out.push(item); continue; }
+      if ((f.type || '').startsWith('image/')) {
+        try {
+          const buf = new Uint8Array(await f.arrayBuffer());
+          const saved = await window.planner.savePastedFile(f.name || '', f.type || '', buf);
+          if (saved && saved.path) {
+            out.push({ name: saved.name || f.name || '粘贴的图片',
+                       path: saved.path, kind: 'image', content: null });
+          }
+        } catch { /* 落盘失败：忽略该文件 */ }
+      }
+    }
+    return out;
+  }
+
+  window.fileDrop = { handleFiles, handleClipboardFiles };
 })();

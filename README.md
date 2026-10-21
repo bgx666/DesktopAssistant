@@ -72,9 +72,8 @@
 | `add_schedule` | 加日程/待办；带 `time` 则**到点自动提醒**，带 `repeat` 则按每天/每周/工作日重复 |
 | `update_schedule` | 改期 / 改时刻 / 改内容 / 标完成（`whole_series` 可作用于整个重复系列） |
 | `cancel_schedule` | 取消（默认只取消这一次；`whole_series` 取消今后各期） |
-| `heartbeat` | 设定**下一次醒来**的间隔：`seconds`（最短 1 分钟）／`minutes`（最大 720 分钟） |
+| `heartbeat` | 用户嘱托的**定时/巡检**：设/改下一次唤醒（`seconds` 最短 1 分钟／`minutes` 最大 720 分钟），`cancel=true` 取消 |
 | `continue_speaking` | 长回复分段：调用后暂停片刻再继续（可被用户立即打断） |
-| `set_do_not_disturb` | 免打扰时段（默认 22:00-08:00） |
 | `explore_memory_tree` | 按需展开记忆树任意节点（历史回溯） |
 | `list_dir` / `read_file` | 文档浏览 / 读取（PDF/Word/文本自动解析） |
 | `capture_screen` | 屏幕截图 + OCR 文字识别 |
@@ -91,11 +90,13 @@
 | 议程快照 | 每轮注入 `[当前议程]`（今天+未来 7 天，重复项折叠成一行），指纹去重不重复占 token |
 | 主动回访 | 调度线程：到点提醒（用户排的日程）、逾期项每日提醒、心跳自主唤醒三路独立触发 |
 | 分段说话 | `continue_speaking`：分点输出时分段暂停（可打断） |
-| 启动静默 | 启动 2 分钟宽限期；到期心跳顺延不补触发 |
-| 免打扰 | 默认 22:00-08:00 静默（用户消息不受限） |
+| 启动静默 | 启动 2 分钟宽限期；到期心跳顺延到宽限期后补触发 |
 | 长期记忆 | 超阈值自动压缩入记忆树，`explore_memory_tree` 回溯 |
 | 语音播报 | 本地 TTS：自动朗读 / 消息喇叭按钮 / 103 音色 / 开关与试听 |
-| 语音输入 | 悬浮球长按 / 发送按钮长按，本地识别填入输入框 |
+| 语音输入 | 悬浮球长按 / 输入框 🎤，本地识别填入输入框 |
+| 快速输入 | 悬浮球模式按 `Alt+J`（可改）在球旁弹出输入框：Enter 发送 / Esc 收起 / 带待发送文件 |
+| 待处理提醒 | 需要审批/提问时悬浮球黄灯呼吸 + 球旁卡片，可就地授权或回答（也可展开面板） |
+| 气泡时长 | 悬浮球旁气泡停留时间，设置页可调（默认 30 秒） |
 | 文件/感知 | 拖拽挂载（PDF/Word/文本 + OCR）、截屏、网页搜索 |
 
 ## 使用的开源模型
@@ -196,7 +197,6 @@ hf download onnx-community/Kokoro-82M-v1.1-zh-ONNX --include "model.onnx" "voice
 | `PLANNER_PYTHON` | `python` | 前端拉起后端所用解释器 |
 | `XIAOB_SHARED_ENV` | 无 | 共享 .env 路径（多项目复用 LLM 配置） |
 | `PLANNER_HEARTBEAT_MIN_SECONDS` / `MAX_MINUTES` | `0.1` / `720` | 心跳间隔护栏（连续干活 0.1 秒 ~ 空闲 12 小时） |
-| `PLANNER_DND_START_HOUR` / `END_HOUR` | `22` / `8` | 免打扰窗口 |
 | `PLANNER_TTS_ENGINE` | `local` | `cloud` 时改用 DashScope 云合成 |
 
 ## 数据存储

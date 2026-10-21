@@ -20,14 +20,14 @@ html, body {
   justify-content: center;
 }
 
-/* 中心圆：与小助品牌球同款（青绿实色），细白描边 */
+/* 中心圆：与桌面/托盘图标同款配色（天蓝球身 #5fb8d6 + 浅蓝高光），细白描边 */
 #core {
   width: 44px;
   height: 44px;
   border-radius: 50%;
-  background: radial-gradient(circle at 32% 28%, #7ce8db, #2fb3a6 62%, #178f86);
-  border: 1px solid rgba(255, 255, 255, 0.4);
-  box-shadow: 0 4px 14px rgba(23, 143, 134, 0.30);
+  background: radial-gradient(circle at 32% 28%, #8fd4e8, #5fb8d6 62%, #3f9fbf);
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  box-shadow: 0 4px 14px rgba(95, 184, 214, 0.35);
   position: relative;
   cursor: pointer;
   transition: transform 0.15s ease;
@@ -126,7 +126,7 @@ html, body {
   height: 18px;
   margin: -9px 0 0 -9px;
   border-radius: 50%;
-  background: #34c78a;
+  background: #6fd993;   /* 与图标中心绿点同色 */
   border: 2px solid #fff;
   box-sizing: border-box;
   z-index: 1;
@@ -184,3 +184,23 @@ html, body {
   box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.45);
 }
 .hidden { display: none !important; }
+
+/* ── 待处理请求（审批/提问）：黄灯呼吸 ─────────────────────────
+   悬浮球形态下有任务需要你处理的最醒目提示；放在 thinking/voice-on
+   规则之后（同特异性，后者覆盖前者）。 */
+#core.pending {
+  border-color: rgba(245, 158, 11, 0.9);
+  animation: pending-breathe 1.4s ease-in-out infinite;
+}
+@keyframes pending-breathe {
+  0%, 100% {
+    box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.35), 0 0 10px rgba(245, 158, 11, 0.25);
+  }
+  50% {
+    box-shadow: 0 0 0 4px rgba(245, 158, 11, 0.65), 0 0 24px rgba(245, 158, 11, 0.55);
+  }
+}
+#core.pending #status-dot {
+  background: #f59e0b;
+  animation: pulse 0.9s infinite;
+}

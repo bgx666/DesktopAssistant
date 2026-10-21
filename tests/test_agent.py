@@ -183,6 +183,45 @@ def test_heartbeat_clamp_in_tool(data_root):
         s.close()
 
 
+def test_heartbeat_update_overwrites(data_root):
+    """改时间：再调一次 heartbeat 直接覆盖旧的（不需要先取消）。"""
+    s = PlannerSession(data_root, mock=True)
+    try:
+        tools = {t.name: t for t in build_tools(s)}
+        tools["heartbeat"].invoke({"minutes": 30, "note": "旧嘱托"})
+        first = s._next_heartbeat_at
+        tools["heartbeat"].invoke({"minutes": 5, "note": "新嘱托"})
+        assert s._next_heartbeat_at < first, "新设定应覆盖旧的到期时刻"
+        assert abs((s._next_heartbeat_at - time.time()) - 5 * 60) < 5
+        assert s._heartbeat_note == "新嘱托"
+    finally:
+        s.close()
+
+
+def test_heartbeat_cancel(data_root):
+    """取消：清空排定 + 落盘（重启不复活）；无排定时给明确提示。"""
+    s = PlannerSession(data_root, mock=True)
+    try:
+        tools = {t.name: t for t in build_tools(s)}
+        tools["heartbeat"].invoke({"minutes": 30, "note": "旧嘱托"})
+        assert s._next_heartbeat_at > 0
+        r = tools["heartbeat"].invoke({"cancel": True})
+        assert "已取消" in r
+        assert s._next_heartbeat_at == 0 and s._heartbeat_note == ""
+        assert s.heartbeat_dict()["in_seconds"] == 0
+        # 没有排定时再取消 → 明确提示 + 不报错
+        r2 = tools["heartbeat"].invoke({"cancel": True})
+        assert "没有排定" in r2
+    finally:
+        s.close()
+    # 已落盘：重启后仍是 0（不会复活）
+    s2 = PlannerSession(data_root, mock=True)
+    try:
+        assert s2._next_heartbeat_at == 0
+    finally:
+        s2.close()
+
+
 def test_heartbeat_requires_one_of_seconds_minutes(data_root):
     """两个间隔参数都不填 → 报错（给模型明确反馈，而不是默默取 0）。"""
     s = PlannerSession(data_root, mock=True)
@@ -190,38 +229,6 @@ def test_heartbeat_requires_one_of_seconds_minutes(data_root):
         tools = {t.name: t for t in build_tools(s)}
         with pytest.raises(Exception):
             tools["heartbeat"].invoke({"note": "什么都不填"})
-    finally:
-        s.close()
-
-
-def test_dnd_tool(data_root):
-    s = PlannerSession(data_root, mock=True)
-    try:
-        tools = {t.name: t for t in build_tools(s)}
-        tools["set_do_not_disturb"].invoke({"enabled": True, "until_hour": 14})
-        assert s.dnd_until is not None
-        assert s.dnd_until.hour == 14
-        tools["set_do_not_disturb"].invoke({"enabled": False})
-        assert s.dnd_until is None
-        assert not s.dnd_enabled
-    finally:
-        s.close()
-
-
-def test_dnd_window_check(data_root, monkeypatch):
-    import planner.config as cfg
-    # 恢复默认窗口 22-8 测试 in_dnd 逻辑
-    monkeypatch.setattr(cfg, "PLANNER_DND_START_HOUR", 22)
-    monkeypatch.setattr(cfg, "PLANNER_DND_END_HOUR", 8)
-    s = PlannerSession(data_root, mock=True)
-    try:
-        from datetime import datetime, timedelta, timezone
-        tz = timezone(timedelta(hours=8))
-        assert s.in_dnd(datetime(2026, 8, 5, 23, 0, tzinfo=tz)) is True   # 23 点在默认窗口内
-        assert s.in_dnd(datetime(2026, 8, 5, 12, 0, tzinfo=tz)) is False  # 中午不打扰
-        assert s.in_dnd(datetime(2026, 8, 5, 7, 30, tzinfo=tz)) is True   # 7 点半（跨天窗口）
-        s.set_dnd(False)
-        assert s.in_dnd(datetime(2026, 8, 5, 23, 0, tzinfo=tz)) is False
     finally:
         s.close()
 
@@ -265,48 +272,6 @@ def test_buffer_persists_across_restart(data_root):
         assert s2._msg_counter == saved_counter
     finally:
         s2.close()
-
-
-def _agenda_day(offset: int = 0) -> str:
-    """议程快照只覆盖「今天 + 未来 7 天」，所以日期必须相对今天算。
-
-    写死 2026-09-13 这类绝对日期的话，过了那天测试就会红——而且红得
-    毫无信息量（"开会"不在文本里），查半天才发现是日期过期。
-    """
-    from datetime import datetime, timedelta, timezone
-    today = datetime.now(timezone(timedelta(hours=8))).date()
-    return (today + timedelta(days=offset)).isoformat()
-
-
-def test_agenda_snapshot_injection(data_root):
-    """议程快照（数据源＝日历）：有内容才注入；指纹未变不重复注入。"""
-    s = PlannerSession(data_root, mock=True)
-    try:
-        s.db.add_calendar_item(_agenda_day(0), "开会", "14:00")
-        text = s._agenda_snapshot_text()
-        assert text is not None and "[当前议程]" in text and "开会" in text
-        # 指纹未变 → 不再注入
-        assert s._agenda_snapshot_text() is None
-        # 议程变化 → 重新注入
-        s.db.add_calendar_item(_agenda_day(1), "看牙医", "09:00")
-        text2 = s._agenda_snapshot_text()
-        assert text2 is not None and "看牙医" in text2
-    finally:
-        s.close()
-
-
-def test_agenda_snapshot_folds_repeating_series(data_root):
-    """重复项在快照里折叠成一行——否则"每天吃药"会把未来 7 天全占满。"""
-    s = PlannerSession(data_root, mock=True)
-    try:
-        s.db.add_calendar_series(_agenda_day(0), "吃药", "daily", "08:00",
-                                 horizon_days=6)
-        text = s._agenda_snapshot_text()
-        assert text is not None
-        assert text.count("吃药") == 1, f"重复项应折叠为一行：{text}"
-        assert "每天" in text and "还有" in text, f"应标出规则与剩余期数：{text}"
-    finally:
-        s.close()
 
 
 def test_memory_tree_wired_to_session(data_root):
@@ -430,27 +395,57 @@ def test_parent_node_renders_time_range(data_root):
 
 
 def test_heartbeat_prompt_carries_time_facts(data_root, monkeypatch):
-    """自主唤醒只给"时间事实"，不做沉默递进——用户状态由模型自己判断。
-
-    取消沉默计数（master 2026-09-10）后：提示里应给出「现在几点」和
-    「距用户上次说话多久」，且不再出现"已沉默 N 次"这类系统判词。
-    """
+    """心跳唤醒提示：时间锚点 + 用户嘱托 + 巡检语义（完成收尾/未完成再设）。"""
     s = PlannerSession(data_root, mock=True)
     injected: list[str] = []
     try:
-        s.dnd_enabled = False
         monkeypatch.setattr(s, "_spawn_worker", lambda trigger: injected.append(trigger))
         from planner.session import _now
         s._last_player_message_at = _now() - timedelta(minutes=95)   # 上次说话在 95 分钟前
-        s.schedule_heartbeat(30)
+        s.schedule_heartbeat(30, "盯一下简历投递")
         s._next_heartbeat_at = time.time() - 1
         s._fire_heartbeat()
         assert injected == ["heartbeat"]
         text = s.recent_buffer[-1].content
         assert "现在" in text and "周" in text, f"应带当前时间锚点：{text}"
         assert "1 小时" in text, f"应带距上次说话的间隔：{text}"
-        assert "沉默" not in text, "不应再出现沉默计数式判词"
-        assert "自己判断" in text or "自己决定" in text, "状态判断权应交回模型"
+        assert "盯一下简历投递" in text, "应带上用户嘱托/设闹钟的原因"
+        assert "做完了就正常收尾" in text, "应强调完成就收尾（不自动重排）"
+        assert "还没完成" in text and "再调 heartbeat" in text, "应给出未完成的巡检写法"
+        assert s._next_heartbeat_at == 0, "醒来后不自动重排（由模型决定是否再设）"
+    finally:
+        s.close()
+
+
+def test_start_heartbeat_does_not_auto_schedule(data_root):
+    """启动调度线程不自动排心跳（不再有开机自主唤醒）。"""
+    s = PlannerSession(data_root, mock=True)
+    try:
+        s.start_heartbeat()
+        assert s._next_heartbeat_at == 0
+    finally:
+        s.stop_heartbeat()
+        s.close()
+
+
+def test_heartbeat_not_rescheduled_unless_model_asks(data_root, monkeypatch):
+    """巡检循环：醒来后模型不调 heartbeat → 不再排程（完成即收尾）。"""
+    from planner.llm import MockChatModel
+
+    class _NoHbMock(MockChatModel):
+        def _heartbeat_reply(self, reasoning: str = ""):
+            return self._make_result("（看过了，还没完成，先不打扰。）")
+
+    s = PlannerSession(data_root, mock=True)
+    try:
+        s.set_chat_model(_NoHbMock(session=s))
+        monkeypatch.setattr(s, "_spawn_worker", lambda trigger: None)
+        s.schedule_heartbeat(1, "盯着任务")
+        s._next_heartbeat_at = time.time() - 1
+        s._fire_heartbeat()
+        assert s._next_heartbeat_at == 0
+        s._generate_response("heartbeat")   # 模拟醒来后的处理：模型没设心跳
+        assert s._next_heartbeat_at == 0, "模型不设心跳时不得自动重排"
     finally:
         s.close()
 
@@ -477,7 +472,6 @@ def test_heartbeat_min_floor_clamped(data_root, monkeypatch):
     s = PlannerSession(data_root, mock=True)
     injected: list[str] = []
     try:
-        s.dnd_enabled = False
         monkeypatch.setattr(s, "_spawn_worker", lambda trigger: injected.append(trigger))
         s.schedule_heartbeat(0.1 / 60)     # 0.1 秒 → 应被抬到 1 分钟
         assert s._heartbeat_minutes == 1.0, f"下界应是 1 分钟，实际 {s._heartbeat_minutes}"
@@ -495,7 +489,6 @@ def test_long_heartbeat_injects_time_anchor(data_root, monkeypatch):
     s = PlannerSession(data_root, mock=True)
     injected: list[str] = []
     try:
-        s.dnd_enabled = False
         monkeypatch.setattr(s, "_spawn_worker", lambda trigger: injected.append(trigger))
         s.schedule_heartbeat(30)
         s._next_heartbeat_at = time.time() - 1
@@ -504,27 +497,6 @@ def test_long_heartbeat_injects_time_anchor(data_root, monkeypatch):
         text = s.recent_buffer[-1].content
         assert "现在" in text, f"长心跳应给时间锚点：{text}"
         assert not hasattr(s, "_heartbeat_silent_count"), "沉默计数已移除"
-    finally:
-        s.close()
-
-
-def test_heartbeat_deferred_in_dnd(data_root, monkeypatch):
-    """免打扰期间不生成，顺延一个原间隔再醒（下界 1 分钟，不会空轮询）。"""
-    from datetime import timedelta
-
-    from planner.session import _now
-    s = PlannerSession(data_root, mock=True)
-    injected: list[str] = []
-    try:
-        s.dnd_enabled = True
-        s.dnd_until = _now() + timedelta(minutes=10)   # 一次性免打扰：还剩 10 分钟
-        monkeypatch.setattr(s, "_spawn_worker", lambda trigger: injected.append(trigger))
-        s.schedule_heartbeat(30)
-        s._next_heartbeat_at = time.time() - 1          # 模拟到点
-        s._fire_heartbeat()
-        assert injected == [], "DND 期间不得生成"
-        remain = s._next_heartbeat_at - time.time()
-        assert 28 * 60 < remain <= 31 * 60, f"应顺延一个原间隔（30 分钟），实际 {remain:.0f} 秒"
     finally:
         s.close()
 
@@ -566,7 +538,6 @@ def test_react_loop_multi_round(data_root):
 
     s = PlannerSession(data_root, mock=True)
     try:
-        s.dnd_enabled = False
         s.set_chat_model(_ToolThenAnswerModel())
         s._receive("接下来做什么？", trigger=True)
         s.pending_response = False
@@ -973,37 +944,3 @@ def test_heartbeat_may_stay_silent_with_empty_reply(data_root):
         s.close()
 
 
-def test_typing_hint_injected_temporarily(data_root):
-    """输入框非空 → 每次 LLM 调用前上下文末尾临时加"正在输入"提示；
-    不落 buffer（不持久化）。"""
-    from planner.llm import MockChatModel
-
-    class _RecordingMock(MockChatModel):
-        last_msgs: list = []   # pydantic 字段声明（BaseChatModel 是 pydantic 模型）
-
-        def _generate(self, messages, stop=None, run_manager=None, **kwargs):
-            self.last_msgs = list(messages)
-            return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
-
-    s = PlannerSession(data_root, mock=True)
-    try:
-        model = _RecordingMock(session=s)
-        s.set_chat_model(model)
-        # 未在输入：末尾无提示
-        _drive_generation(s, "在吗？", "player")
-        assert not any("正在输入" in str(m.content) for m in model.last_msgs)
-        s.drain_events()
-        # 输入中：提示加在上下文最后（每次 LLM 调用前）
-        s.set_typing(True)
-        _drive_generation(s, "帮我看看任务", "player")
-        assert model.last_msgs, "应有 LLM 调用记录"
-        assert "正在输入" in str(model.last_msgs[-1].content), "提示应加在上下文末尾"
-        # 提示不落 buffer（临时注入，不持久化）
-        assert not any("正在输入" in str(m.content) for m in s.recent_buffer)
-        s.drain_events()
-        # 停止输入：提示消失
-        s.set_typing(False)
-        _drive_generation(s, "再说一遍", "player")
-        assert not any("正在输入" in str(m.content) for m in model.last_msgs)
-    finally:
-        s.close()

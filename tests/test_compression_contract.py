@@ -82,7 +82,8 @@ def test_leaf_input_includes_marked_nodes(data_root, monkeypatch):
 
 
 def test_compact_strips_marker_on_targets_and_names_them(data_root, monkeypatch):
-    """节点压缩：目标节点去掉保护标记（+ 指令点名），其他节点保留标记。"""
+    """节点压缩：目标节点去掉保护标记（+ 指令点名）；**目标之后的节点（未来）
+    不进输入**（与叶子剔除保留尾部同一原则）。"""
     s = PlannerSession(data_root, mock=True)
     try:
         tree = s.get_memory_tree()
@@ -100,12 +101,10 @@ def test_compact_strips_marker_on_targets_and_names_them(data_root, monkeypatch)
             nid = (getattr(m, "metadata", None) or {}).get("node_id")
             if nid:
                 by_node[nid] = str(getattr(m, "content", ""))
-        # factor=4：目标是前 4 个（node0_001..node0_004）
-        assert set(by_node) == {f"node0_{i:03d}" for i in range(1, 9)}
+        # factor=4：目标是前 4 个（node0_001..node0_004）；之后的（005..008）不进输入
+        assert set(by_node) == {f"node0_{i:03d}" for i in range(1, 5)}
         for i in range(1, 5):
             assert NODE_MARKER not in by_node[f"node0_{i:03d}"], "目标应去掉保护标记"
-        for i in range(5, 9):
-            assert NODE_MARKER in by_node[f"node0_{i:03d}"], "非目标应保留保护标记"
         # 指令点名目标
         for i in range(1, 5):
             assert f"node0_{i:03d}" in captured["instruction"]
@@ -205,6 +204,24 @@ def test_leaf_records_cwd(data_root, monkeypatch, tmp_path):
         s.close()
 
 
+def test_instruction_carries_length_budget(data_root):
+    """node_token_budget 必须写进压缩指令（叶子和父层），而不只是事后裁剪。"""
+    s = PlannerSession(data_root, mock=True)
+    try:
+        s.update_settings({"node_token_budget": 1000})
+        comp = SummarizationMiddleware(s)
+        leaf = comp._leaf_instruction(1, 2)
+        assert "长度预算" in leaf and "1000 字以内" in leaf
+        assert "400 字" in leaf, "summary 约占总预算 40%"
+        parent = comp._parent_instruction(["a", "b"])
+        assert "长度预算" in parent and "1000 字以内" in parent
+        comp.language = "en"
+        assert "Length budget" in comp._leaf_instruction(1, 2)
+        assert "Length budget" in comp._parent_instruction(["a", "b"])
+    finally:
+        s.close()
+
+
 def test_compact_merges_child_cwd(data_root, monkeypatch, tmp_path):
     """父节点 cwd 从子节点合并（构造两个不同 cwd 的叶子）。"""
     s = PlannerSession(data_root, mock=True)
@@ -262,11 +279,12 @@ def test_mock_compression_output_matches_new_schema(data_root, monkeypatch):
 
 # ── 2026-10-18：压缩空转修复（摘要模型关思考 + 超大批次分片 + 降级标记）──
 
-def test_compress_one_shot_single_node(data_root, monkeypatch):
-    """整批优先：批次正常大小时**一次调用 = 一个节点**（用户预期，2026-10-18）。"""
+def test_compress_small_batch_one_shot(data_root, monkeypatch):
+    """小批次（≤ 分片大小）不分片：一次调用 = 一个节点。"""
     s = PlannerSession(data_root, mock=True)
     try:
-        s.update_settings({"compress_token_budget": 10000, "compress_keep": 5})
+        s.update_settings({"compress_token_budget": 10000, "compress_keep": 5,
+                           "compress_chunk_tokens": 100000})   # 分片阈值很大 → 不分片
         msgs = [HumanMessage(content=f"m{i:03d}" + "x" * 999,
                              metadata={"ts": "2026-08-08 10:00:00"})
                 for i in range(60)]
@@ -280,7 +298,7 @@ def test_compress_one_shot_single_node(data_root, monkeypatch):
 
         monkeypatch.setattr(comp, "_call_compress", fake)
         removes, adds = comp.compress_snapshot(msgs)
-        assert len(calls) == 1, "整批一次调用"
+        assert len(calls) == 1, "小批次一次调用"
         assert len(adds) == 1, "一次压缩 = 一个节点"
         assert len(removes) == 55   # 60 - keep 5
         assert len(calls[0]) == 55  # 节点范围覆盖整个批次
@@ -288,34 +306,93 @@ def test_compress_one_shot_single_node(data_root, monkeypatch):
         s.close()
 
 
-def test_compress_falls_back_to_chunks_on_failure(data_root, monkeypatch):
-    """整批调用失败（如超窗）→ 自动回退分片重试（每片各落一个节点）。"""
+def test_compress_chunked_progressive_prefix(data_root, monkeypatch):
+    """分片（渐进前缀）：第 k 次调用带第 1..k 片原文（缓存命中形态），指令带
+    头/尾锚点；n 个分片叶子**各自进上下文**（level 0 活跃，等层级合并消化）。"""
     s = PlannerSession(data_root, mock=True)
     try:
-        s.update_settings({"compress_token_budget": 10000, "compress_keep": 5})
+        s.update_settings({"compress_token_budget": 10000, "compress_keep": 5,
+                           "compress_chunk_tokens": 10000,
+                           "compact_threshold": 50})   # 阈值拉高：不让层级合并消化
         msgs = [HumanMessage(content=f"m{i:03d}" + "x" * 999,
                              metadata={"ts": "2026-08-08 10:00:00"})
                 for i in range(60)]
         comp = SummarizationMiddleware(s)
-        calls = []
+        calls = []   # (发送的原始消息条数, 指令文本)
 
         def fake(ctx, instruction):
-            batch = [m for m in ctx if str(getattr(m, "content", "")).startswith("m")]
-            calls.append(batch)
-            if len(batch) > 30:          # 模拟整批超窗失败
-                return None
+            raw = [m for m in ctx if str(getattr(m, "content", "")).startswith("m")]
+            calls.append((len(raw), str(instruction.content)))
             return MemoryNodeOutput(summary="摘要")
 
         monkeypatch.setattr(comp, "_call_compress", fake)
         removes, adds = comp.compress_snapshot(msgs)
-        assert len(calls) >= 3, "第一次整批失败 + 至少两片重试"
-        assert len(adds) == len(calls) - 1, "每片各产生一个节点（整批那次失败不落）"
+        n = len(calls)
+        assert n >= 3, f"55 条×1000 字 ≈ 66k token，1 万/片应切 ≥3 片，实际 {n}"
         assert len(removes) == 55
-        for batch in calls[1:]:
-            est = sum(int(len(str(m.content)) * 1.2) for m in batch)
-            assert est <= 30000 + 1300, f"分片过大: {est}"
+        assert len(adds) == n, f"{n} 个分片叶子各自进上下文"
+        # 渐进前缀：第 k 次调用发送的原文总条数逐次增长（= 第 1..k 片）
+        sent = [c[0] for c in calls]
+        assert sent == sorted(sent) and sent[0] < sent[-1], f"渐进前缀不增长: {sent}"
+        for _, ins in calls:
+            assert "从这条消息开始" in ins, "分片指令应带头部锚点定位"
+            assert "直到输入的最后一条消息" in ins, "分片指令应带尾部锚点定位"
+        # 树：n 个分片叶子留在 level 0（活跃）
+        tree = s.get_memory_tree()
+        assert tree.get_level_count(0) == n, "分片叶子留在 level 0（活跃）"
+        assert tree.get_level_count(1) == 0, "不产生父节点"
     finally:
         s.close()
+
+
+def test_compress_chunk_failure_stops_midway(data_root, monkeypatch):
+    """某片失败 → 停手：已成功片照常进上下文（无父节点），后续片不再压。"""
+    s = PlannerSession(data_root, mock=True)
+    try:
+        s.update_settings({"compress_token_budget": 10000, "compress_keep": 5,
+                           "compress_chunk_tokens": 10000})
+        msgs = [HumanMessage(content=f"m{i:03d}" + "x" * 999,
+                             metadata={"ts": "2026-08-08 10:00:00"})
+                for i in range(60)]
+        comp = SummarizationMiddleware(s)
+        state = {"n": 0}
+
+        def fake(ctx, instruction):
+            state["n"] += 1
+            if state["n"] == 3:
+                return None   # 第 3 片失败
+            return MemoryNodeOutput(summary="摘要")
+
+        monkeypatch.setattr(comp, "_call_compress", fake)
+        removes, adds = comp.compress_snapshot(msgs)
+        assert state["n"] == 3, "第 3 片失败后停手（不再有调用）"
+        assert len(adds) == 2, "已成功的两片各自一个叶子（跳过父合并）"
+        assert len(removes) < 55, "只移除前两片覆盖的消息"
+    finally:
+        s.close()
+
+
+def test_split_prefers_human_boundary():
+    """切点策略：浮动窗口内优先用户消息边界（≥0.75×目标）；无 human 边界时
+    到 1.4× 后在安全边界收片。"""
+    from langchain_core.messages import AIMessage
+
+    from planner.middleware import SummarizationMiddleware
+
+    def msg(i, kind="human"):
+        cls = HumanMessage if kind == "human" else AIMessage
+        return cls(content=f"m{i:03d}" + "x" * 999,
+                   metadata={"ts": "2026-08-08 10:00:00"})
+
+    # 全 human：0.75×30000=22500 token ≈ 19 条（×1200）处收片
+    batch = [msg(i) for i in range(40)]
+    chunks = SummarizationMiddleware._split_batch_by_tokens(batch, max_tokens=30000)
+    assert [len(c) for c in chunks] == [19, 19, 2], [len(c) for c in chunks]
+    # 全 ai（无 human 边界）：到 1.4×42000 token ≈ 35~36 条才收
+    batch2 = [msg(i, "ai") for i in range(50)]
+    chunks2 = SummarizationMiddleware._split_batch_by_tokens(batch2, max_tokens=30000)
+    assert 35 <= len(chunks2[0]) <= 36, f"无 human 边界应浮动到 1.4×，实际 {len(chunks2[0])}"
+    assert len(chunks2) == 2
 
 
 def test_split_batch_respects_tool_pairs():
@@ -455,8 +532,8 @@ def test_heal_wrapped_node_summaries(data_root):
         s.close()
 
 
-def test_async_compression_applies_single_node(data_root, monkeypatch):
-    """端到端（假摘要模型）：整批一次 → **一个节点**替换 buffer，raw 明显下降。
+def test_async_compression_applies_leaves(data_root, monkeypatch):
+    """端到端（假摘要模型）：分片压缩 → **分片叶子替换 buffer**，raw 明显下降。
 
     回归"每次触发、每次空转、什么都不替换"：压缩必须真的落进 buffer。
     """
@@ -486,7 +563,186 @@ def test_async_compression_applies_single_node(data_root, monkeypatch):
                if "node_id" not in (getattr(m, "metadata", None) or {})]
         nodes = [m for m in s.recent_buffer
                  if "node_id" in (getattr(m, "metadata", None) or {})]
-        assert len(nodes) == 1, "整批优先：一次压缩应落一个节点"
+        assert len(nodes) >= 2, "分片压缩：应落多个分片叶子节点"
         assert len(raw) == 5, f"keep=5 应保留 5 条原始消息，实际 {len(raw)}"
+    finally:
+        s.close()
+
+
+def test_should_compress_raw_counts_images_by_384_not_base64():
+    """图片块按每张 384 计，不按 base64 字符数——一张 1MB 图不得把估算撑过预算。
+
+    回归用户实测：预算 20 万，原始消息（含视觉注入图片）才 1 万多就触发压缩。
+    """
+    from planner.middleware import should_compress_raw
+
+    big = "data:image/png;base64," + "A" * 1_000_000
+    img_msg = HumanMessage(content=[
+        {"type": "text", "text": "看这张照片"},
+        {"type": "image_url", "image_url": {"url": big}},
+    ])
+    msgs = [img_msg, HumanMessage(content="嗯，不错")]
+    assert not should_compress_raw(msgs, keep=20, token_budget=200000), \
+        "base64 不得按字符数计入估算"
+    # 纯文本仍然按 chars×1.2（偏保守）
+    text_msgs = [HumanMessage(content="x" * 200000), HumanMessage(content="y")]
+    assert should_compress_raw(text_msgs, keep=20, token_budget=200000)
+    # 图片按每张 384 计：预算小于图片总额时应当触发
+    many = [HumanMessage(content=[{"type": "image_url",
+                                   "image_url": {"url": big}}])
+            for _ in range(3)]
+    assert should_compress_raw(many, keep=20, token_budget=1000)
+
+
+def test_compress_input_strips_image_base64(data_root, monkeypatch):
+    """压缩调用输入剥离 image_url 块（base64 对摘要无用且极贵）。"""
+    s = PlannerSession(data_root, mock=True)
+    try:
+        s.update_settings({"compress_token_budget": 10000, "compress_keep": 10})
+        big = "data:image/png;base64," + "A" * 500000
+        msgs = [HumanMessage(content=[
+                    {"type": "text", "text": "看这张照片"},
+                    {"type": "image_url", "image_url": {"url": big}}],
+                    metadata={"ts": "2026-08-08 10:00:00"})]
+        msgs += [HumanMessage(content=f"m{i}" + "x" * 798,
+                              metadata={"ts": "2026-08-08 10:00:00"})
+                 for i in range(29)]
+        comp = SummarizationMiddleware(s)
+        captured = _capture(comp, monkeypatch)
+        comp.compress_snapshot(msgs)
+        texts = _contents(captured)
+        assert texts, "文本量超预算应触发叶子压缩"
+        assert all("base64" not in t for t in texts), "压缩输入不得带 base64"
+        assert any("看这张照片" in t or "（图片）" in t for t in texts)
+    finally:
+        s.close()
+
+
+def test_compact_drains_level_below_threshold(data_root, monkeypatch):
+    """某层超阈值 → **一轮内持续合并到低于阈值**（旧行为每轮每层只合一批：
+    10 个节点(6/3) 只合 3 个、剩 7 个仍超阈值挂到下一轮——用户指出）。"""
+    s = PlannerSession(data_root, mock=True)
+    try:
+        s.update_settings({"compact_threshold": 6, "compact_factor": 3})
+        tree = s.get_memory_tree()
+        for i in range(10):
+            tree.add_leaf(f"摘要{i}", (i * 5, i * 5 + 4), None)
+        assert tree.get_level_count(0) == 10
+        comp = SummarizationMiddleware(s)
+
+        def fake(ctx, instruction):
+            return MemoryNodeOutput(summary="合并摘要")
+
+        monkeypatch.setattr(comp, "_call_compress", fake)
+        comp.compress_snapshot([])   # 无批次压缩，只跑层级合并
+        assert tree.get_level_count(0) == 4, "10 → 7 → 4（持续合并到低于阈值）"
+        assert tree.get_level_count(1) == 2, "两次合并各出一个父节点"
+    finally:
+        s.close()
+
+
+def test_compact_excludes_nodes_after_targets(data_root, monkeypatch):
+    """节点合并输入：只带目标**之前**的节点（更早背景、带标记）；目标之后的
+    节点（未来信息）不进输入——与叶子压缩剔除保留尾部同一原则（用户定）。"""
+    s = PlannerSession(data_root, mock=True)
+    try:
+        s.update_settings({"compact_threshold": 6, "compact_factor": 3})
+        tree = s.get_memory_tree()
+        early = [tree.add_leaf(f"早{i}", (i * 10, i * 10 + 9), None) for i in range(2)]
+        lv1 = tree.compact(early, "更早的父节点")   # L1：第 0-19 条（目标之前）
+        ids = [tree.add_leaf(f"摘要{i}", (20 + i * 10, 20 + i * 10 + 9), None)
+               for i in range(6)]
+        s.recent_buffer = [
+            HumanMessage(content=f"[{lv1} · L1 · 第0-19条] {NODE_MARKER}\n[摘要] 更早的父节点",
+                         metadata={"node_id": lv1, "node_start": 0}),
+        ] + [
+            HumanMessage(content=f"[{nid} · L0 · 第{20+i*10}-{29+i*10}条] {NODE_MARKER}\n[摘要] 摘要{i}",
+                         metadata={"node_id": nid, "node_start": 20 + i * 10})
+            for i, nid in enumerate(ids)
+        ]
+        comp = SummarizationMiddleware(s)
+        captured = []
+
+        def fake(ctx, instruction):
+            captured.append([str(m.content) for m in ctx])
+            return MemoryNodeOutput(summary="合并摘要")
+
+        monkeypatch.setattr(comp, "_call_compress", fake)
+        comp.compress_snapshot(list(s.recent_buffer))
+        ctx = captured[0]
+        assert len(ctx) == 4, f"应只带：更早的父节点 + 目标 3 个，实际 {len(ctx)}"
+        assert any("更早的父节点" in c for c in ctx), "目标之前的节点应保留（背景）"
+        assert not any("摘要3" in c or "摘要4" in c or "摘要5" in c for c in ctx), \
+            "目标之后的节点（未来）不得进输入"
+        assert sum(1 for c in ctx if NODE_MARKER not in c) == 3, "3 个目标去标记"
+    finally:
+        s.close()
+
+
+def test_compact_removes_fresh_leaf_messages_from_adds(data_root, monkeypatch):
+    """层级合并的目标包含**本轮刚产生的分片叶子**时，其消息必须从 adds 摘除——
+    否则 inactive 的子节点消息会和父节点并存于 buffer（历史 bug：合并后 L0 与
+    父节点同时可见、L0 数超过阈值、范围看起来重叠/不连续——用户实测 2026-10-19）。"""
+    s = PlannerSession(data_root, mock=True)
+    try:
+        s.update_settings({"compress_token_budget": 10000, "compress_keep": 5,
+                           "compress_chunk_tokens": 10000,
+                           "compact_threshold": 5, "compact_factor": 4})
+        tree = s.get_memory_tree()
+        old_ids = [tree.add_leaf(f"老{i}", (i * 10, i * 10 + 9), None) for i in range(3)]
+        s.recent_buffer = [
+            HumanMessage(content=f"[{nid} · L0 · 第{i*10}-{i*10+9}条] {NODE_MARKER}\n[摘要] 老{i}",
+                         metadata={"node_id": nid, "node_start": i * 10})
+            for i, nid in enumerate(old_ids)
+        ]
+        msgs = list(s.recent_buffer) + [
+            HumanMessage(content=f"m{i:03d}" + "x" * 999,
+                         metadata={"ts": "2026-08-08 10:00:00"})
+            for i in range(60)]
+        comp = SummarizationMiddleware(s)
+
+        def fake(ctx, instruction):
+            return MemoryNodeOutput(summary="摘要")
+
+        monkeypatch.setattr(comp, "_call_compress", fake)
+        removes, adds = comp.compress_snapshot(msgs)
+        adds_ids = [(getattr(m, "metadata", None) or {}).get("node_id") for m in adds]
+        status = tree.get_node_status([i for i in adds_ids if i])
+        stale = [i for i in adds_ids
+                 if i and not (status.get(i) or {}).get("is_active", True)]
+        assert not stale, f"adds 里不得有 inactive（已被合并）的节点消息: {stale}"
+        assert tree.get_level_count(0) < 5, "层级合并应消化到低于阈值"
+        assert tree.get_level_count(1) >= 1, "应产生父节点"
+    finally:
+        s.close()
+
+
+def test_drop_superseded_node_messages(data_root):
+    """启动/压缩后的自愈：清除 buffer 里"已被父节点取代"的旧节点消息；
+    父节点消息缺失时保留（宁可重复，不丢覆盖）。"""
+    s = PlannerSession(data_root, mock=True)
+    try:
+        tree = s.get_memory_tree()
+        kids = [tree.add_leaf(f"子{i}", (i * 10, i * 10 + 9), None) for i in range(2)]
+        parent = tree.compact(kids, "父")
+        parent_msg = HumanMessage(
+            content=f"[{parent} · L1 · 第0-19条] {NODE_MARKER}\n[摘要] 父",
+            metadata={"node_id": parent, "node_start": 0})
+        kid_msgs = [
+            HumanMessage(content=f"[{nid} · L0 · 第{i*10}-{i*10+9}条] {NODE_MARKER}\n[摘要] 子{i}",
+                         metadata={"node_id": nid, "node_start": i * 10})
+            for i, nid in enumerate(kids)]
+        raw = HumanMessage(content="原始消息", metadata={"ts": "2026-08-08 10:00:00"})
+        # 场景 1：父节点消息在场 → 子消息被清
+        s.recent_buffer = [parent_msg] + kid_msgs + [raw]
+        removed = s._drop_superseded_node_messages()
+        assert removed == 2
+        ids = [(getattr(m, "metadata", None) or {}).get("node_id") for m in s.recent_buffer]
+        assert parent in ids and not any(k in ids for k in kids)
+        # 场景 2：父节点消息缺失 → 子消息保留（宁可重复不丢覆盖）
+        s.recent_buffer = list(kid_msgs)
+        removed2 = s._drop_superseded_node_messages()
+        assert removed2 == 0
+        assert len(s.recent_buffer) == 2
     finally:
         s.close()
