@@ -77,7 +77,9 @@
     const q = cur.question || null;
     $('#pn-approval').classList.toggle('hidden', !ap);
     $('#pn-question').classList.toggle('hidden', !q);
-    $('#pn-title').textContent = ap ? '需要你确认' : (q ? '小助想问你' : '');
+    $('#pn-title').textContent = ap
+      ? (ap.agent === 'white' ? 'White 需要你确认' : '需要你确认')
+      : (q ? '小助想问你' : '');
     if (ap) {
       $('#pn-tool').textContent = ap.tool || '';
       renderPaths(ap.paths);

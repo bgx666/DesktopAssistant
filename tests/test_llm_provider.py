@@ -213,3 +213,21 @@ def test_update_settings_provider_rebuilds_model(data_root, monkeypatch):
         assert cfg["model"] == "deepseek-v4.1-flash"
     finally:
         s.close()
+
+
+def test_build_chat_model_instances_have_independent_http_clients():
+    """停止时关闭旧模型，不能连带关闭新模型/White/压缩模型的 HTTP client。"""
+    from planner.llm import build_chat_model
+
+    m1 = build_chat_model(api_key="x", base_url="http://127.0.0.1:1/v1", model_name="x")
+    m2 = build_chat_model(api_key="x", base_url="http://127.0.0.1:1/v1", model_name="x")
+    try:
+        assert m1.root_client._client is not m2.root_client._client
+        m1.root_client.close()
+        assert not m2.root_client._client.is_closed
+    finally:
+        for m in (m1, m2):
+            try:
+                m.root_client.close()
+            except Exception:
+                pass

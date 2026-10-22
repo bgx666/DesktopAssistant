@@ -36,6 +36,9 @@ contextBridge.exposeInMainWorld('planner', {
   getPathForFile: (file) => {
     try { return webUtils.getPathForFile(file); } catch { return ''; }
   },
+  // 面板语音输入：把"正在录音"同步给悬浮球（跨窗口特效）
+  setPanelRecording: (on) => ipcRenderer.send('panel-recording', !!on),
+  onPanelRecording: (cb) => ipcRenderer.on('panel-recording', (e, on) => cb(on)),
   // 全局挂载文件（主进程持有，两窗口共享）
   mountFiles: (files) => ipcRenderer.send('mount-files', files),
   clearMounted: () => ipcRenderer.send('clear-mounted'),

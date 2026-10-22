@@ -1193,6 +1193,15 @@ ipcMain.on('refocus-window', (event) => {
   }
 });
 
+// 面板语音输入开始/结束 → 广播给悬浮球（面板收起后录音仍在继续，球要显示录音特效）
+ipcMain.on('panel-recording', (e, on) => {
+  try {
+    if (bubbleWin && !bubbleWin.isDestroyed()) {
+      bubbleWin.webContents.send('panel-recording', !!on);
+    }
+  } catch { /* 忽略 */ }
+});
+
 // 外部链接（Markdown 里的 http/https/mailto）→ 系统默认浏览器。
 // 渲染层是 file:// 页面，直接让 <a> 导航会把面板顶掉；协议白名单防 javascript:/data:。
 ipcMain.handle('open-external', async (e, url) => {

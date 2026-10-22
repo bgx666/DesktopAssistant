@@ -112,6 +112,17 @@ def test_chat_produces_text_event(backend):
     assert ev is not None and ev["content"]
 
 
+def test_history_hides_injected_by_metadata(backend):
+    """内部注入靠 metadata.injected 隐藏（不再只认中文括号前缀）；真实用户消息保留。"""
+    session, base = backend
+    session._receive("[注入] 这条不该出现在历史里", trigger=False, injected=True)
+    session._receive("[12:00] 用户对你说：这条要显示", trigger=False)
+    data = _get(base, "/history")
+    texts = [str(m.get("content") or "") for m in data["messages"]]
+    assert not any("不该出现在历史里" in t for t in texts)
+    assert any("这条要显示" in t for t in texts)
+
+
 def test_chat_pushes_user_message_event(backend):
     """/chat 先推 user_message（悬浮球语音/快速输入发的消息，面板靠它渲染气泡）。"""
     _, base = backend
@@ -120,6 +131,23 @@ def test_chat_pushes_user_message_event(backend):
     assert ev is not None
     assert ev["text"] == "悬浮球发的消息"
     assert ev["id"] == r["msg_id"]
+
+
+def test_agents_and_white_history(backend):
+    """White 子代理：/agents 列表 + /history?agent=white 独立历史。"""
+    import time
+    session, base = backend
+    w = session.get_white_agent()
+    w.notify = False
+    w.dispatch("白色任务：检查当前工作区", reuse=False)
+    deadline = time.time() + 10
+    while time.time() < deadline and w.status == "running":
+        time.sleep(0.05)
+    agents = _get(base, "/agents")["agents"]
+    assert any(a["id"] == "white" for a in agents)
+    h = _get(base, "/history?agent=white")
+    assert h["ok"] and h["messages"]
+    assert h["messages"][-1]["role"] == "result"
 
 
 def test_chat_empty_rejected(backend):
@@ -504,10 +532,11 @@ def test_settings_endpoint(backend):
 
 
 def test_toggle_mock(backend):
+    """幂等模式：显式指定目标模式（避免 POST 重试把非幂等 toggle 翻两次的偶发失败）。"""
     _, base = backend
-    r = _post(base, "/toggle_mock")
+    r = _post(base, "/toggle_mock", {"mode": "llm"})
     assert r["mode"] == "llm"
-    r2 = _post(base, "/toggle_mock")
+    r2 = _post(base, "/toggle_mock", {"mode": "mock"})
     assert r2["mode"] == "mock"
 
 

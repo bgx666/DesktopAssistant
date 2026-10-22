@@ -1582,3 +1582,219 @@
   避免 bubble 的 pre-wrap 造成块内多余空行）。
 - **回归**：e2e 第 29 步扩展（标题/无序列表/有序列表/引用断言）；
   e2e 全绿（Markdown: MD_OK）、结束 PORT_FREE；release v0.1.278。
+
+第七十三轮：面板录音 → 悬浮球同步录音特效（2026-10-20，用户反馈）
+
+- **用户反馈**：在放大面板点 🎤 开始录音，然后 Esc 收起面板——录音其实还在
+  继续，但悬浮球看起来完全正常（没有紫点、没有雷达环），不像长按球时那样
+  "看得出在听"。
+- **实现**：面板 `togglePanelVoice` 开始/结束/失败时分别
+  `window.planner.setPanelRecording(true/false)` → 主进程广播
+  `panel-recording` → `bubble.js` 给球加/去 `.recording` 并启停雷达环。
+  面板收起后录音继续进行，球保持特效；回到面板点 🎤 结束 → 球同步复原。
+- **雷达环**：面板的麦克风流在另一个渲染进程，悬浮球拿不到 analyser →
+  `startSoundRing` 增加**合成波形**回退（有 analyser 时仍用真实音量）；
+  顺手加 `ringWanted` 守卫，避免 `getAnalyser()` 异步期间被 stop 后环又亮起来。
+- **回归**：e2e 第 30 步（PANELVOICE_OK：IPC 开 → 球 `.recording`+环
+  `.active`，关 → 全部复原；麦克风本身无法自动化，直接测状态通路）；
+  e2e 全绿、结束 `PORT_FREE`；release v0.1.279。
+
+第七十四轮：标题栏收起按钮铺满角落（2026-10-20，用户反馈）
+
+- **用户反馈**：放大窗口右上角的收起按钮，只有中间一条小横条区域能点，
+  角落（标题栏上下 10px）点不动。
+- **原因**：`#titlebar` 上下各 10px padding，`#titlebar-btns` 只 stretch 到
+  **内容区**高度（实测按钮 52×21，标题栏 42 高）——上下 padding 成了死区。
+- **修复**：`#titlebar-btns { margin: -10px 0; }` 抵消 padding → 设置/收起
+  按钮撑满整条标题栏（实测 52×38，标题栏 39）；右缘 5px 仍留给 resize 热区。
+- **回归**：e2e 第 5 步新增断言（`#btn-fold` 高度 ≥ 标题栏高度-4、宽 ≥40）；
+  e2e 全绿、结束 `PORT_FREE`；release v0.1.280。
+
+第七十五轮：压缩节点总字数硬兜底（2026-10-20，用户设 700 仍太长）
+
+- **用户反馈**：`node_token_budget` 已设 700（发布实例实测），节点仍是
+  summary 320~701 + 字段 1.7k~4.3k，总计 2.4k~5k 字。指令里的"整节点
+  合计约 N 字"被模型忽略。
+- **修复**：`_apply_budget` 增加**总量硬兜底**——summary ≤ 60% 预算；
+  整节点总字数 ≤ 1.1×预算；超出时按"最不关键→最关键"**整组牺牲**
+  （context.env → commands → artifacts → lessons.patterns → next_steps →
+  blockers → user → todo → decisions → lessons.errors → constraints 最后，
+  前一组删空才动下一组），列表全空仍超才截 summary。六份压缩指令末尾
+  再强调一句"总字数绝对不要超过上面写明的长度上限"。
+- **回归**：`test_profile_nodes.py` +1（极端超量输入 → 总字数 ≤ 1.1×预算、
+  summary ≤ 60% 且 ≥120）；全量 **407 passed**；e2e 全绿、结束
+  `PORT_FREE`；release v0.1.281。旧节点不变，新压缩/父层合并生效。
+
+第七十六轮：悬浮球气泡渲染表格/标题 + 长内容内部滑动（2026-10-20，用户要求）
+
+- **用户需求**：悬浮球状态下弹出的气泡也要像展开面板一样渲染 Markdown
+  表格/标题；气泡高度随内容增大但要有上限，超出后内容可滑动，且**不显示
+  滚动条**（不好看）。
+- **实现**：`toast.html` 本来就引 `md.js`（表格/标题/列表/链接同一套渲染），
+  本轮补齐气泡侧样式并在 `#toast-text` 加 `max-height: 430px;
+  overflow-y: auto; scrollbar-width: none`（`::-webkit-scrollbar` 隐藏）；
+  表格容器 `.md-table-wrap` 的横向滚动条同样隐藏。窗口高度仍由
+  `toast.js` 测量上报、主进程 `Math.min(480, h)` 兜底；内容超过 430 后
+  在气泡内滚动（滚轮可用），不再被窗口高度硬切。
+- **回归**：e2e 第 31 步（TOAST_OK：长内容气泡含表格+标题、`overflowY=auto`、
+  `scrollHeight>clientHeight`、滚轮/scrollTop 生效、`scrollbar-width:none`、
+  窗口高度 ≤500）；e2e 全绿、结束 `PORT_FREE`；release v0.1.282。
+
+第七十七轮：设置页服务商不回显 → 保存时悄悄改回 DeepSeek（2026-10-20 真实事故）
+
+- **用户反馈**：一直在用 OpenCode Go，突然报 DeepSeek 402 欠费；怀疑发版改了配置。
+- **诊断**：发布只同步 `app/src` + `app/frontend`，从不写 `data/settings.json`。
+  DeepSeek `/user/balance` 返回 **-0.01 元**（`is_available:false`），1 token
+  请求也 402——是账户余额问题。但 provider 为何变成 deepseek：**设置页
+  `loadSettings` 从不设置 `#llm_provider.value`**（select 默认第一项
+  deepseek），用户每次点「保存」（气泡时长/节点预算/语音等）都会把
+  `llm_provider` 写回 deepseek；DeepSeek 分服务商 Key 为空 → 回落共享
+  `.env` 的 `LLM_API_KEY`（欠费的那把）。OpenCode Key 实测可用。
+- **修复**：`loadSettings` 先 `$('#llm_provider').value = current.llm_provider`
+  再 `applyProviderFields()`，保存不再改回。
+- **回归**：e2e 第 32 步（POST `llm_provider=opencode` → 找到/打开设置窗口
+  → **reload**（窗口是单例，第 23 步可能已开着）→ 断言选择框为 opencode
+  → 还原 deepseek）；e2e 全绿（SETTINGS_PROVIDER_OK）、结束 `PORT_FREE`；
+  release v0.1.283。
+
+第七十八轮：提示词统一管理（2026-10-20，用户要求）
+
+- **背景**：提示词原本散在四处——`prompts/*.md`（系统提示）、`session.py`
+  （运行时 f-string）、`middleware.py`（压缩指令常量）、`tools.py`
+  （工具 docstring）；没有清单/注册表，运行时文案与 `/history` 的中文括号
+  前缀过滤耦合。
+- **实现**：
+  - `src/planner/prompt_loader.py`：注册表 `PROMPTS`（35 个逻辑名 → 文件）+
+    `load()/render()`（缺占位符抛 `PromptRenderError`）；
+  - `prompts/README.md`：完整清单（系统/运行时/压缩/工具 schema 四类 + 注入点
+    + kind + 维护约定）；
+  - 运行时模板搬到 `prompts/runtime/`：玩家包装、心跳唤醒、日历到点/逾期/
+    编辑、附件 7 种、截屏/读图注入、单轮上限、ask_user 结果（共 21 份）；
+  - 压缩指令搬到 `prompts/compress/`：中英 × 叶子/父层 + 两种范围行 + JSON
+    骨架 + 长度预算（12 份，内容与原常量逐字一致）；
+  - `_receive(..., injected=True, kind=...)` 写入 `metadata.injected/kind`；
+    `/history` 用它隐藏内部消息（旧 buffer 仍按 `（`/`[当前` 前缀兜底），
+    回合边界只认 真实用户消息 + `kind ∈ {heartbeat, calendar_due,
+    calendar_overdue}`（图片/戳一戳/日历编辑不切块）；
+  - 工具 docstring 仍在 `tools.py`（LangChain 由函数生成 schema，不能外置），
+    在 README 里单独标注。
+- **回归**：`tests/test_prompts.py`（注册表文件齐全/缺 key 报错/注入标记）+
+  `test_server.py::test_history_hides_injected_by_metadata`；全量
+  **412 passed**；e2e 全绿、结束 `PORT_FREE`；release v0.1.284。
+
+第七十九轮：记忆类问题优先用 explore_memory_tree（2026-10-20，用户反馈）
+
+- **用户反馈**：小助不太愿意用 `explore_memory_tree`，更倾向去翻文件/搜索；
+  希望"内部/过往经历/记忆相关"的问题优先查记忆树，代码文件之类才用其他工具。
+- **现状**：`system.md` 记忆 section 原本已有"回答涉及过去的问题先看 node、
+  不够就 explore、没查就说我不记得不行"，但**没有相对 grep/read_file/
+  web_search 的工具路由优先级**——模型有时会先去翻文件。
+- **改动**（三处）：
+  1. `system.md` 职责新增 **#6 Memory first**（英文，靠前位置）；
+  2. 记忆 section 首条加**硬规则**（中文）：过去/经历/聊过或约定过的事/偏好/
+     长期任务进展 → **第一选择 `explore_memory_tree`**，不要用
+     grep/read_file/web_search 去猜；代码/文件/网页/实时信息才用那些；
+     两者都相关时先查记忆（决定与原因）再看文件；
+  3. `explore_memory_tree` docstring 首句强调"优先用本工具（不要用
+     grep/read_file/网页搜索去猜）"。
+- **回归**：`test_prompts.py` +1（断言路由规则在 system.md）；
+  全量 **413 passed**；e2e 全绿、结束 `PORT_FREE`；release v0.1.285。
+
+第八十轮：子代理 White（后台异步、独立标签页、结构化协议，2026-10-21）
+
+- **用户决策**：MVP A——White 只能读写主工作区、**不能执行命令**；主助手控制创建/
+  复用/关闭；用户只和主助手对话，但可直接停止 White；完成后通知主助手验收。
+- **运行时**：`agent_context`（contextvar 标记 main/white）+ `white_agent.py`：
+  - 后台线程、独立消息/状态/停止信号，不占主助手 `chat_lock`；
+  - 生命周期 idle → running → idle（保留上下文）→ closed；运行中可排队新指令；
+    `reuse=false` 清空上下文；主助手 `white_control(close)` 关闭；
+  - 无记忆树：`WhiteContextMiddleware` 超预算时旧消息摘要 + 滑动窗口（无节点）；
+  - 完成后 `runtime/white_finished` 注入主助手（等主助手空闲）+ `white_status/
+    white_result` 事件；主助手验收后决定 close/续派。
+- **协议**：`white_task(instruction, reuse)` / `white_control(action)`；
+  White 结束必须调 `finish_task`（pydantic schema：status/summary/findings/
+  assumptions/next_steps）；改动文件与用量由运行器自动补充（不让模型编 JSON）。
+- **安全**：White 工具只保留 web + 工作区文件（排除 run_command/show_image/
+  calendar/memory/heartbeat/ask_user/递归委派）；`ApprovalMiddleware` 对 White
+  的越界路径**硬拒绝**（不走审批）；changes 按 agent 分离消费。
+- **前端**：Agent 标题栏（运行转圈/待审批气泡/未读）；White 标签页复用同款
+  正文/思考/工具行渲染 + 任务头 + 结果卡；用户可停止；`/agents`、`/history?
+  agent=white`、`/white/stop`；设置页新增「子代理」。
+- **回归**：`test_white.py`（6 例：工具白名单/无工作区/越界拒绝/结果复用关闭/
+  排队）+ `test_server.py::test_agents_and_white_history` + e2e 第 33 步
+  （WHITE_OK）；全量 **420 passed**；e2e 全绿、结束 `PORT_FREE`；release v0.1.286。
+
+第八十一轮：White 实时/历史视图修复 + 常驻标签页 + Web 工具冷却（2026-10-22）
+
+- **用户反馈**：点开 White 只看到任务说明，看不到 thinking/工具/执行流程；希望 White
+  标签页即使没派任务也常驻（灰色呼吸灯），方便主动查看；网页抓取很慢。
+- **视图修复**：
+  - 实时事件原来只在 White 标签页激活时渲染 → 现在**始终写入** White 视图（隐藏时也累积）；
+  - 切到正在运行的 White 时**保留实时现场**，不再重载 `/history`；历史加载带 token，晚到
+    的响应不会覆盖更新的实时事件（这正是"只看到任务/最新一条"的竞态来源）；
+  - 用 release 真实 `white.json`（25 条消息）实测：17 个块、14 条工具行、thinking、结果卡全部渲染。
+- **常驻标签页**：`/agents` 在 `white_enabled` 且未创建 White 时返回 placeholder；前端
+  始终显示 `小助 | White`，White 空闲为**灰色呼吸灯**（`.agent-dot.gray` + `agent-breathe`），
+  点开有"还没有任务"空态；close 后回到灰灯而不是删 tab。
+- **Web 工具慢**：日志显示 DeepSeek 官方 `/v1/tools/fetch` 返回 404 → 每次都先撞官方，
+  再回退内置抓取；GitHub raw 内置抓取 20s 超时。内置抓取超时 **20s→12s**。聊天模型/API
+  与主助手完全相同；慢在目标站/网络超时。（404 冷却的判断在下一轮修正。）
+- **测试**：`test_toggle_mock` 改为幂等 mode（防 POST 重试把 toggle 翻两次的偶发红）；
+  全量 **421 passed**；release 版直连 CDP 全量面板检查全绿（含 WHITE_OK；用户实例占用
+  18772 时完整 e2e 跳过）；release v0.1.288。
+
+第八十二轮：修正 Web 官方链路冷却（404 是单 URL 失败，2026-10-22）
+
+- **用户纠正**：主 Agent 可以正常使用 DeepSeek 服务搜索——上一轮"Key 没权限"的判断
+  是错的。
+- **实测**（当前 DeepSeek Key）：`/v1/tools/search` **200**；`/v1/tools/fetch` 抓
+  javaguide 页面 **200**；只有 `raw.githubusercontent.com` 返回 **404
+  failed to fetch URL**。即 **404 是单 URL 抓取失败**，不是账号级不可用。
+- **修复**：`_mark_ds_web_failure` 的冷却只对 **401/402/403**（鉴权/余额/权限）生效，
+  不再因 404 把官方链路整体关 10 分钟（否则一次 raw GitHub 失败会误伤后续正常页面）。
+  内置抓取超时保持 12s。
+- **White 与主助手**：同一个 `web_search`/`fetch_web` 实现、同一 session、同一
+  DeepSeek Key、同一聊天模型/API；之前的慢是 raw GitHub 单 URL 404 + 内置回退网络超时，
+  不是工具配置差异。
+- **测试**：`test_web_tools.py` +1（404 不冷却 / 402 冷却）；release v0.1.289。
+
+第八十三轮：停止立即中断模型请求（主助手 + White，2026-10-22）
+
+- **用户反馈**：点停止后仍要等模型/API 返回（甚至超时）才停；希望“点了就强行停”，
+  已写完的产物/上下文保留，写不完的停在当前状态。
+- **根因**：`request_stop`/`White.stop` 只置停止标志；`_run_agent`/`_run_once` 只在
+  **收到下一个流事件**时检查。模型调用卡住（思考中/网络慢/API 不返回）时没有事件，
+  只能等 `LLM_TIMEOUT`/重试或 White 总超时。
+- **修复**：
+  - `PlannerSession.build_llm()`：主助手、White（每次任务）各自构建**独立模型实例**；
+  - `request_stop()`：置标志 + 杀 run_command + **关闭该模型 `root_client`**（后台线程，
+    `/stop` 立即返回）；httpx 流因 socket 关闭立刻抛 `ReadError`，`_run_agent` 识别为
+    “用户停止”而不是报错 toast；
+  - `WhiteAgent.stop()`/`close()`：关闭**自己的** `root_client`；清空排队任务；
+    `_run_once` 捕获停止异常后按 `blocked` 收尾；White 审批等待也检查 `stop_event`
+    （不再拖到 120s 审批超时）；
+  - White 总时限改用 `threading.Timer` 看门狗，到点关闭客户端（此前阻塞时超时也失效）；
+  - 工具正在写文件时先写完；`values` 已产生的消息/工具结果保留在上下文，流式中断的
+    半句只留在面板、不落 buffer（下次从干净上下文续接）。
+- **测试**：新增 `test_stop_aborts_blocked_model_immediately` 与
+  `test_white_stop_aborts_blocked_model_immediately`（假模型 `_stream` 永久阻塞，
+  停止后 <1s 返回且 root_client 被关闭）；全量 **424 passed**；release v0.1.290。
+  v0.1.291 追加：e2e mock 的「白色任务」触发词改为只认最后一条真实用户消息，避免 White
+  完成后主助手收到通知又重复派活导致状态一直“运行中”；直连面板检查 33 步全绿。
+
+第八十四轮：修复停止后“Connection error”（共享 httpx client 被误关，2026-10-22）
+
+- **现象**：点停止后，后续请求报
+  `调用模型失败（deepseek / deepseek-flash）：Connection error.`；日志 traceback
+  真正原因是 `httpx: Cannot send a request, as the client has been closed.`
+- **根因**：`langchain_openai` 在不传 `http_client` 时会让多个 `ChatOpenAI` 实例
+  **复用同一个底层 httpx client**。v0.1.290 的“停止立即关 root_client”把旧模型
+  client 关掉后，新模型、White 模型、压缩模型全都拿到**同一个已关闭 client**，
+  之后每次请求都失败（OpenAI SDK 包成 APIConnectionError，看起来像网络问题）。
+- **实测**：同一个 DeepSeek Key 直接 `/chat/completions` 返回 **200**（`deepseek-flash`
+  也可用），排除网络/Key/模型问题。
+- **修复**：`build_chat_model()` 每次创建**独立 `httpx.Client`**（timeout 按
+  `LLM_TIMEOUT`、follow_redirects），作为 `http_client=` 传给 ChatOpenAI；
+  停止只关闭当前模型自己的 client。
+- **回归测试**：`test_build_chat_model_instances_have_independent_http_clients`
+  断言两个模型 client 不同、关一个另一个仍可用；全量 **425 passed**；release v0.1.292。

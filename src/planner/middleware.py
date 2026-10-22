@@ -30,6 +30,8 @@ from langgraph.runtime import Runtime
 from langgraph.types import Command
 from typing_extensions import NotRequired
 
+from . import prompt_loader
+from .agent_context import current_agent
 from .content import content_text
 from .workspace import (
     PermissionStore,
@@ -79,16 +81,16 @@ class ScreenShotInjectMiddleware(AgentMiddleware):
         if not pending:
             return None
         msgs = []
+        default_text = prompt_loader.load("runtime/screenshot")
         for entry in pending:
             if isinstance(entry, dict):
                 url = str(entry.get("url") or "")
-                text = str(entry.get("text")
-                           or "（这是屏幕截图，请查看画面内容后回答。）")
+                text = str(entry.get("text") or default_text)
                 kwargs: dict = {}
                 if entry.get("viewed"):
                     kwargs["viewed_image"] = entry["viewed"]
             else:   # 兼容纯 URL 字符串（旧格式/外部注入）
-                url, text, kwargs = str(entry), "（这是屏幕截图，请查看画面内容后回答。）", {}
+                url, text, kwargs = str(entry), default_text, {}
             if not url:
                 continue
             msgs.append(HumanMessage(
@@ -96,7 +98,8 @@ class ScreenShotInjectMiddleware(AgentMiddleware):
                     {"type": "text", "text": text},
                     {"type": "image_url", "image_url": {"url": url}},
                 ],
-                additional_kwargs=kwargs))
+                additional_kwargs=kwargs,
+                metadata={"injected": True, "kind": "image"}))
         self.session._pending_screenshots = []
         if not msgs:
             return None
@@ -271,6 +274,10 @@ class ApprovalMiddleware(AgentMiddleware):
             workspace = None
         cwd = effective_cwd(workspace, str(st.get("workspace_cwd") or ""))
         mode = str(st.get("permission_mode") or "ask").strip().lower()
+        # White 子代理：没有命令权限；文件操作只能在主工作区内（硬拒绝，不走审批）
+        if current_agent() == "white":
+            if name in RUN_TOOLS:
+                return "deny", "（White 不能执行命令。）"
         # 命令执行：不走路径逻辑（硬黑名单 → 只读拒 → 规则 → 逐条审批）
         if name in RUN_TOOLS:
             return self._authorize_command(name, args)
@@ -281,6 +288,13 @@ class ApprovalMiddleware(AgentMiddleware):
         for p in targets:
             if is_blocked(p):
                 return "deny", f"（该路径在保护名单内，已拒绝：{p}）"
+        # White：文件读写硬限制在工作区内（工作区未启用则完全禁文件）
+        if current_agent() == "white":
+            if workspace is None:
+                return "deny", "（White 未启用代码工作区，不能读写文件。）"
+            for p in targets:
+                if not is_within(workspace, p):
+                    return "deny", f"（White 只允许在工作区内操作，已拒绝：{p}）"
         # 自身落盘的工具结果（data/tool_results/）→ 读免审批（卸载回来的大输出）
         try:
             offload_dir = Path(str(self.session.data_root)) / "tool_results"
@@ -296,34 +310,64 @@ class ApprovalMiddleware(AgentMiddleware):
         if mode == "read_only" and name in WRITE_TOOLS:
             return "deny", "（当前为只读模式，已取消。可在标题栏切换权限模式。）"
         store = PermissionStore(self.session.data_root)
+        grant_db = self.session.get_permission_db()
         pending: list[tuple[str, str]] = []       # [(tool, 工作区相对路径)] 待审批
         for p in targets:
             inside = is_within(workspace, p)
             rel = rel_posix(workspace, p)
             if inside and name in READ_TOOLS:
                 continue                              # 区内只读 → 放行
+            if name in WRITE_TOOLS and not inside:
+                return "deny", (
+                    f"（写权限只允许当前工作区内的路径，已取消：{p}。"
+                    "工作区外只能申请只读授权。）")
+            if not inside and name in READ_TOOLS and grant_db.has_read(p):
+                continue                              # 已授权的递归读目录
             if (not inside and name in READ_TOOLS
                     and not st.get("code_read_outside_workspace", False)):
-                return "deny", (f"（工作区外的读取未开启，已取消：{p}。"
-                                "如需允许，请在设置中开启「允许工作区外读取」。）")
+                return "deny", (
+                    f"（工作区外的读取未授权，已取消：{p}。"
+                    "可在「权限」页添加只读目录，或调用 request_read_permission 申请。）")
             if (mode == "auto" and name in WRITE_TOOLS and inside
                     and cwd is not None and is_within(cwd, p)):
                 continue                              # Auto：当前目录内写自动放行
-            if store.match(name, rel):
+            # 区外读只认 SQLite 目录授权表；不再用旧的 permissions.json 规则，
+            # 否则在「权限」页移除目录后，旧规则仍会悄悄放行。
+            if (inside or name not in READ_TOOLS) and store.match(name, rel):
                 continue                              # 命中 always 规则
             pending.append((name, rel))
         if not pending:
             return "allow", ""
         preview = self._approval_preview(name, args)
+        outside_reads = [
+            Path(rel) for tool, rel in pending
+            if tool in READ_TOOLS and not is_within(workspace, Path(rel))
+        ]
+        scopes = (self._read_approval_scopes(outside_reads)
+                  if outside_reads and len(outside_reads) == len(pending)
+                  else self._approval_scopes(pending))
         decision = self.session.request_approval(
             name, [str(p) for p in targets],
             preview=preview,
-            scopes=self._approval_scopes(pending),
+            scopes=scopes,
             cwd=str(cwd) if cwd is not None else "",
         )
         if decision.startswith("always"):
+            granted = False
             for tool, rel in pending:
+                target = Path(rel)
+                outside_read = (tool in READ_TOOLS and not is_within(workspace, target))
+                if outside_read:
+                    # 区外读由目录授权页统一管理；always_dir 落 SQLite，
+                    # 其他 always_* 不写旧 JSON 规则（避免页面移除后仍放行）。
+                    if decision == "always_dir":
+                        target_dir = target if target.is_dir() else target.parent
+                        r = grant_db.add_read(target_dir, source="approval")
+                        granted = granted or bool(r.get("ok"))
+                    continue
                 store.add(tool, self._scope_glob(rel, decision))
+            if granted:
+                self.session.push_event({"type": "permissions_update"})
             return "allow", ""
         if decision == "allow_once":
             return "allow", ""
@@ -332,6 +376,13 @@ class ApprovalMiddleware(AgentMiddleware):
         if decision == "stop":
             return "deny", "（用户中断了本次生成，操作已取消。）"
         return "deny", "（用户拒绝了此操作，已取消。）"
+
+    @staticmethod
+    def _read_approval_scopes(paths: list[Path]) -> list[dict]:
+        """工作区外读的授权范围：目录优先（递归），其次仅此文件。"""
+        p = paths[0]
+        d = p if p.is_dir() else p.parent
+        return [{"kind": "dir", "label": f"此目录（{d}）", "glob": str(d)}]
 
     @staticmethod
     def _scope_glob(rel: str, decision: str) -> str:
@@ -447,9 +498,9 @@ CHUNK_TOKEN_TARGET = 30000
 #: 分片大小浮动窗口（为对齐"用户消息边界"允许的大小范围）
 _CHUNK_FLOAT_LO = 0.75
 _CHUNK_FLOAT_HI = 1.4
-#: 一轮压缩里层级合并的批次上限 / 层数上限（防超大积压把一轮拖成几十分钟）
+#: 一轮压缩里层级合并的批次上限（防超大积压把一轮拖成几十分钟）；
+#: **不设置最大层数**——树可以持续向上合并，直到没有超过阈值的层级。
 _MAX_COMPACT_BATCHES_PER_ROUND = 8
-_MAX_COMPACT_LEVEL = 12
 
 
 def should_compress_raw(raw_msgs: list, keep: int, token_budget: int) -> bool:
@@ -554,142 +605,6 @@ class MemoryNodeOutput(BaseModel):
         return d
 
 
-#: 压缩输出的 JSON 形状示例（附加到指令末尾）：减少模型输出形状漂移
-#: （lessons 写成列表、user 写成字典 → pydantic 校验失败 → 重试一次 + 抠摘要，
-#: 每次叶子调用变成两次模型调用——2026-10-19 用户日志实测）
-_JSON_SKELETON = (
-    "\n**输出 JSON 的形状（键名与嵌套层级必须一致；数组是数组、对象是对象）**：\n"
-    '{"summary": "叙述文本", '
-    '"task": {"goal": "", "status": "", "todo": [], "next_steps": [], "blockers": []}, '
-    '"decisions": [{"what": "", "why": ""}], '
-    '"lessons": {"errors": [{"symptom": "", "cause": "", "fix": ""}], "patterns": []}, '
-    '"context": {"env": [], "commands": [], "artifacts": [], "constraints": []}, '
-    '"user": []}\n'
-    "（没有内容的字段按前文规则省略或留空；cwd 由系统填写，不用输出。）"
-)
-_JSON_SKELETON_EN = (
-    "\n**Output JSON shape (key names and nesting must match exactly; arrays are "
-    "arrays, objects are objects)**:\n"
-    '{"summary": "narrative", '
-    '"task": {"goal": "", "status": "", "todo": [], "next_steps": [], "blockers": []}, '
-    '"decisions": [{"what": "", "why": ""}], '
-    '"lessons": {"errors": [{"symptom": "", "cause": "", "fix": ""}], "patterns": []}, '
-    '"context": {"env": [], "commands": [], "artifacts": [], "constraints": []}, '
-    '"user": []}\n'
-    "(omit or leave empty fields per the rules above; cwd is filled by the system — "
-    "do not output it.)"
-)
-
-#: 叶子压缩的"范围"行（两种形态：整批/独立分片 = 普通；渐进前缀分片 = 锚点定位）
-_LEAF_SCOPE = (
-    "标有 {marker} 的节点是更早内容的已有摘要，**不要重新压缩、不要合并进结果**；"
-    "没有该标记的普通对话消息（第 {start}-{end} 条）才是本次要压缩的内容。\n"
-)
-_LEAF_SCOPE_CHUNK = (
-    "标有 {marker} 的节点是更早内容的已有摘要，**不要重新压缩、不要合并进结果**；"
-    "**本次只压缩输入末尾的一段原始对话**（第 {start}-{end} 条）：从这条消息开始"
-    "「{anchor}」，直到输入的最后一条消息（结尾是「{anchor_end}」）为止；"
-    "这段之前的原始对话只是更早的背景（用来理解上下文），**不要写进结果**。\n"
-)
-_LEAF_INSTRUCTION = (
-    "请把本次标记为待压缩的**原始对话**压缩为结构化 JSON（只输出 JSON，不要输出其他文字）。\n"
-    "**范围**：{scope}"
-    "{cwd_line}"
-    "{budget_line}"
-    "**各字段按实际内容填写：某个字段没有相关内容时——整个字段可以直接省略（省略即空），"
-    "不要写「无 / 暂无 / 没有相关信息」这类占位词，更不要为了填充而编造或硬凑空话："
-    "字段少而实，好过看起来齐全。**\n"
-    "字段说明：\n"
-    "1. summary：这段时间发生了什么——事件、进展、决定与对话进程（叙述；不要写成清单）。\n"
-    "2. task：目标 goal / 当前状态 status / 未完成待办 todo / 下一步 next_steps / 阻塞 blockers。\n"
-    "3. decisions：本段做出的关键决定；**每项都要写 why（为什么这样定）**。\n"
-    "4. lessons：errors（症状 symptom / 原因 cause / 修法 fix）+ patterns（可复用的成功做法）。\n"
-    "5. context：env 环境与配置、commands 关键命令（可逐字）、artifacts 文件/符号引用、"
-    "constraints 必须遵守的约束。\n"
-    "6. user：用户性格/偏好/习惯（含工作偏好：常用工具、代码风格、沟通习惯）；没有就留空数组。\n"
-    "**工具结果要高度压缩**：只提炼对后续有实际价值的结论/命令/报错/决定，"
-    "不要转述工具返回的原文细节（原文已随节点保存）。\n\n"
-    "请按以上要求给出压缩结果（JSON）："
-)
-
-_PARENT_INSTRUCTION = (
-    "请把以下 {n} 个节点（{ids}）压缩合并为**上一层节点**的结构化 JSON（只输出 JSON）。\n"
-    "**范围**：这些节点已去掉保护标记，是本次要合并的目标；若输入里还有其他带 "
-    "{marker} 标记的节点，**不要动它们**。\n"
-    "{budget_line}"
-    "**合并规则（逐字段）**：\n"
-    "- summary：把子节点叙述整合成一条阶段经过（保留主线与因果，不逐条罗列子事件）。\n"
-    "- task：以**最新状态**为准（覆盖旧的）；未完成的 todo/blocker 保留，已完成的坍缩为「已完成」。\n"
-    "- decisions：**累积去重**；保留仍然有效的 + 已被推翻的（注明被什么推翻）；why 不能丢。\n"
-    "- lessons：**抽象**——把具体错误/修法归纳为可复用规则/模式；重复出现的重要错误保留。\n"
-    "- context：并集去重，冲突取最新；**constraints 必须保留**（不随层级丢弃）。\n"
-    "- user：合并归纳，不重复不矛盾。\n"
-    "**没有相关信息的字段留空（也可以整个省略不写）；不要写「无 / 暂无」类占位词，"
-    "不要为了填充而编造、猜测或重复已有内容。**\n\n"
-    "请按以上要求给出压缩结果（JSON）："
-)
-
-# ── 英文压缩指令（评测用：LoCoMo-Refined 英文对话，session.summary_language="en"）──
-
-_LEAF_SCOPE_EN = (
-    "entries marked {marker} are summaries of earlier content — do NOT "
-    "re-compress them and do NOT merge them into the result; the unmarked raw messages "
-    "(turns {start}-{end}) are what you compress.\n"
-)
-_LEAF_SCOPE_CHUNK_EN = (
-    "entries marked {marker} are summaries of earlier content — do NOT re-compress them "
-    "and do NOT merge them into the result; **compress ONLY the final span of raw "
-    "conversation in the input** (turns {start}-{end}): it starts at this message "
-    "\"{anchor}\" and runs to the very last message of the input (ending with "
-    "\"{anchor_end}\"); everything before it is earlier background (for context only), "
-    "do NOT write it into the result.\n"
-)
-_LEAF_INSTRUCTION_EN = (
-    "Compress the **raw conversation** marked for compaction into structured JSON "
-    "(output ONLY JSON, no other text).\n"
-    "**Always write all field values in English.**\n"
-    "**Scope**: {scope}"
-    "{cwd_line}"
-    "{budget_line}"
-    "**Fill each field from actual content: if a field has nothing relevant, omit it entirely "
-    "(an omitted field counts as empty). Never write placeholders like \"none\", \"N/A\" or "
-    "\"nothing to report\", and never fabricate or pad just to fill fields — fewer, real "
-    "fields beat complete-looking ones.**\n"
-    "Fields:\n"
-    "1. summary: what happened in this span — events, progress, decisions and the flow of the conversation (a narrative, not a list).\n"
-    "2. task: goal / status / todo (open items) / next_steps / blockers.\n"
-    "3. decisions: key decisions made here; **always include why for each**.\n"
-    "4. lessons: errors (symptom / cause / fix) + patterns (reusable things that worked).\n"
-    "5. context: env (environment/config), commands (verbatim is fine), artifacts (file/symbol refs), "
-    "constraints (rules that must be obeyed).\n"
-    "6. user: the user's traits/preferences/habits (incl. working preferences such as tools, code style, "
-    "communication habits); empty array if none.\n"
-    "**Compress tool results heavily**: keep only conclusions/commands/errors/decisions of lasting value; "
-    "do not paraphrase verbatim tool output (the raw text is stored with the node).\n\n"
-    "Please give the compression result (JSON):"
-)
-
-_PARENT_INSTRUCTION_EN = (
-    "Merge the following {n} nodes ({ids}) into ONE **parent node** as structured JSON "
-    "(output ONLY JSON).\n"
-    "**Always write all field values in English.**\n"
-    "**Scope**: these nodes have no protection marker — they are the merge targets; if any other node "
-    "in the input carries the {marker} marker, do NOT touch it.\n"
-    "{budget_line}"
-    "**Merge rules (per field)**:\n"
-    "- summary: integrate the child narratives into one phase narrative (keep the through-line and causality, "
-    "do not list child events one by one).\n"
-    "- task: the LATEST state wins (supersede); keep unresolved todos/blockers, collapse completed ones to \"done\".\n"
-    "- decisions: accumulate and dedupe; keep both still-valid and overturned decisions (note what overturned them); never drop the why.\n"
-    "- lessons: abstract concrete errors/fixes into reusable rules/patterns; keep recurring important errors.\n"
-    "- context: union and dedupe, newest wins on conflicts; **constraints MUST be preserved** (never dropped by level).\n"
-    "- user: merge and consolidate; no duplicates or contradictions.\n"
-    "**Leave fields empty when there is nothing relevant (omitting the field is fine); no "
-    "placeholders like \"none\"/\"N/A\", no fabrication, guessing or repetition just to fill them.**\n\n"
-    "Please give the compression result (JSON):"
-)
-
-
 class SummarizationMiddleware(AgentMiddleware):
     """压缩 + 记忆树一体化（任务型 schema；见 docs/代码Agent-实施计划.md 六、七节）。
 
@@ -719,15 +634,15 @@ class SummarizationMiddleware(AgentMiddleware):
 
     def _leaf_instruction(self, start: int, end: int, anchor: str = "",
                           anchor_end: str = "") -> str:
-        """叶子压缩指令；anchor 非空 = 渐进前缀分片模式（头/尾锚点定位本片）。"""
-        tpl = _LEAF_INSTRUCTION_EN if self.language == "en" else _LEAF_INSTRUCTION
+        """叶子压缩指令（文本在 prompts/compress/）；anchor 非空 = 分片锚点模式。"""
+        lang = "en" if self.language == "en" else "zh"
         if anchor:
-            scope_tpl = (_LEAF_SCOPE_CHUNK_EN if self.language == "en"
-                         else _LEAF_SCOPE_CHUNK)
+            scope_name = f"compress/leaf_scope_chunk_{lang}"
         else:
-            scope_tpl = _LEAF_SCOPE_EN if self.language == "en" else _LEAF_SCOPE
-        scope = scope_tpl.format(marker=NODE_MARKER, start=start, end=end,
-                                 anchor=anchor, anchor_end=anchor_end)
+            scope_name = f"compress/leaf_scope_{lang}"
+        scope = prompt_loader.render(
+            scope_name, marker=NODE_MARKER, start=start, end=end,
+            anchor=anchor, anchor_end=anchor_end)
         cwd = self._current_cwd()
         if not cwd:
             cwd_line = ""
@@ -736,9 +651,10 @@ class SummarizationMiddleware(AgentMiddleware):
                         f"you don't need to): {cwd}\n")
         else:
             cwd_line = f"- 当前工作目录（系统会填进 context.cwd，你不用填）：{cwd}\n"
-        return tpl.format(scope=scope, cwd_line=cwd_line,
-                          budget_line=self._budget_line()) + (
-            _JSON_SKELETON_EN if self.language == "en" else _JSON_SKELETON)
+        return prompt_loader.render(
+            f"compress/leaf_{lang}", scope=scope, cwd_line=cwd_line,
+            budget_line=self._budget_line()) + prompt_loader.load(
+                f"compress/skeleton_{lang}")
 
     def _budget_line(self) -> str:
         """把 node_token_budget 写成模型可执行的**整节点总长度**预算。
@@ -754,17 +670,11 @@ class SummarizationMiddleware(AgentMiddleware):
         except (TypeError, ValueError):
             budget = 1000
         budget = max(200, budget)
-        if self.language == "en":
-            chars = int(budget * 3.5)
-        else:
-            chars = budget
-        if self.language == "en":
-            return (f"- **Length budget**: keep the whole node under ~{chars} characters "
-                    f"(summary ~{chars * 2 // 5}, all other fields ~{chars * 3 // 5}) — a "
-                    "ceiling, not a target: write less when there is less, never pad.\n")
-        return (f"- **长度预算**：整节点合计约 {chars} 字以内（summary 约 {chars * 2 // 5} 字，"
-                f"其余字段合计约 {chars * 3 // 5} 字）——这是上限不是目标：内容少就写短，"
-                "不要为了凑字数展开细节。\n")
+        lang = "en" if self.language == "en" else "zh"
+        chars = int(budget * 3.5) if self.language == "en" else budget
+        return prompt_loader.render(
+            f"compress/budget_{lang}", chars=chars,
+            summary=chars * 2 // 5, rest=chars * 3 // 5)
 
     def _current_cwd(self) -> str:
         """当前工作目录字符串（无工作区时为空；节点记录用，代码填写防幻觉）。"""
@@ -791,10 +701,11 @@ class SummarizationMiddleware(AgentMiddleware):
         return "；".join(vals[:3]) + "…"
 
     def _parent_instruction(self, ids: list[str]) -> str:
-        tpl = _PARENT_INSTRUCTION_EN if self.language == "en" else _PARENT_INSTRUCTION
-        base = tpl.format(marker=NODE_MARKER, n=len(ids), ids="、".join(ids),
-                          budget_line=self._budget_line())
-        return base + (_JSON_SKELETON_EN if self.language == "en" else _JSON_SKELETON)
+        lang = "en" if self.language == "en" else "zh"
+        base = prompt_loader.render(
+            f"compress/parent_{lang}", marker=NODE_MARKER, n=len(ids),
+            ids="、".join(ids), budget_line=self._budget_line())
+        return base + prompt_loader.load(f"compress/skeleton_{lang}")
 
     def before_model(self, state: PlannerState, runtime: Runtime) -> dict | None:
         # 压缩已改为异步线程（session._maybe_compress_async / _run_async_compression）：
@@ -833,18 +744,22 @@ class SummarizationMiddleware(AgentMiddleware):
 
         # 层级合并：某层活跃节点数 ≥ 阈值 → 把最早的 factor 个合并成 1 个父节点。
         # **持续合并到低于阈值**（旧行为每轮每层只合一批：10 个节点(6/3) 只合 3 个、
-        # 剩 7 个仍超阈值挂到下一轮——用户指出）；每轮批次/层数有上限防积压跑飞。
+        # 剩 7 个仍超阈值挂到下一轮——用户指出）；每轮批次有上限防积压跑飞。
         tree = self.session.get_memory_tree()
         level = 0
         batches = 0
-        while (level <= _MAX_COMPACT_LEVEL
-               and batches < _MAX_COMPACT_BATCHES_PER_ROUND):
-            if tree.get_level_count(level) < threshold:
+        # 没有硬编码最大层数：先取当前最高活跃层；每合并出一层父节点，
+        # max_level 随之更新，直到所有层都低于阈值（或本轮批次用完）。
+        max_level = tree.get_max_level()
+        while batches < _MAX_COMPACT_BATCHES_PER_ROUND:
+            while level <= max_level and tree.get_level_count(level) < threshold:
                 level += 1
-                continue
+            if level > max_level:
+                break
             if not self._compact_level(msgs, level, removes, adds, threshold, factor):
                 break
             batches += 1
+            max_level = max(max_level, tree.get_max_level())
 
         return removes, adds
 
@@ -1353,15 +1268,22 @@ class SummarizationMiddleware(AgentMiddleware):
 
     @staticmethod
     def _apply_budget(out: MemoryNodeOutput, budget: int) -> MemoryNodeOutput:
-        """节点预算软裁剪（硬上限由压缩模型 max_tokens 承担）。
+        """节点预算兜底裁剪（硬上限由压缩模型 max_tokens 承担）。
 
         预算口径 = **整节点目标字数**（中文设置值≈字数；见 `_budget_line`）。
-        这里对 summary 与各列表做兜底截断：summary ≤ 1×预算，避免单节点膨胀。
-        弱模型偶尔写超长；指令已要求按预算写，截断只是保险。
+        指令已要求按预算写，但模型经常写超 3~5 倍（用户实测 700 预算出 3~5k），
+        所以这里做**总量硬兜底**：
+        1) summary ≤ 60% 预算；
+        2) 逐项限宽限数（单项 ≤200 字、≤8 条）；
+        3) 总字数 > 1.1×预算时，按"最不关键→最关键"轮转删列表尾部
+           （env → commands → artifacts → patterns → next_steps → todo →
+           blockers → user → decisions → lessons.errors → constraints 最后），
+           列表删空仍超才截 summary。
         """
-        cap = max(200, int(budget or 1000))
-        if len(out.summary) > cap:
-            out.summary = out.summary[:cap].rstrip() + "…"
+        budget = max(200, int(budget or 1000))
+        cap_summary = max(150, int(budget * 0.6))
+        if len(out.summary) > cap_summary:
+            out.summary = out.summary[:cap_summary].rstrip() + "…"
 
         def _clip(items, n: int = 8, width: int = 200) -> list[str]:
             return [str(x)[:width] for x in list(items or [])[:n] if x]
@@ -1381,6 +1303,40 @@ class SummarizationMiddleware(AgentMiddleware):
         c.env, c.commands = _clip(c.env), _clip(c.commands)
         c.artifacts, c.constraints = _clip(c.artifacts), _clip(c.constraints)
         out.user = _clip(out.user, n=12)
+
+        def total_chars() -> int:
+            n = len(out.summary) + len(t.goal) + len(t.status)
+            for lst in (t.todo, t.next_steps, t.blockers,
+                        c.env, c.commands, c.artifacts, c.constraints,
+                        out.lessons.patterns, out.user):
+                n += sum(len(str(x)) for x in lst)
+            n += sum(len(d.what) + len(d.why) for d in out.decisions)
+            n += sum(len(e.symptom) + len(e.cause) + len(e.fix)
+                     for e in out.lessons.errors)
+            return n
+
+        limit = int(budget * 1.1)
+        total = total_chars()
+        # 按"最不关键→最关键"整组牺牲：前一组删空才动下一组，
+        # 保证 constraints / decisions / lessons 尽量完整。
+        groups = [c.env, c.commands, c.artifacts, out.lessons.patterns,
+                  t.next_steps, t.blockers, out.user, t.todo,
+                  out.decisions, out.lessons.errors, c.constraints]
+        while total > limit:
+            progressed = False
+            for lst in groups:
+                if total <= limit:
+                    break
+                while lst and total > limit:
+                    lst.pop()
+                    progressed = True
+                    total = total_chars()
+            if not progressed:
+                break
+        if total > limit:
+            over = total - limit
+            keep = max(120, len(out.summary) - over - 1)
+            out.summary = out.summary[:keep].rstrip() + "…"
         return out
 
     # ── 压缩请求 ────────────────────────────────────────────

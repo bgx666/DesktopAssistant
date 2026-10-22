@@ -746,3 +746,30 @@ def test_drop_superseded_node_messages(data_root):
         assert len(s.recent_buffer) == 2
     finally:
         s.close()
+
+
+def test_compaction_has_no_hard_level_cap(data_root, monkeypatch):
+    """层级合并不能卡在硬编码的最大层；读到多深就处理到多深。"""
+    s = PlannerSession(data_root, mock=True)
+    try:
+        class FakeTree:
+            def get_max_level(self):
+                return 14
+
+            def get_level_count(self, level):
+                return 8 if level == 14 else 0
+
+        monkeypatch.setattr(s, "get_memory_tree", lambda: FakeTree())
+        comp = SummarizationMiddleware(s)
+        calls = []
+
+        def fake_compact(msgs, level, removes, adds, threshold=None, factor=None):
+            calls.append(level)
+            return True
+
+        monkeypatch.setattr(comp, "_compact_level", fake_compact)
+        comp.compress_snapshot([])
+        assert 14 in calls
+        assert len(calls) <= 8   # 每轮批次上限仍保留，防止单轮跑飞
+    finally:
+        s.close()

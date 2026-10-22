@@ -37,7 +37,14 @@ html, body {
   color: #1b1d23;
   white-space: pre-wrap;      /* 完整显示，长文本自动撑高（窗口随内容自适应） */
   word-break: break-word;
+  /* 高度随内容增长到上限（430）；再长就在内部滑动，不硬截断。
+     不显示滚动条（用户反馈：气泡里出现滚动条不好看）。 */
+  max-height: 430px;
+  overflow-y: auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
 }
+#toast-text::-webkit-scrollbar { display: none; width: 0; height: 0; }
 
 /* 轻量 markdown（与面板聊天区一致的渲染样式） */
 #toast-text strong { font-weight: 700; }
@@ -67,7 +74,9 @@ html, body {
   max-width: 100%;
   overflow-x: auto;
   white-space: normal;
+  scrollbar-width: none;
 }
+#toast-text .md-table-wrap::-webkit-scrollbar { display: none; width: 0; height: 0; }
 #toast-text .md-table {
   border-collapse: collapse;
   min-width: 100%;

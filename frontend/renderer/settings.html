@@ -136,6 +136,7 @@
       <button class="tab" data-tab="compress">记忆压缩</button>
       <button class="tab" data-tab="llm">LLM API</button>
       <button class="tab" data-tab="workspace">代码工作区</button>
+      <button class="tab" data-tab="white">子代理</button>
     </aside>
 
     <main>
@@ -311,7 +312,9 @@
           </div>
           <div class="row">
             <span class="hint" style="width:100%">
-              提示：工作区变更后「保存设置」才生效；已记住的「记住并允许」规则见 <code>data/permissions.json</code>。
+              提示：工作区变更后「保存设置」才生效；目录只读授权在左上「权限」页管理
+              （<code>data/permissions.db</code>），旧版「记住并允许」的单文件/命令规则见
+              <code>data/permissions.json</code>。
             </span>
           </div>
         </section>
@@ -326,6 +329,38 @@
           </div>
           <div class="row">
             <button class="mini" id="perm-clear" type="button">清空全部规则</button>
+          </div>
+        </section>
+      </div>
+
+      <div class="pane" data-pane="white">
+        <section>
+          <h2>子代理 White</h2>
+          <div class="row">
+            <label>启用 White</label>
+            <label class="switch">
+              <input type="checkbox" id="white_enabled" checked />
+              <span class="slider"></span>
+            </label>
+            <span class="hint">后台独立执行任务（无长期记忆；只能在主工作区内读写，不能执行命令）</span>
+          </div>
+          <div class="row">
+            <label>单轮最多模型调用</label>
+            <input type="number" id="white_max_steps" min="5" max="100" step="5" />
+            <span class="hint">White 一轮任务最多调用几次模型（默认 30）</span>
+          </div>
+          <div class="row">
+            <label>单轮超时（分钟）</label>
+            <input type="number" id="white_timeout_minutes" min="1" max="120" step="1" />
+            <span class="hint">超过后自动停止（默认 10）</span>
+          </div>
+          <div class="row">
+            <label>上下文预算</label>
+            <input type="number" id="white_context_tokens" min="10000" max="120000" step="10000" />
+            <span class="hint">White 上下文超过该估算 token 后摘要 + 滑动窗口（默认 60000）</span>
+          </div>
+          <div class="hint" style="width:100%">
+            White 与主助手使用同一个工作区；文件操作只能在主工作区内，越界直接拒绝；不能执行命令（MVP）。
           </div>
         </section>
       </div>

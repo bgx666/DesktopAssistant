@@ -1,0 +1,1 @@
+[{time}]{gap} {player}对你说：{text}

@@ -22,6 +22,10 @@
 - llm_model_deepseek / llm_model_opencode       各服务商选用的模型（空 = 用预设默认）
 - llm_base_url_deepseek / llm_base_url_opencode 端点覆盖（留空 = 用预设端点）
 - llm_api_key        旧字段：DeepSeek Key 的历史兜底（读取兼容，UI 已改为分服务商）
+- white_enabled      是否启用 White 子代理（后台独立执行任务）
+- white_max_steps    White 单轮任务最多模型调用次数
+- white_timeout_minutes  White 单轮任务超时（分钟）
+- white_context_tokens   White 上下文预算（超过后摘要 + 滑动窗口）
 """
 
 from __future__ import annotations
@@ -61,6 +65,11 @@ DEFAULT_SETTINGS: dict = {
     "tts_enabled": True,
     "tts_engine": "",          # 留空 = 跟随环境变量 PLANNER_TTS_ENGINE；local / mimo / cloud
     "tts_voice": "zf_001",
+    # 子代理 White（后台、无长期记忆；只在主工作区内读写、不能执行命令）
+    "white_enabled": True,
+    "white_max_steps": 30,
+    "white_timeout_minutes": 10,
+    "white_context_tokens": 60000,
 }
 
 # 数值范围护栏（前端输入 + POST 双重校验）
@@ -74,10 +83,13 @@ _LIMITS = {
     "node_token_budget": (200, 4000),
     "approval_timeout_seconds": (60, 600),
     "model_call_limit": (10, 500),
+    "white_max_steps": (5, 100),
+    "white_timeout_minutes": (1, 120),
+    "white_context_tokens": (10000, 120000),
 }
 
 # 布尔字段（前端可能传字符串，统一归一为 bool）
-_BOOLS = {"tts_enabled", "code_read_outside_workspace"}
+_BOOLS = {"tts_enabled", "code_read_outside_workspace", "white_enabled"}
 
 # 列表字段（字符串数组；去重、截断上限）
 _LISTS = {"workspace_recent": 8}

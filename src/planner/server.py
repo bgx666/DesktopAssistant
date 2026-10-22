@@ -24,6 +24,8 @@
 - POST /changes/rollback 回退到某条变更之前（{id}）
 - POST /changes/clear 清空变更历史（不动文件）
 - POST /permissions/delete|clear 「记住并允许」规则管理
+- GET  /dir-permissions 目录读授权列表（递归合并）
+- POST /dir-permissions/add|remove|clear 目录读授权管理
 """
 
 from __future__ import annotations
@@ -41,6 +43,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from . import config as _config
+from . import prompt_loader
 from .content import content_text
 from .session import BACKEND_TAG, CHARACTER_ID, DISPLAY_NAME, PLAYER_NAME, PlannerSession
 
@@ -140,8 +143,9 @@ class _Handler(BaseHTTPRequestHandler):
         """
         now = datetime.now(timezone(timedelta(hours=8))).strftime("%H:%M")
         self.session._receive(
-            f"[{now}]（系统：{PLAYER_NAME}{what}。这是他自己在日历页改的，不用特地回应。）",
-            trigger=False)
+            prompt_loader.render("runtime/calendar_edit", time=now,
+                                 player=PLAYER_NAME, what=what),
+            trigger=False, injected=True, kind="calendar_edit")
 
     def log_message(self, fmt, *args):  # 静默默认 stderr 访问日志，走 logging
         _logger.debug("[http] %s - %s", self.address_string(), fmt % args)
@@ -161,6 +165,8 @@ class _Handler(BaseHTTPRequestHandler):
                 "asr": {"enabled": self.session.asr.enabled,
                         "ready": self.session.asr.ready},
             })
+        elif path == "/agents":
+            self._send_json(self.session.agents_status())
         elif path == "/state":
             self._send_json({"ok": True, "state": self.session.state_dict()})
         elif path == "/settings":
@@ -176,6 +182,15 @@ class _Handler(BaseHTTPRequestHandler):
                              "recent": list(s.get("workspace_recent") or []),
                              "permission_mode": str(s.get("permission_mode") or "ask"),
                              "rules": PermissionStore(self.session.data_root).load()})
+        elif path == "/dir-permissions":
+            # 目录只读授权（递归；独立于 permissions.json 的「记住并允许」规则）
+            s = self.session.settings
+            ws = str(s.get("workspace_root") or "").strip()
+            self._send_json({
+                "ok": True,
+                "grants": self.session.get_permission_db().list_effective(),
+                "workspace": ws,
+            })
         elif path == "/workspace/dirs":
             # 工作目录面板：列某个目录的直接子目录（仅工作区内；path 相对当前目录）
             query = parse_qs(parsed.query)
@@ -318,7 +333,8 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json({"ok": False, "error": "bad_path"}, status=400)
                 return
             allowed_roots = [Path(str(self.session.data_root)) / "tool_results",
-                             Path(str(self.session.data_root)) / "images"]
+                             Path(str(self.session.data_root)) / "images",
+                             Path(str(self.session.data_root)) / "attachments"]
             ws_raw = str(self.session.settings.get("workspace_root") or "").strip()
             if ws_raw:
                 try:
@@ -431,6 +447,11 @@ class _Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
         elif path == "/history":
+            # 子代理 White 的独立历史（前端 White 标签页用）
+            q = parse_qs(parsed.query)
+            if (q.get("agent") or [""])[0] == "white":
+                self._send_json(self.session.white_history())
+                return
             # 对话历史（渲染聊天区用）：玩家消息 / 小助回复 / 工具卡片，
             # 以及压缩节点（role=memory，早期对话的记忆摘要，显示在对话框顶部）
             msgs = []
@@ -464,28 +485,44 @@ class _Handler(BaseHTTPRequestHandler):
                 if not content and not tool_calls and not tool_ref:
                     continue
                 if role == "human":
-                    # 只有**真正的回合边界**才 flush / 更新自主标记：view_image 注入
-                    # （这是小助读取的图片…）、[当前议程]、历史遗留的 nudge 提示
-                    # （（你已经忙了一小会儿了…），中间件已移除但旧 buffer 里还有）
-                    # 都是**回合中途**的注入——当成边界会把一个回合的改动切成多个块
-                    # （用户实测），也会把玩家回合误判成自主回合（最终回复不出块）
-                    is_real_user = ("对你说：" in content
-                                    or (not content.startswith("（")
-                                        and not content.startswith("[")))
-                    is_system_start = content.startswith("（系统：")
+                    # 只有**真正的回合边界**才 flush / 更新自主标记：
+                    # - 真实用户消息（不带 injected 标记，且有「对你说：」）；
+                    # - 系统回合起点（心跳/日历到点/逾期，metadata.kind 显式标注；
+                    #   旧 buffer 按「（系统：」前缀兜底）。
+                    # 图片注入、戳一戳、日历页编辑等是**回合中途**注入，不能切块。
+                    injected = bool(meta.get("injected"))
+                    kind = str(meta.get("kind") or "")
+                    is_real_user = (not injected) and (
+                        "对你说：" in content
+                        or (not content.startswith("（")
+                            and not content.startswith("[")))
+                    is_system_start = (
+                        ((injected and kind in ("heartbeat", "calendar_due",
+                                                "calendar_overdue"))
+                         or content.startswith("（系统：")))
                     if is_real_user or is_system_start:
                         _flush_changed()   # 回合边界：上一段未出块的改动先统一落块
                         turn_autonomous = not is_real_user
-                    # 内部注入（[当前待办]/[早晨]/[提醒]/（心跳…））
-                    if content.startswith("（") or content.startswith("[当前"):
+                    # 内部注入（[当前待办]/[早晨]/[提醒]/（心跳…））不显示在对话区
+                    if (injected or content.startswith("（")
+                            or content.startswith("[当前")):
                         continue
+                    # v0.1.295 之前的旧消息没有 metadata.attachments：从注入说明里
+                    # 解析附件，并把说明从气泡正文剥离（否则用户看到一串路径）。
+                    legacy_atts = []
+                    if not meta.get("display_text") and "【拖入的文件】" in content:
+                        content, legacy_atts = self.session.split_legacy_attachments(content)
                     if content.startswith("["):
                         if "对你说：" in content:
                             content = content.split("对你说：", 1)[1]
                         else:
                             continue
+                    # 用户消息展示原文（去掉注入的附件说明），附件单独给前端渲染
+                    if meta.get("display_text"):
+                        content = str(meta["display_text"])
                     msgs.append({"role": "user", "content": content,
-                                 "id": getattr(m, "id", None) or ""})
+                                 "id": getattr(m, "id", None) or "",
+                                 "attachments": meta.get("attachments") or legacy_atts})
                 elif role == "ai":
                     # 思考过程（持久化在 additional_kwargs）：独立条目，前端渲染成
                     # 折叠单行的思考行（历史重建与实时 thinking_stream 同一套样式）
@@ -547,8 +584,12 @@ class _Handler(BaseHTTPRequestHandler):
             if not message and not files:
                 self._send_json({"ok": False, "error": "bad_request"}, status=400)
                 return
-            msg_id = self.session.enqueue_player_message(message, files)
-            self._send_json({"ok": True, "msg_id": msg_id})
+            msg_id = self.session.enqueue_player_message(message, files,
+                                                         with_meta=True)
+            if isinstance(msg_id, dict):
+                self._send_json({"ok": True, **msg_id})
+            else:
+                self._send_json({"ok": True, "msg_id": msg_id})
         elif path == "/undo":
             body = self._read_json_body()
             msg_id = str(body.get("msg_id", "") or "").strip()
@@ -664,9 +705,13 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json({"ok": False, "error": str(exc)}, status=400)
                 return
             self._send_json({"ok": True, "settings": settings})
+        elif path == "/white/stop":
+            self._send_json(self.session.white_stop())
         elif path == "/nudge":
             now = datetime.now(timezone(timedelta(hours=8))).strftime("%H:%M")
-            self.session._receive(f"[{now}] {PLAYER_NAME}戳了戳你，想看看你在忙什么。", trigger=True)
+            self.session._receive(
+                f"[{now}] {PLAYER_NAME}戳了戳你，想看看你在忙什么。",
+                trigger=True, injected=True, kind="nudge")
             self.session._spawn_worker("nudge")
             self._send_json({"ok": True})
         elif path == "/asr":
@@ -681,7 +726,8 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             self._send_json({"ok": True, "text": text})
         elif path == "/toggle_mock":
-            mode = self.session.toggle_mock()
+            body = self._read_json_body()
+            mode = self.session.toggle_mock(str(body.get("mode") or ""))
             self._send_json({"ok": True, "mode": mode})
         elif path == "/workspace":
             body = self._read_json_body()
@@ -803,6 +849,33 @@ class _Handler(BaseHTTPRequestHandler):
         elif path == "/changes/clear":
             self.session.get_changes_db().clear()
             self._send_json({"ok": True})
+        elif path == "/dir-permissions/add":
+            body = self._read_json_body()
+            raw = str(body.get("path") or "").strip()
+            r = self.session.get_permission_db().add_read(raw, source="user")
+            if not r.get("ok"):
+                self._send_json(r, status=400)
+                return
+            self.session.push_event({"type": "permissions_update"})
+            self._send_json({"ok": True, **r})
+        elif path == "/dir-permissions/remove":
+            body = self._read_json_body()
+            try:
+                gid = int(body.get("id"))
+            except (TypeError, ValueError):
+                self._send_json({"ok": False, "error": "bad_id"}, status=400)
+                return
+            db = self.session.get_permission_db()
+            if not db.remove(gid):
+                self._send_json({"ok": False, "error": "not_found"}, status=404)
+                return
+            self.session.push_event({"type": "permissions_update"})
+            self._send_json({"ok": True, "grants": db.list_effective()})
+        elif path == "/dir-permissions/clear":
+            db = self.session.get_permission_db()
+            db.clear()
+            self.session.push_event({"type": "permissions_update"})
+            self._send_json({"ok": True, "grants": []})
         elif path == "/permissions/delete":
             from .workspace import PermissionStore
             body = self._read_json_body()

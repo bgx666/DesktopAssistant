@@ -24,6 +24,8 @@
       <!-- 标题栏（可拖拽） -->
       <header id="titlebar">
         <div id="logo"><span class="dot"></span><span id="title">小助</span></div>
+        <!-- Agent 切换（主助手 / White）：放在标题栏，启动即显示，不占单独一行 -->
+        <div id="agent-bar" class="hidden"></div>
         <div id="status">
           <span id="compressing" class="hidden">压缩记忆中…</span>
           <span id="thinking" class="hidden">思考中…</span>
@@ -55,11 +57,22 @@
         <button class="tab active" data-tab="chat">聊天</button>
         <button class="tab" data-tab="calendar">日历<span id="agenda-badge" class="badge hidden"></span></button>
         <button class="tab" data-tab="changes">变更</button>
+        <button class="tab" data-tab="permissions">权限</button>
       </nav>
 
       <!-- 聊天 -->
       <section id="chat" class="view active">
         <div id="messages"></div>
+        <!-- White 子代理视图（只读；用户只和主助手对话） -->
+        <div id="white-view" class="hidden">
+          <div id="white-head">
+            <div id="white-title">White <span id="white-state">空闲</span></div>
+            <div id="white-task"></div>
+            <button id="white-stop" type="button" class="hidden">停止</button>
+          </div>
+          <div id="white-messages"></div>
+          <button id="white-jump" type="button" class="hidden" title="回到最新">↓</button>
+        </div>
         <audio id="tts-audio" hidden></audio>
         <div id="at-list" class="hidden"></div>
         <button id="jump-bottom" class="hidden" title="回到最新消息">↓</button>
@@ -122,6 +135,21 @@
         <div id="changes-hint">
           「回退到此条之前」= 撤销该条及之后的所有变更（按新→旧逐个恢复文件内容）；
           标「未留底」的大文件无法回退。
+        </div>
+      </section>
+
+      <!-- 目录读取授权（递归；独立页面；写权限仍只在工作区） -->
+      <section id="permissions" class="view">
+        <div id="perm-page-bar">
+          <span id="perm-page-title">目录读取授权（递归包含子目录）</span>
+          <button id="perm-page-refresh" type="button" title="刷新">刷新</button>
+          <button id="perm-page-add" type="button" title="添加一个只读目录">＋ 添加目录…</button>
+        </div>
+        <div id="perm-page-note" class="hint"></div>
+        <div id="perm-page-list"></div>
+        <div class="hint" id="perm-page-foot">
+          授权只读目录后，小助可以直接读取该目录及其子目录；写权限仍然只允许当前工作目录。
+          助手也可以调用 request_read_permission 向你申请目录读权限。
         </div>
       </section>
 
@@ -194,6 +222,7 @@
     <div class="approval-card">
       <div class="approval-title">小助请求执行操作</div>
       <div class="approval-tool" id="approval-tool"></div>
+      <div class="approval-agent hidden" id="approval-agent"></div>
       <div class="approval-paths" id="approval-paths"></div>
       <pre class="approval-preview hidden" id="approval-preview"></pre>
       <div class="approval-scopes hidden" id="approval-scopes"></div>

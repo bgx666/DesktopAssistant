@@ -24,6 +24,8 @@ from pathlib import Path
 from langchain_core.messages import BaseMessage, HumanMessage, ToolMessage
 
 from . import config as _config
+from . import prompt_loader
+from .agent_context import current_agent
 from .asr import AsrClient
 from .llm import (
     MockChatModel,
@@ -45,6 +47,7 @@ _logger = logging.getLogger("planner.session")
 CHARACTER_ID = "assistant"
 DISPLAY_NAME = "小助"
 PLAYER_NAME = "用户"
+WHITE_NAME = "White"
 BACKEND_TAG = "planner/1"
 
 _TZ = timezone(timedelta(hours=8))
@@ -176,8 +179,8 @@ class PlannerSession:
         # 已压缩进记忆树的消息累计条数（持久化）：压缩节点 round_range 用
         # 全局序号（小B _span 机制的对齐），多次压缩范围连续不重叠
         self._compressed_total: int = 0
-        # 停止请求（用户点"停止"打断当前生成）：after_model/before_model
-        # 中间件检查后跳转 end；每次生成开始时重置
+        # 停止请求（用户点"停止"）：立即关闭在途模型 root_client + 杀 run_command；
+        # 工具写文件先完成，已有消息保留，半句不落 buffer；每次生成开始时重置
         self._stop_requested: bool = False
         # 正在执行的 run_command 子进程（停止/关闭时杀整棵进程树，防留孤儿）
         self._run_proc = None
@@ -194,6 +197,10 @@ class PlannerSession:
         self._agent_obj = None
         self._system_prompt: str = ""
         self._changes_db = None   # 文件变更历史（代码工作区写操作留底）
+        self._permission_db = None   # 目录读授权（SQLite）
+        # 子代理 White（按需创建；同一时间一个；关闭后丢弃）
+        self._white = None
+        self._white_lock = threading.RLock()
 
         self._system_prompt = self._build_system_prompt()
         self.get_memory_tree()          # 确保 db 文件落盘
@@ -254,23 +261,30 @@ class PlannerSession:
             pass
         return sid
 
+    def build_llm(self):
+        """新建一个独立的聊天模型实例（主助手/White 各用各的客户端）。
+
+        独立实例让「停止」可以只关闭自己的 root_client，立即中断在途 HTTP
+        请求，而不会误伤另一个 agent 或压缩模型。
+        """
+        if self.mock:
+            return MockChatModel(session=self)
+        s = self.settings
+        cfg = resolve_llm_config(s)
+        return build_chat_model(
+            api_key=cfg["api_key"] or None,
+            base_url=cfg["base_url"] or None,
+            model_name=cfg["model"] or None,
+            # 思考开关与强度（设置页可改，见 settings.py 的 _ENUMS）
+            thinking_mode=s.get("thinking_mode"),
+            reasoning_effort=s.get("reasoning_effort"),
+            provider=cfg["provider"],
+            session_id=self.llm_session_id(),
+        )
+
     def _get_llm(self):
         if self._llm is None:
-            if self.mock:
-                self._llm = MockChatModel(session=self)
-            else:
-                s = self.settings
-                cfg = resolve_llm_config(s)
-                self._llm = build_chat_model(
-                    api_key=cfg["api_key"] or None,
-                    base_url=cfg["base_url"] or None,
-                    model_name=cfg["model"] or None,
-                    # 思考开关与强度（设置页可改，见 settings.py 的 _ENUMS）
-                    thinking_mode=s.get("thinking_mode"),
-                    reasoning_effort=s.get("reasoning_effort"),
-                    provider=cfg["provider"],
-                    session_id=self.llm_session_id(),
-                )
+            self._llm = self.build_llm()
         return self._llm
 
     def _get_summary_model(self):
@@ -411,9 +425,16 @@ class PlannerSession:
         _logger.info("[settings] 设置已保存并应用: %s", {k: self.settings[k] for k in updates if k in self.settings})
         return dict(self.settings)
 
-    def toggle_mock(self) -> str:
-        """运行时切换 Mock/真实 LLM。返回切换后的模式。"""
-        self.mock = not self.mock
+    def toggle_mock(self, mode: str | None = None) -> str:
+        """运行时切换 Mock/真实 LLM。返回切换后的模式。
+
+        mode 传 "mock"/"llm" 时直接设为该模式（幂等，供测试/脚本用）；
+        留空则翻转（旧前端行为）。
+        """
+        if str(mode or "").strip().lower() in ("mock", "llm"):
+            self.mock = str(mode).strip().lower() == "mock"
+        else:
+            self.mock = not self.mock
         self.mode = "mock" if self.mock else "llm"
         self._llm = None
         self._summary_model = None
@@ -433,17 +454,81 @@ class PlannerSession:
             self._changes_db = ChangesDb(self.data_root)
         return self._changes_db
 
+    def get_permission_db(self):
+        """目录读授权库（SQLite；懒加载，短连接）。"""
+        if self._permission_db is None:
+            from .permissions import PermissionDb
+            self._permission_db = PermissionDb(self.data_root)
+        return self._permission_db
+
+    # ── 子代理 White（按需创建；同一时间一个）────────────────
+
+    def get_white_agent(self, create: bool = True):
+        with self._white_lock:
+            if self._white is None and create:
+                from .white_agent import WhiteAgent
+                self._white = WhiteAgent(self)
+            return self._white
+
+    def drop_white(self, agent=None) -> None:
+        with self._white_lock:
+            if agent is None or self._white is agent:
+                self._white = None
+
+    def agents_status(self) -> dict:
+        with self._white_lock:
+            w = self._white
+        agents = [{"id": "main", "name": DISPLAY_NAME,
+                   "status": "running" if self._generating else "idle",
+                   "pending_approvals": sum(
+                       1 for a in self.pending_approvals.values()
+                       if a.get("agent") in (None, "main"))}]
+        if w is not None:
+            agents.append(w.status_dict())
+        elif self.settings.get("white_enabled", True):
+            # White 标签页常驻：未派过任务时也显示（灰色呼吸灯），方便用户主动查看
+            agents.append({"id": "white", "name": WHITE_NAME,
+                           "status": "idle", "task": "", "started_at": 0,
+                           "finished_at": 0, "result": None,
+                           "pending_approvals": 0, "placeholder": True})
+        return {"ok": True, "agents": agents,
+                "white_enabled": bool(self.settings.get("white_enabled", True))}
+
+    def white_history(self) -> dict:
+        with self._white_lock:
+            w = self._white
+        if w is None:
+            return {"ok": True, "messages": [], "status": None}
+        return {"ok": True, "messages": w.history(), "status": w.status_dict()}
+
+    def white_stop(self) -> dict:
+        with self._white_lock:
+            w = self._white
+        if w is None:
+            return {"ok": False, "error": "no_white"}
+        return {"ok": True, **w.stop()}
+
     def close(self) -> None:
-        """优雅关闭：停调度 → 杀执行中的命令 → 等生成中的 worker 结束 → 等后台压缩 → 落盘 → 关库。"""
+        """优雅关闭：停调度 → 中断模型/杀命令 → 等生成中的 worker 结束 → 等后台压缩 → 落盘 → 关库。"""
         self.stop_heartbeat()
         self.kill_run_proc()
+        self._closing = True
+        self._abort_llm()
         try:
             with self.chat_lock:  # 等待在途生成完成（worker 持锁期间）
                 pass
         except Exception:
             pass
         # 等待后台压缩线程结束：否则它可能并发关闭 sqlite 连接 → 原生崩溃
-        self._closing = True
+        # 子代理 White：停止并请求关闭（它没有命令进程，不会被强杀阻塞）
+        w = self._white
+        if w is not None:
+            try:
+                w.stop_event.set()
+                w._close_requested = True
+                w._abort_model()
+            except Exception:
+                pass
         deadline = time.time() + 15
         while self._compressing and time.time() < deadline:
             time.sleep(0.05)
@@ -474,10 +559,11 @@ class PlannerSession:
     def _build_system_prompt(self) -> str:
         """角色卡 +（启用代码工作区时）工作区段 + 仓库 AGENTS.md + 当前目录内容。
 
-        工作区段占位符：{workspace} / {cwd} / {permission_mode}；
-        顶层文件树注入的是**当前工作目录**（cwd）的内容，不是工作区根。
+        工作区段占位符：{workspace} / {cwd} / {permission_mode}；顶层文件树注入的
+        是**当前工作目录**（cwd）的内容，不是工作区根。提示词文本统一放在
+        `prompts/`（加载入口 `prompt_loader`）。
         """
-        text = (_config.PROMPTS_DIR / "system.md").read_text(encoding="utf-8")
+        text = prompt_loader.load("system")
         ws = str(self.settings.get("workspace_root") or "").strip()
         if not ws:
             return text
@@ -485,13 +571,12 @@ class PlannerSession:
         cwd_str = str(cwd) if cwd is not None else ws
         mode = str(self.settings.get("permission_mode") or "ask").strip().lower()
         parts = [text.rstrip()]
-        ws_file = _config.PROMPTS_DIR / "workspace.md"
-        if ws_file.exists():
-            section = (ws_file.read_text(encoding="utf-8")
-                       .replace("{workspace}", ws)
-                       .replace("{cwd}", cwd_str)
-                       .replace("{permission_mode}", mode))
+        try:
+            section = prompt_loader.render(
+                "workspace", workspace=ws, cwd=cwd_str, permission_mode=mode)
             parts.append(section.strip())
+        except prompt_loader.PromptNotFound:
+            pass
         # 仓库约定：工作区根 + 当前目录（不同则都读；各限 8KB）
         agents_bases: list[Path] = []
         for base in (Path(ws), cwd):
@@ -646,13 +731,15 @@ class PlannerSession:
         entry = {"id": req_id, "tool": tool, "paths": list(paths),
                  "preview": str(preview or ""), "scopes": list(scopes or []),
                  "cwd": str(cwd or ""), "timeout": timeout,
+                 "agent": current_agent(),
                  "event": ev, "decision": ""}
         with self.buffer_lock:
             self.pending_approvals[req_id] = entry
         self.push_event({"type": "approval_request", "id": req_id,
                          "tool": tool, "paths": list(paths),
                          "preview": entry["preview"], "scopes": entry["scopes"],
-                         "cwd": entry["cwd"], "timeout": timeout})
+                         "cwd": entry["cwd"], "timeout": timeout,
+                         "agent": entry["agent"]})
         deadline = time.time() + timeout
         decision = "timeout"
         while time.time() < deadline:
@@ -662,6 +749,13 @@ class PlannerSession:
             if self._stop_requested or self._closing:
                 decision = "stop"
                 break
+            # White 有自己的停止按钮：主助手的 _stop_requested 不会置位，
+            # 这里也要看 White 的 stop_event，否则审批挂起会拖到 120s 超时。
+            if entry.get("agent") == "white":
+                w = self._white
+                if w is not None and (w.stop_event.is_set() or w._close_requested):
+                    decision = "stop"
+                    break
         with self.buffer_lock:
             self.pending_approvals.pop(req_id, None)
         self.push_event({"type": "approval_resolved", "id": req_id, "decision": decision})
@@ -730,16 +824,19 @@ class PlannerSession:
                          "answer": answer, "selected": selected, "status": status})
         _logger.info("[ask_user] %s → %s (answer=%r)", q[:40], status, answer[:40])
         if status == "stop":
-            return "（用户停止了这一轮，提问没有得到回答。就按现在的情况收尾。）"
+            return prompt_loader.load("runtime/ask_user_stop")
         if status == "timeout":
-            return "（用户超时没有回答。不要反复追问，按你的判断继续或先做别的。）"
+            return prompt_loader.load("runtime/ask_user_timeout")
         if selected and answer:
             if answer == selected:
-                return f"用户选择了「{selected}」。"
-            return f"用户选择了「{selected}」，补充说明：{answer}"
+                return prompt_loader.render(
+                    "runtime/ask_user_selected", selected=selected)
+            return prompt_loader.render(
+                "runtime/ask_user_selected_note", selected=selected, answer=answer)
         if selected:
-            return f"用户选择了「{selected}」。"
-        return f"用户回答：{answer}"
+            return prompt_loader.render(
+                "runtime/ask_user_selected", selected=selected)
+        return prompt_loader.render("runtime/ask_user_answer", answer=answer)
 
     def resolve_question(self, req_id: str, answer: str = "",
                          selected: str = "") -> bool:
@@ -845,13 +942,20 @@ class PlannerSession:
             self.recent_buffer.append(msg)
             self._msg_counter += 1
 
-    def _receive(self, content: str | list, *, trigger: bool = True) -> BaseMessage:
+    def _receive(self, content: str | list, *, trigger: bool = True,
+                 injected: bool = False, kind: str = "system",
+                 attachments: list | None = None,
+                 display_text: str | None = None) -> BaseMessage:
         """接收一条外部消息。_generating 期间入队 _inbox，结束后再写入。返回消息对象。
 
         content：纯文本，或内容块列表（视觉注入 [text, image_url]）。
         显式分配 id（langchain 默认 None，langgraph 在模型调用时才补）——
         撤销按钮依赖消息 id 在入队时就稳定存在。
         消息带 metadata.ts 时间戳（秒级，UTC+8）——压缩节点起止时间的数据来源。
+        injected=True：系统内部注入（心跳/日历/附件/图片等）——/history 用这个
+        标记隐藏它们（不再依赖中文括号前缀；旧 buffer 仍按前缀兜底）。
+        attachments/display_text：用户消息的附件展示元数据与原始输入，随 metadata
+        持久化，供 /history 重建和前端气泡展示。
         """
         # 新消息边界：上一段未出块的改动先统一落块（含自主回合累积的）——
         # 与 /history 在 human 边界 flush 的口径一致，避免旧改动并进新回复的块
@@ -860,8 +964,15 @@ class PlannerSession:
             self._turn_change_ids = []
             if files:
                 self.push_event({"type": "changed_files", "files": files})
-        msg = HumanMessage(content=content, id=uuid.uuid4().hex,
-                           metadata={"ts": self._ts_now()})
+        meta = {"ts": self._ts_now()}
+        if injected:
+            meta["injected"] = True
+            meta["kind"] = kind
+        if attachments:
+            meta["attachments"] = attachments
+        if display_text is not None:
+            meta["display_text"] = display_text
+        msg = HumanMessage(content=content, id=uuid.uuid4().hex, metadata=meta)
         # 玩家消息 = 立即打断 continue 分段暂停（让位给用户）
         self.interrupt_continue_pause()
         with self.buffer_lock:
@@ -1273,15 +1384,12 @@ class PlannerSession:
             # 唤醒：只把时间事实 + 用户当时的嘱托交给模型，做不做/是否再设由它判断
             _logger.info("[heartbeat] 定时唤醒（距设置 %s：%s）",
                          self._fmt_duration(minutes), note)
-            text = (
-                f"（系统：你为用户设定的定时唤醒到点了。现在是 {self._now_desc()}，"
-                f"{self._silence_desc()}"
-                f"用户当时的嘱托/你设闹钟的原因：{note or '（没写原因）'}。"
-                f"现在按嘱托去做：该检查的检查、该提醒的提醒。"
-                f"**做完了就正常收尾，不要再设心跳**；"
-                f"如果还没完成（比如在等用户、等外部状态），再调 heartbeat 设下一次"
-                f"（note 写明「还没完成什么、下次醒来要看什么」）。）")
-            self._receive(text, trigger=True)
+            text = prompt_loader.render(
+                "runtime/heartbeat_wake",
+                time=self._now_desc(),
+                silence=self._silence_desc(),
+                note=note or "（没写原因）")
+            self._receive(text, trigger=True, injected=True, kind="heartbeat")
             self._spawn_worker("heartbeat")
 
     def _check_calendar_due(self) -> None:
@@ -1310,10 +1418,11 @@ class PlannerSession:
             self.db.mark_calendar_reminded(it["id"], stamp)
             parts.append(f"「{it['content']}」（原定 {it['date']} {it['time']}）")
         self._receive(
-            f"（系统：现在 {self._now_desc()}，日历上到点的是：{'；'.join(parts)}。"
-            f"这是用户自己排的安排——你判断该提醒他、还是该先自己处理、"
-            f"或者其实已经做过了（那就顺势问一句）。）",
-            trigger=True)
+            prompt_loader.render(
+                "runtime/calendar_due",
+                time=self._now_desc(),
+                items="；".join(parts)),
+            trigger=True, injected=True, kind="calendar_due")
         self._spawn_worker("reminder")
         _logger.info("[calendar] 到点提醒 %d 项：%s", len(due),
                      "；".join(it["content"] for it in due))
@@ -1364,11 +1473,12 @@ class PlannerSession:
             with self.buffer_lock:
                 if self._generating:
                     return
-            text = ("（系统：日历上这几项已经过了时间还没做："
-                    + "；".join(f"#{i['id']}「{i['content']}」"
-                               f"原定 {i['date']} {i['time'] or '全天'}" for i in pending)
-                    + "。你判断要不要提醒用户，或者问问他还要不要做。）")
-            self._receive(text, trigger=True)
+            text = prompt_loader.render(
+                "runtime/calendar_overdue",
+                items="；".join(f"#{i['id']}「{i['content']}」"
+                               f"原定 {i['date']} {i['time'] or '全天'}"
+                               for i in pending))
+            self._receive(text, trigger=True, injected=True, kind="calendar_overdue")
             self._spawn_worker("scheduled")
 
     # ── 玩家消息 ──────────────────────────────────────────────
@@ -1383,7 +1493,8 @@ class PlannerSession:
             return f"{s // 60} 分 {s % 60} 秒"
         return f"{s // 3600} 小时 {(s % 3600) // 60} 分钟"
 
-    def enqueue_player_message(self, message: str, files: list | None = None) -> str:
+    def enqueue_player_message(self, message: str, files: list | None = None,
+                               *, with_meta: bool = False) -> str | dict:
         """注入玩家消息并立即触发回复生成。返回该消息的 id（撤销按钮用）。
 
         用户说话 = 活跃状态。
@@ -1393,6 +1504,7 @@ class PlannerSession:
 
         files：拖入挂载的文件 [{name, path, kind, content?}]，按 kind 分流注入
         （text 内容直注 / doc 解析落盘+预览 / image OCR 提取 / 其他仅路径）。
+        with_meta=True：返回 {"msg_id","attachments"}（/chat 用）；否则只返回 id。
         """
         now = _now()
         gap_hint = ""
@@ -1400,7 +1512,11 @@ class PlannerSession:
             gap_hint = f"（距上次说话 {self._fmt_gap((now - self._last_player_message_at).total_seconds())}）"
         self._last_player_message_at = now
         text = message or "请结合我给你的文件回答。"
-        prefix = f"[{now.strftime('%H:%M')}]{gap_hint} {PLAYER_NAME}对你说：{text}"
+        display_text = message or "（拖入文件）"
+        attachments = self._attachment_meta(files or [])
+        prefix = prompt_loader.render(
+            "runtime/player_message",
+            time=now.strftime('%H:%M'), gap=gap_hint, player=PLAYER_NAME, text=text)
         if files:
             att = self._render_attachments(files)
             if isinstance(att, dict):
@@ -1411,16 +1527,70 @@ class PlannerSession:
                 content = prefix + att
         else:
             content = prefix
-        msg = self._receive(content, trigger=True)
-        self._save_log("user", message or "（拖入文件）")
+        msg = self._receive(content, trigger=True,
+                            attachments=attachments, display_text=display_text)
+        self._save_log("user", display_text)
         # 通知前端渲染这条用户消息：悬浮球语音输入 / 快速输入浮层发送时，面板
         # 没有走自己的本地 addMessage —— 之前展开面板看不到自己发的消息（用户实测）。
         msg_id = getattr(msg, "id", None) or ""
         self.push_event({"type": "user_message", "id": msg_id,
-                         "text": message or "（拖入文件）"})
+                         "text": display_text, "attachments": attachments})
         self._wake_event.set()
         threading.Thread(target=self._player_worker, name="planner-player", daemon=True).start()
-        return msg_id
+        result = {"msg_id": msg_id, "attachments": attachments}
+        return result if with_meta else msg_id
+
+    def _attachment_meta(self, files: list) -> list[dict]:
+        """用户附件展示元数据：名称/原路径/类型/扩展名；图片额外复制一份到
+        data/attachments 并给出 `/file?path=` URL（气泡缩略图 + 点击放大）。
+
+        原图只在用户消息里展示用；模型看到的仍是 prompt 里的附件说明/原图块。
+        复制失败不影响消息发送，前端降级为文件 chip。
+        """
+        out: list[dict] = []
+        for f in files or []:
+            if not isinstance(f, dict):
+                continue
+            name = str(f.get("name") or "未命名")
+            path = str(f.get("path") or "")
+            kind = str(f.get("kind") or "other")
+            ext = Path(path).suffix.lower() if path else ""
+            item = {"name": name, "path": path, "kind": kind, "ext": ext}
+            if kind == "image" and path:
+                dest = self._save_user_image(path)
+                if dest is not None:
+                    item["url"] = image_url(str(dest))
+            out.append(item)
+        return out
+
+    def _save_user_image(self, path: str) -> Path | None:
+        """把用户图片复制/转码到 data/attachments，返回可被 /file 提供的路径。"""
+        try:
+            src = Path(path)
+            if not src.is_file():
+                return None
+            dest_dir = self.data_root / "attachments"
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            suffix = src.suffix.lower()
+            if suffix in {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"} \
+                    and src.stat().st_size <= 15 * 1024 * 1024:
+                dest = dest_dir / f"user-{uuid.uuid4().hex}{suffix}"
+                import shutil
+                shutil.copy2(src, dest)
+                return dest
+            # 非 /file 支持的格式或过大：转成缩放后的 PNG（imageutil 内部限长边）
+            from .imageutil import image_to_data_url
+            data_url = image_to_data_url(str(src))
+            if not data_url or "," not in data_url:
+                return None
+            import base64
+            raw = base64.b64decode(data_url.split(",", 1)[1])
+            dest = dest_dir / f"user-{uuid.uuid4().hex}.png"
+            dest.write_bytes(raw)
+            return dest
+        except Exception:
+            _logger.exception("[attachment] 保存用户图片失败: %s", path)
+            return None
 
     def _render_attachments(self, files: list) -> str | dict:
         """按 kind 分流注入挂载文件（标注来源；失败降级为仅路径）。
@@ -1442,38 +1612,108 @@ class PlannerSession:
             content = f.get("content")
             loc = f"「{path}」" if path else ""
             if kind == "text" and content:
-                parts.append(f"- 文本文件 {name}{loc}：\n{content}")
+                parts.append(prompt_loader.render(
+                    "runtime/attachment_text", name=name, loc=loc, content=content))
             elif kind == "doc":
                 parsed = parse_file(path)
                 if parsed:
                     txt = save_attachment_text(self.data_root, path, parsed)
-                    preview = parsed[: 8000]
-                    parts.append(
-                        f"- 文档 {name}{loc}：已解析，文本存于 {txt}。"
-                        f"预览：\n{preview}\n（完整内容请用 read_file 工具读取该 txt）")
+                    parts.append(prompt_loader.render(
+                        "runtime/attachment_doc", name=name, loc=loc,
+                        path=txt, preview=parsed[:8000]))
                 else:
-                    parts.append(f"- 文档 {name}{loc}：（解析失败或不支持此格式，仅提供文件名）")
+                    parts.append(prompt_loader.render(
+                        "runtime/attachment_doc_fail", name=name, loc=loc))
             elif kind == "image":
                 if vision:
                     block = self._image_block(path)
                     if block:
                         images.append(block)
-                        parts.append(f"- 图片 {name}{loc}（已发送原图给模型）")
+                        parts.append(prompt_loader.render(
+                            "runtime/attachment_image", name=name, loc=loc))
                         continue   # 视觉注入成功：不叠加 OCR（用户选择只发图片）
                 from .ocr import _global_client as _ocr_global
-                text = _ocr_global().recognize_path(path)
-                if text:
-                    parts.append(f"- 图片 {name}{loc}：【图片 OCR 识别文字】\n{text}")
+                ocr_text = _ocr_global().recognize_path(path)
+                if ocr_text:
+                    parts.append(prompt_loader.render(
+                        "runtime/attachment_image_ocr", name=name, loc=loc,
+                        text=ocr_text))
                 else:
-                    parts.append(f"- 图片 {name}{loc}：（OCR 未能识别出文字）")
+                    parts.append(prompt_loader.render(
+                        "runtime/attachment_image_ocr_fail", name=name, loc=loc))
             else:
-                parts.append(f"- 文件 {name}{loc}")
+                parts.append(prompt_loader.render(
+                    "runtime/attachment_other", name=name, loc=loc))
         if not parts and not images:
             return ""
-        text = "\n\n【拖入的文件】\n" + "\n\n".join(parts) if parts else ""
+        text = ("\n\n" + prompt_loader.load("runtime/attachments_header")
+                + "\n" + "\n\n".join(parts)) if parts else ""
         if images:
             return {"text": text, "images": images}
         return text
+
+    def split_legacy_attachments(self, content: str) -> tuple[str, list[dict]]:
+        """兼容 v0.1.295 之前的旧用户消息：把「【拖入的文件】」说明从正文剥离，
+        并从中解析附件，供 /history 重建气泡时继续显示图片/文件。
+
+        旧消息没有 metadata.attachments/display_text，模型注入的说明会原样留在
+        content 里（用户看到一串路径）。这里只在历史重建时做只读解析；新消息
+        走 metadata，不走这个函数。
+        """
+        header = "【拖入的文件】"
+        if header not in content:
+            return content, []
+        import hashlib
+        import re
+        import shutil
+
+        text, block = content.split(header, 1)
+        out: list[dict] = []
+        for line in block.splitlines():
+            s = line.strip()
+            m = re.match(r"^-\s*(图片|文本文件|文档|文件)\s+(.+?)「([^」]+)」", s)
+            if not m:
+                continue
+            label, name, path = m.group(1), m.group(2).strip(), m.group(3).strip()
+            kind = {"图片": "image", "文档": "doc",
+                    "文本文件": "text"}.get(label, "other")
+            ext = Path(path).suffix.lower() if path else ""
+            item = {"name": name, "path": path, "kind": kind, "ext": ext}
+            if kind == "image" and path:
+                dest = self._legacy_image(path, hashlib, shutil)
+                if dest is not None:
+                    item["url"] = image_url(str(dest))
+            out.append(item)
+        return text.rstrip(), out
+
+    def _legacy_image(self, path: str, hashlib, shutil) -> Path | None:
+        """旧消息里的图片 → data/attachments 的稳定副本（按源路径 hash 去重）。"""
+        try:
+            src = Path(path)
+            if not src.is_file():
+                return None
+            dest_dir = self.data_root / "attachments"
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            h = hashlib.sha1(str(src).encode("utf-8", "replace")).hexdigest()[:16]
+            suffix = src.suffix.lower()
+            if suffix in {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"} \
+                    and src.stat().st_size <= 15 * 1024 * 1024:
+                dest = dest_dir / f"legacy-{h}{suffix}"
+                if not dest.exists():
+                    shutil.copy2(src, dest)
+                return dest
+            from .imageutil import image_to_data_url
+            data_url = image_to_data_url(str(src))
+            if not data_url or "," not in data_url:
+                return None
+            import base64
+            dest = dest_dir / f"legacy-{h}.png"
+            if not dest.exists():
+                dest.write_bytes(base64.b64decode(data_url.split(",", 1)[1]))
+            return dest
+        except Exception:
+            _logger.exception("[attachment] 解析旧消息图片失败: %s", path)
+            return None
 
     @staticmethod
     def _image_block(path) -> dict | None:
@@ -1514,6 +1754,32 @@ class PlannerSession:
         self.push_agenda_update()
         return {"ok": True, "removed": len(removed)}
 
+    def _abort_llm(self) -> None:
+        """立即中断在途模型请求：关闭该模型独立的 root_client。
+
+        httpx 的同步流会因底层 socket 被关闭而立刻抛 ReadError，不必等 API
+        超时/重试。关闭后清空 _llm/_agent_obj，下一轮重新构建；当前 stream
+        仍持有旧对象，不影响收尾。关闭操作放后台线程，保证 /stop 立即返回。
+        """
+        model = self._llm
+        self._llm = None
+        self._agent_obj = None
+        if model is None:
+            return
+        root = getattr(model, "root_client", None)
+        if root is None:
+            return
+
+        def _close() -> None:
+            try:
+                root.close()
+                _logger.info("[stop] 已关闭模型 HTTP 客户端，在途请求立即中断")
+            except Exception:
+                _logger.exception("[stop] 关闭模型客户端失败")
+
+        threading.Thread(target=_close, name="planner-llm-abort",
+                         daemon=True).start()
+
     def kill_run_proc(self) -> None:
         """终止正在执行的 run_command 子进程（连整棵进程树）——停止/关闭时调用。"""
         proc = self._run_proc
@@ -1530,12 +1796,15 @@ class PlannerSession:
     def request_stop(self) -> None:
         """请求停止当前生成（用户点「停止」）。
 
-        生成会在下一个安全点收尾（当前模型调用结束、工具执行完后），
-        已生成的消息保留在 buffer；**正在执行的命令立即杀掉进程树**。
+        立即关闭在途模型的 HTTP 客户端（不等 API 返回/超时），生成循环在
+        异常/下一个安全点收尾：已流式的半句留在面板；完整消息与已有工具结果
+        保留在 buffer；**正在执行的命令立即杀掉进程树**；正在写文件的工具
+        会先写完再停（“能写完的就写完”）。
         """
         self._stop_requested = True
         self.kill_run_proc()
-        _logger.info("[stop] 收到停止请求")
+        self._abort_llm()
+        _logger.info("[stop] 收到停止请求（已中断在途模型请求）")
 
     def _player_worker(self) -> None:
         for _ in range(MAX_WORKER_ROUNDS):
@@ -1636,6 +1905,7 @@ class PlannerSession:
         # 永远停在"正在执行"转圈。按消息 id 去重，与列表收缩无关。
         seen_msg_ids = {getattr(m, "id", None) or id(m) for m in input_msgs}
         interrupted = False
+        stream = None
         try:
             # 无 checkpointer：每次 invoke 都是全新 state，字段必须显式初始化
             stream = self._agent.stream(
@@ -1724,20 +1994,27 @@ class PlannerSession:
                     # 一个超步结束（模型/工具节点收束）→ 下一段思考开新块
                     current_think_id = None
         except Exception as exc:
-            _logger.exception("[agent] stream 异常")
-            cfg = resolve_llm_config(self.settings)
-            self.push_error(
-                f"调用模型失败（{cfg['provider']} / {cfg['model']}）：{self._short_error(exc)}",
-                self._llm_error_hint(exc))
-            # 新心跳语义：不自动重排（这次提醒丢掉，用户可再要求）
-            return
+            if self._stop_requested or self._closing:
+                # 停止时主动关闭了模型客户端 → httpx ReadError 等；这是预期中断，
+                # 不是调用失败，别弹错误 toast。
+                _logger.info("[agent] 停止请求已中断模型调用: %s", exc)
+                interrupted = True
+            else:
+                _logger.exception("[agent] stream 异常")
+                cfg = resolve_llm_config(self.settings)
+                self.push_error(
+                    f"调用模型失败（{cfg['provider']} / {cfg['model']}）：{self._short_error(exc)}",
+                    self._llm_error_hint(exc))
+                # 新心跳语义：不自动重排（这次提醒丢掉，用户可再要求）
+                return
         if interrupted:
             _logger.info("[agent] 用户打断，立即停止当前生成")
             # 后台关闭流：langgraph sync stream 的 close() 会阻塞等待底层模型流
             # 自然结束，放 daemon 线程做——主线程立即返回，chat_lock/_generating
             # 尽快释放给下一条消息。del stream 移除本地引用，返回时不再二次 close。
-            threading.Thread(target=_close_stream_bg, args=(stream,),
-                             name="planner-stream-close", daemon=True).start()
+            if stream is not None:
+                threading.Thread(target=_close_stream_bg, args=(stream,),
+                                 name="planner-stream-close", daemon=True).start()
             del stream
         # 用量/缓存统计（无 usage 的端点/失败轮次不记）；打断也记（token 已消耗）
         if usage_calls and (gen_in or gen_out):
@@ -1806,9 +2083,7 @@ class PlannerSession:
             if not text.startswith("Model call limits exceeded"):
                 return False
             limit = int(self.settings.get("model_call_limit", 100) or 100)
-            m.content = (f"（本轮达到单轮调用上限（{limit} 次模型调用），已强制收尾。"
-                         "如果任务还没做完，和我说「继续」即可接着干；"
-                         "也可以到 设置 → 交互 → 单轮调用上限 调大。）")
+            m.content = prompt_loader.render("runtime/limit_reached", limit=limit)
             return True
         except Exception:
             return False
@@ -1835,6 +2110,22 @@ class PlannerSession:
             if new_buf != buf:
                 self.recent_buffer = new_buf
 
+    def take_changes(self, agent: str, tool: str | None = None) -> list[int]:
+        """取走某个 agent（main/white）的待关联 change id。
+
+        并发时两个 agent 都可能写 changes.db；主助手的 _emit_tool_events
+        只消费自己的，White 的由 WhiteAgent 自己消费（用于结果卡片）。
+        """
+        with self.buffer_lock:
+            taken = [c for c in self._pending_changes
+                     if c.get("agent", "main") == agent
+                     and (tool is None or c.get("tool") == tool)]
+            if taken:
+                ids = {id(c) for c in taken}
+                self._pending_changes = [c for c in self._pending_changes
+                                         if id(c) not in ids]
+            return [int(c["id"]) for c in taken if "id" in c]
+
     def _emit_tool_events(self, m) -> None:
         """从新增消息中提取工具调用/结果，推送前端工具卡片事件。"""
         mtype = getattr(m, "type", None)
@@ -1854,10 +2145,7 @@ class PlannerSession:
             if name == "continue_speaking":
                 return   # 对应卡片不展示
             # 写操作留底关联：取出属于本次调用名字的 change id（队列按执行顺序）
-            change_ids: list[int] = []
-            with self.buffer_lock:
-                while self._pending_changes and self._pending_changes[0].get("tool") == name:
-                    change_ids.append(int(self._pending_changes.pop(0)["id"]))
+            change_ids: list[int] = self.take_changes("main", tool=name)
             if change_ids:
                 ak = getattr(m, "additional_kwargs", None)
                 if isinstance(ak, dict):

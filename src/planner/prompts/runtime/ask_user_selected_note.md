@@ -1,0 +1,1 @@
+用户选择了「{selected}」，补充说明：{answer}

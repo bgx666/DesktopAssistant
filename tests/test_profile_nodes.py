@@ -327,7 +327,40 @@ def test_apply_budget_trims_long_fields():
     )
     trimmed = SummarizationMiddleware._apply_budget(out, 1000)
     assert len(trimmed.summary) <= 1000 + 1
-    assert len(trimmed.task.todo) == 8
-    assert len(trimmed.decisions) == 8
-    assert len(trimmed.user) == 12
+
+
+def test_apply_budget_enforces_total_chars():
+    """总量硬兜底：模型不按预算写时，整节点总字数也要压到 ~1.1×预算（用户实测 700→3~5k）。"""
+    out = MemoryNodeOutput(
+        summary="摘" * 3500,
+        task={"goal": "目" * 300, "status": "状" * 300,
+              "todo": ["待" * 200 for _ in range(8)],
+              "next_steps": ["步" * 200 for _ in range(8)],
+              "blockers": ["阻" * 200 for _ in range(8)]},
+        decisions=[{"what": "决" * 200, "why": "因" * 300} for _ in range(8)],
+        lessons={"errors": [{"symptom": "症" * 200, "cause": "因" * 200,
+                             "fix": "修" * 300} for _ in range(8)],
+                 "patterns": ["模" * 200 for _ in range(8)]},
+        context={"env": ["环" * 200 for _ in range(8)],
+                 "commands": ["命" * 200 for _ in range(8)],
+                 "artifacts": ["文" * 200 for _ in range(8)],
+                 "constraints": ["约" * 200 for _ in range(8)]},
+        user=["用" * 200 for _ in range(12)],
+    )
+    trimmed = SummarizationMiddleware._apply_budget(out, 700)
+
+    def chars(o):
+        n = len(o.summary) + len(o.task.goal) + len(o.task.status)
+        for lst in (o.task.todo, o.task.next_steps, o.task.blockers,
+                    o.context.env, o.context.commands, o.context.artifacts,
+                    o.context.constraints, o.lessons.patterns, o.user):
+            n += sum(len(str(x)) for x in lst)
+        n += sum(len(d.what) + len(d.why) for d in o.decisions)
+        n += sum(len(e.symptom) + len(e.cause) + len(e.fix) for e in o.lessons.errors)
+        return n
+
+    total = chars(trimmed)
+    assert total <= int(700 * 1.1) + 2, f"总字数应压到 ~770 以内，实际 {total}"
+    assert len(trimmed.summary) <= int(700 * 0.6) + 1
+    assert len(trimmed.summary) >= 120, "极端超量时也要保留摘要核心"
     assert len(trimmed.task.goal) <= 300

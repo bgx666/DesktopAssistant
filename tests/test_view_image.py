@@ -123,7 +123,7 @@ def test_view_image_outside_workspace_needs_approval(session, workspace, tmp_pat
     outside.write_bytes(PNG_1PX)
     mw = ApprovalMiddleware(session)
     verdict, msg = mw._authorize("view_image", {"source": str(outside)})
-    assert verdict == "deny" and "工作区外的读取未开启" in msg
+    assert verdict == "deny" and ("未开启" in msg or "未授权" in msg)
     verdict2, _ = mw._authorize("view_image", {"source": "plot.png"})
     assert verdict2 == "allow"
 

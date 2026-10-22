@@ -1,0 +1,1 @@
+（系统：White 的任务结束了（状态：{status}）。摘要：{summary}{files}{stopped}请验收：如果结果没问题或任务无法继续，用 white_control(action="close") 关闭 White；如果需要它继续（相关后续任务），用 white_task(reuse=true) 在它现有上下文上追加指令；只有全新、无关的任务才用 white_task(reuse=false)。不要把已验收完的任务再派一遍。）

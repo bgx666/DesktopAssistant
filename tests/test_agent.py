@@ -943,4 +943,53 @@ def test_heartbeat_may_stay_silent_with_empty_reply(data_root):
     finally:
         s.close()
 
+def test_stop_aborts_blocked_model_immediately(data_root):
+    """点停止要立即中断卡住的模型 HTTP 请求，而不是等 API 超时。"""
+    import threading
+    from typing import ClassVar
 
+    from langchain_core.language_models.chat_models import BaseChatModel
+
+    release = threading.Event()
+    started = threading.Event()
+    closed = threading.Event()
+
+    class _Root:
+        def close(self):
+            closed.set()
+            release.set()
+
+    class _BlockedModel(BaseChatModel):
+        root_client: ClassVar = _Root()
+
+        def _llm_type(self):
+            return "blocked"
+
+        def bind_tools(self, tools, **kwargs):
+            return self
+
+        def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+            started.set()
+            release.wait(20)
+            raise RuntimeError("aborted")
+
+        def _stream(self, messages, stop=None, run_manager=None, **kwargs):
+            started.set()
+            release.wait(20)
+            raise RuntimeError("aborted")
+            yield  # pragma: no cover
+
+    s = PlannerSession(data_root, mock=True)
+    try:
+        s.set_chat_model(_BlockedModel())
+        threading.Timer(0.3, s.request_stop).start()
+        s._receive("你好", trigger=True)
+        s.pending_response = False
+        t0 = time.time()
+        s._generate_response("player")
+        elapsed = time.time() - t0
+        assert started.is_set(), "模型应已开始调用"
+        assert closed.is_set(), "停止应关闭模型 HTTP 客户端"
+        assert elapsed < 2.5, f"停止应立即中断阻塞请求，实际 {elapsed:.1f}s"
+    finally:
+        s.close()

@@ -40,6 +40,7 @@
   const RING_MIN = 8;               // 底部半径（环内缘，不缩到圆心）
   const CYBER_COLORS = ['#6fd8cf', '#e59cc0', '#a99ae8'];  // 低饱和赛博：柔青/柔粉/柔紫
   let ringRaf = null;
+  let ringWanted = false;   // 期望显示（异步 getAnalyser 期间被 stop 时生效）
   let ringEdges = [];
   let ringPts = [];
 
@@ -88,16 +89,27 @@
   initRingPoints();
 
   function startSoundRing() {
+    ringWanted = true;
     if (ringRaf) return;
     window.mic.getAnalyser().then((analyser) => {
-      if (!analyser) return;
-      const data = new Uint8Array(analyser.frequencyBinCount);
+      if (!ringWanted || ringRaf) return;   // 等待期间已被 stop / 重复启动
+      const data = analyser ? new Uint8Array(analyser.frequencyBinCount) : null;
       ring.classList.add('active');
       const step = () => {
-        analyser.getByteFrequencyData(data);
-        let sum = 0;
-        for (let i = 0; i < 48; i++) sum += data[i];          // 低频段平均音量
-        const vol = sum / (48 * 255);
+        let vol;
+        if (analyser) {
+          analyser.getByteFrequencyData(data);
+          let sum = 0;
+          for (let i = 0; i < 48; i++) sum += data[i];          // 低频段平均音量
+          vol = sum / (48 * 255);
+        } else {
+          // 面板里录的音属于另一个渲染进程，拿不到 analyser → 合成波形。
+          // 效果：悬浮球也有"正在录音"的雷达环（用户实测：面板录音后收起面板，
+          // 球没有任何提示，看起来像没在录）。
+          const t0 = Date.now() / 170;
+          vol = 0.30 + 0.20 * (0.5 + 0.5 * Math.sin(t0))
+            + 0.10 * (0.5 + 0.5 * Math.sin(t0 * 2.3 + 1.1));
+        }
         const t = Date.now() / 200;
         // 12 顶点：半径在环内缘（底部）与球边缘（顶部）之间随音量跳动
         const coords = [];
@@ -129,6 +141,7 @@
   }
 
   function stopSoundRing() {
+    ringWanted = false;
     if (ringRaf) { cancelAnimationFrame(ringRaf); ringRaf = null; }
     ring.classList.remove('active');
     ringEdges.forEach((e) => {
@@ -369,6 +382,14 @@
   }
   window.planner.onPending(applyPending);
   window.planner.getPending().then(applyPending).catch(() => {});
+
+  // 面板里的 🎤 正在录音（跨窗口）：悬浮球同样显示录音特效（紫点 + 雷达环）。
+  // 面板点录音后按 Esc 收起时，录音仍在进行——球必须看得出"还在听"。
+  window.planner.onPanelRecording((on) => {
+    core.classList.toggle('recording', !!on);
+    if (on) startSoundRing();
+    else stopRingIfVoiceIdle();
+  });
 
   // ── 语音播报（气泡朗读）：audio 事件 → 主进程下载为 file:// 后播放 ──
   const ttsAudio = document.getElementById('tts-audio');

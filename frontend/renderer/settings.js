@@ -150,11 +150,17 @@
       const r = await window.planner.apiFetch('/settings');
       const d = JSON.parse(r.text);
       current = d.settings || {};
+      // 服务商选择框必须回显已保存的 provider——否则会停在默认第一项（deepseek），
+      // 任何一次「保存」都会把 provider 悄悄改回 deepseek（用户实测：一直在用
+      // OpenCode，某次保存后变成 deepseek，直到欠费 402 才现形）。
+      $('#llm_provider').value = current.llm_provider === 'opencode' ? 'opencode' : 'deepseek';
       for (const k of ['compress_keep',
                        'compact_threshold', 'compact_factor',
                        'compress_token_budget', 'compress_chunk_tokens',
                        'node_token_budget',
-                       'model_call_limit']) {
+                       'model_call_limit',
+                       'white_max_steps', 'white_timeout_minutes',
+                       'white_context_tokens']) {
         $(`#${k}`).value = current[k] ?? '';
       }
       try {
@@ -167,6 +173,7 @@
       $('#thinking_mode').value = current.thinking_mode || 'adaptive';
       $('#reasoning_effort').value = current.reasoning_effort || 'high';
       $('#tts_enabled').checked = current.tts_enabled !== false;
+      $('#white_enabled').checked = current.white_enabled !== false;
       $('#tts_engine').value = current.tts_engine || '';
       drawChart();
     } catch { $('#msg').textContent = '后端不可用，无法读取压缩/LLM 设置'; }
@@ -376,7 +383,9 @@
                      'compact_threshold', 'compact_factor',
                      'compress_token_budget', 'compress_chunk_tokens',
                      'node_token_budget',
-                     'model_call_limit']) {
+                     'model_call_limit',
+                     'white_max_steps', 'white_timeout_minutes',
+                     'white_context_tokens']) {
       const v = parseInt($(`#${k}`).value, 10);
       if (!isNaN(v)) updates[k] = v;
     }
@@ -390,6 +399,7 @@
     updates.thinking_mode = $('#thinking_mode').value;
     updates.reasoning_effort = $('#reasoning_effort').value;
     updates.tts_enabled = $('#tts_enabled').checked;
+    updates.white_enabled = $('#white_enabled').checked;
     updates.tts_engine = $('#tts_engine').value;
     updates.tts_voice = $('#tts_voice').value;
     try {

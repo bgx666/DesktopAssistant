@@ -256,8 +256,11 @@ def test_history_endpoint_with_image(data_root, monkeypatch):
         content = user_msgs[-1]["content"]
         assert "image_url" not in content        # 列表 content 只序列化文本块
         assert "看图" in content                 # 前缀已按惯例剥离，正文保留
-        assert "shot.png" in content
         assert "data:image/png;base64" not in content   # base64 不落历史
+        attachments = user_msgs[-1]["attachments"]
+        assert attachments and attachments[0]["name"] == "shot.png"
+        assert attachments[0]["kind"] == "image"
+        assert attachments[0]["url"].startswith("/file?path=")
     finally:
         s.close()
 

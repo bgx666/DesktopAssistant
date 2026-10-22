@@ -222,13 +222,141 @@
 
   // 用户消息去重：面板本地提交与主进程 user_message 事件可能几乎同时到达
   // （悬浮球语音 / 快速输入浮层发的消息只有事件——旧代码展开面板看不到，用户实测）
-  function addUserMessage(text, msgId, forceScroll = true) {
+  function userAttachmentExt(a) {
+    const raw = String(a.ext || '')
+      || (String(a.name || '').includes('.')
+          ? String(a.name).split('.').pop().toLowerCase() : '');
+    return (raw.replace(/^\./, '').toUpperCase() || 'FILE').slice(0, 5);
+  }
+
+  function openUserImage(url, name) {
+    const host = document.getElementById('panel-ui') || document.body;
+    const overlay = document.createElement('div');
+    overlay.className = 'img-lightbox';
+    const img = document.createElement('img');
+    img.alt = name || '图片';
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'lb-close';
+    close.textContent = '×';
+    close.title = '关闭（Esc）';
+    overlay.appendChild(img);
+    overlay.appendChild(close);
+    if (name) {
+      const cap = document.createElement('div');
+      cap.className = 'lb-caption';
+      cap.textContent = name;
+      overlay.appendChild(cap);
+    }
+    let closed = false;
+    const doClose = () => {
+      if (closed) return;
+      closed = true;
+      document.removeEventListener('keydown', onKey);
+      overlay.remove();
+    };
+    const onKey = (e) => { if (e.key === 'Escape') doClose(); };
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay || e.target === close) doClose();
+    });
+    document.addEventListener('keydown', onKey);
+    host.appendChild(overlay);
+    window.planner.imageFile(url).then((fileUrl) => {
+      if (closed) return;
+      if (!fileUrl) { img.replaceWith(document.createTextNode('（图片加载失败）')); return; }
+      img.src = fileUrl;
+    }).catch(() => {
+      if (!closed) img.replaceWith(document.createTextNode('（图片加载失败）'));
+    });
+  }
+
+  function attachUserAttachments(el, attachments) {
+    const atts = Array.isArray(attachments) ? attachments.filter(Boolean) : [];
+    if (!el || !atts.length) return;
+    const old = el.querySelector('.user-attachments');
+    if (old) old.remove();
+    const wrap = document.createElement('div');
+    wrap.className = 'user-attachments';
+    const images = atts.filter((a) => a.kind === 'image' && a.url);
+    if (images.length) {
+      // 图片缩略图在上方，点击打开大图
+      const grid = document.createElement('div');
+      grid.className = 'user-image-grid';
+      images.forEach((a) => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'user-image-thumb';
+        btn.title = a.name || '点击放大';
+        const ph = document.createElement('span');
+        ph.className = 'ua-loading';
+        ph.textContent = '加载中…';
+        btn.appendChild(ph);
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          openUserImage(a.url, a.name || '');
+        });
+        window.planner.imageFile(a.url).then((fileUrl) => {
+          if (!fileUrl) { ph.textContent = '加载失败'; return; }
+          const img = document.createElement('img');
+          img.alt = a.name || '图片';
+          img.onload = () => { try { ph.remove(); } catch { /* 忽略 */ } };
+          img.onerror = () => { ph.textContent = '加载失败'; img.remove(); };
+          img.src = fileUrl;
+          btn.insertBefore(img, ph);
+        }).catch(() => { ph.textContent = '加载失败'; });
+        grid.appendChild(btn);
+      });
+      wrap.appendChild(grid);
+    }
+    // 非图片 / 图片复制失败的附件 → 可点击文件快捷方式
+    const files = atts.filter((a) => !(a.kind === 'image' && a.url));
+    if (files.length) {
+      const row = document.createElement('div');
+      row.className = 'user-file-row';
+      files.forEach((a) => {
+        const chip = document.createElement('button');
+        chip.type = 'button';
+        chip.className = 'user-file-chip';
+        chip.title = a.path || a.name || '';
+        if (!a.path) chip.disabled = true;
+        const ext = document.createElement('span');
+        ext.className = 'ua-ext';
+        ext.textContent = userAttachmentExt(a);
+        const name = document.createElement('span');
+        name.className = 'ua-name';
+        name.textContent = a.name || '未命名';
+        chip.appendChild(ext);
+        chip.appendChild(name);
+        chip.addEventListener('click', async () => {
+          if (!a.path) return;
+          try {
+            const r = await window.planner.openInExplorer(a.path);
+            if (!r || !r.ok) addMessage(`（打开失败：${a.path}）`, 'log');
+          } catch {
+            addMessage(`（打开失败：${a.path}）`, 'log');
+          }
+        });
+        row.appendChild(chip);
+      });
+      wrap.appendChild(row);
+    }
+    el.insertBefore(wrap, el.firstChild);
+  }
+
+  function addUserMessage(text, msgId, forceScroll = true, attachments = []) {
+    const atts = Array.isArray(attachments) ? attachments : [];
     if (msgId) {
       const dup = Array.from(messages.querySelectorAll('.msg.user'))
-        .some((el) => el.dataset.msgId === String(msgId));
-      if (dup) return null;
+        .find((el) => el.dataset.msgId === String(msgId));
+      if (dup) {
+        // 本地提交与 user_message 事件可能先后到达；后来的一份补附件
+        if (atts.length) attachUserAttachments(dup, atts);
+        return dup;
+      }
     }
-    return addMessage(text, 'user', msgId || null, forceScroll);
+    const el = addMessage(text, 'user', msgId || null, forceScroll);
+    if (atts.length) attachUserAttachments(el, atts);
+    return el;
   }
 
   // 错误气泡：正文（发生了什么）+ 提示（下一步怎么做）；不再只留一行灰色日志
@@ -254,13 +382,25 @@
 
   // ── 输入框（textarea）：自动增高 + Enter 发送 / Shift+Enter 换行 ──
   const input = $('#input');
-  const INPUT_MAX_H = 120;   // 与 style.css 的 max-height 一致
 
+  // 输入框随内容增长；上限随窗口高度变化（默认窗口约 10 行，小窗口自动收紧）。
+  // 之前固定 120px（约 5 行），内容再多就只剩内部滚动，容易被误以为“不会变高”。
+  function inputMaxHeight() {
+    return Math.min(240, Math.max(120, Math.floor(window.innerHeight * 0.32)));
+  }
   function autoResizeInput() {
+    // 空输入永远回到 CSS 的 34px：面板展开/窗口 resize 时不能拿
+    // 未稳定布局下的 scrollHeight 把空框撑高。
+    if (!input.value) {
+      input.style.height = '';
+      return;
+    }
     input.style.height = 'auto';
-    input.style.height = Math.min(input.scrollHeight, INPUT_MAX_H) + 'px';
+    input.style.height = Math.min(input.scrollHeight, inputMaxHeight()) + 'px';
   }
   input.addEventListener('input', autoResizeInput);
+  input.addEventListener('compositionend', autoResizeInput);
+  window.addEventListener('resize', autoResizeInput);
   input.addEventListener('keydown', (e) => {
     if (handleAtKey(e)) return;              // @ 补全下拉打开时优先接管方向键/回车
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -292,7 +432,7 @@
     const text = input.value.trim();
     if (!text) return;
     input.value = '';
-    input.style.height = 'auto';             // 发送后重置高度
+    autoResizeInput();                       // 空值 → 回到单行高度
     sendBtn.classList.add('stopping');       // 立即变"停止"（防快速双击重复提交）
     sendBtn.textContent = '停止';
     try {
@@ -300,7 +440,7 @@
       const mounted = await window.planner.getMounted();
       const r = await post('/chat', { message: text, files: mounted });
       if (mounted && mounted.length) window.planner.clearMounted();
-      addUserMessage(text, r.msg_id || '');
+      addUserMessage(text, r.msg_id || '', true, r.attachments || []);
     } catch (err) {
       addMessage('（连接后端失败，稍后重试）', 'log');
       sendBtn.classList.remove('stopping');
@@ -865,6 +1005,12 @@
     if (!modal) return;
     approvalReqId = ev.id || null;
     $('#approval-tool').textContent = ev.tool || '';
+    const agentEl = $('#approval-agent');
+    if (agentEl) {
+      const fromWhite = ev.agent === 'white';
+      agentEl.textContent = fromWhite ? '来自 White（子代理）' : '';
+      agentEl.classList.toggle('hidden', !fromWhite);
+    }
     const box = $('#approval-paths');
     box.innerHTML = '';
     (ev.paths || []).forEach((p) => {
@@ -1899,7 +2045,7 @@
     if (ev.type === 'user_message') {
       // 其他窗口（悬浮球语音 / 快速输入浮层）或直接 HTTP 发的用户消息：
       // 面板本地没有自己的 addMessage —— 用事件补气泡（按 msg id 去重）
-      addUserMessage(ev.text || '', ev.id || '', false);   // 不打断用户翻历史
+      addUserMessage(ev.text || '', ev.id || '', false, ev.attachments || []);   // 不打断用户翻历史
     } else if (ev.type === 'text_stream') {
       let el = streamMsgs[ev.msg_id];
       if (!el) {
@@ -1933,6 +2079,7 @@
     } else if (ev.type === 'thinking') {
       $('#thinking').classList.toggle('hidden', !ev.value);
       $('.dot').classList.toggle('thinking', !!ev.value);
+      syncMainAgentStatus(!!ev.value);
     } else if (ev.type === 'compress_state') {
       // 后台压缩开始/结束（指示灯；完成后的历史重载走 memory_update）
       $('#compressing').classList.toggle('hidden', !ev.value);
@@ -1968,6 +2115,8 @@
       addImage(ev.url, ev.caption);
     } else if (ev.type === 'changed_files') {
       addChangedFiles(ev.files);
+    } else if (ev.type === 'permissions_update') {
+      if ($('#permissions').classList.contains('active')) refreshDirPermissions();
     } else if (ev.type === 'workspace_changed') {
       const desc = ev.workspace
         ? `（代码工作区：${ev.cwd || ev.workspace} · 权限模式 ${ev.permission_mode || 'ask'}）`
@@ -1986,8 +2135,437 @@
   // 当前是否在生成（applyState 按 state.thinking 同步）：onPanelShown 重建历史前要看它，
   // 生成中绝不重建（在途思考/工具行还没进 buffer，重建=抹掉——用户实测 bug）。
   let isGenerating = false;
+
+  // ── 子代理 White（后台异步；用户只和主助手对话）──────────
+  const agentBar = $('#agent-bar');
+  const whiteView = $('#white-view');
+  const whiteMessages = $('#white-messages');
+  const whiteTaskEl = $('#white-task');
+  const whiteStateEl = $('#white-state');
+  const whiteStopBtn = $('#white-stop');
+  const whiteJumpBtn = $('#white-jump');
+  state.agents = [
+    { id: 'main', name: '小助', status: 'idle', pending_approvals: 0 },
+    { id: 'white', name: 'White', status: 'idle', placeholder: true,
+      task: '', started_at: 0, finished_at: 0, result: null, pending_approvals: 0 },
+  ];
+  state.activeAgent = 'main';
+  state.whiteEnabled = true;
+  state.whiteUnread = false;
+  state.whiteTask = '';
+  let whiteToolLines = {};
+  let whiteStreamEl = null;
+  let whiteThinkEl = null;
+  let whiteHistoryToken = 0;
+  // White 自己的贴底策略：只有用户当前在底部时才跟随新消息；翻上去看历史时不动。
+  let whiteStick = true;
+
+  function whiteIsActive() { return state.activeAgent === 'white'; }
+  function whiteNearBottom() {
+    return whiteMessages.scrollHeight - whiteMessages.scrollTop - whiteMessages.clientHeight < 100;
+  }
+  function updateWhiteJump() {
+    if (whiteJumpBtn) whiteJumpBtn.classList.toggle('hidden', whiteNearBottom());
+  }
+  function whiteScroll(force = false) {
+    if (force) whiteStick = true;
+    if (whiteStick) {
+      try { whiteMessages.scrollTop = whiteMessages.scrollHeight; } catch { /* 忽略 */ }
+    }
+    updateWhiteJump();
+  }
+  whiteMessages.addEventListener('scroll', () => {
+    whiteStick = whiteNearBottom();
+    updateWhiteJump();
+  });
+  if (whiteJumpBtn) {
+    whiteJumpBtn.addEventListener('click', () => {
+      whiteStick = true;
+      whiteMessages.scrollTo({ top: whiteMessages.scrollHeight, behavior: 'smooth' });
+    });
+  }
+
+  async function refreshAgents() {
+    try {
+      const d = await api('/agents');
+      state.agents = d.agents || [];
+      state.whiteEnabled = d.white_enabled !== false;
+      // /agents 是请求瞬间的快照：如果响应晚到，主助手可能已经答完。
+      // 本地 isGenerating 更新，覆盖服务端快照，避免主标签一直转圈。
+      const main = state.agents.find((a) => a.id === 'main');
+      if (main) main.status = isGenerating ? 'running' : 'idle';
+      renderAgentBar();
+    } catch { /* 后端不可用 */ }
+  }
+
+  function agentInfo(id) {
+    return (state.agents || []).find((a) => a.id === id) || null;
+  }
+
+  // 主助手标签的运行状态以实时 thinking 为准；/agents 只在启动/展开时拉一次，
+  // 不随后续生成结束更新（否则标签会一直停在转圈）。
+  function syncMainAgentStatus(running) {
+    const a = agentInfo('main');
+    if (!a) return;
+    const next = running ? 'running' : 'idle';
+    if (a.status === next) return;
+    a.status = next;
+    renderAgentBar();
+  }
+
+  function renderAgentBar() {
+    const list = state.agents || [];
+    if (list.length <= 1 || !state.whiteEnabled) {
+      agentBar.classList.add('hidden');
+      return;
+    }
+    agentBar.classList.remove('hidden');
+    agentBar.textContent = '';
+    list.forEach((a) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'agent-tab' + (a.id === 'white' ? ' white' : '')
+        + (state.activeAgent === a.id ? ' active' : '');
+      const name = document.createElement('span');
+      name.textContent = a.id === 'main' ? '主助手' : (a.name || a.id);
+      btn.appendChild(name);
+      if (a.status === 'running') {
+        const sp = document.createElement('span');
+        sp.className = 'agent-spinner';
+        btn.appendChild(sp);
+      } else {
+        const dot = document.createElement('span');
+        // White 空闲/未派任务 → 灰色呼吸灯；主助手绿色
+        dot.className = 'agent-dot' + (a.id === 'white' ? ' gray' : '');
+        btn.appendChild(dot);
+      }
+      if ((a.pending_approvals || 0) > 0) {
+        const b = document.createElement('span');
+        b.className = 'agent-bang';
+        b.textContent = a.pending_approvals > 9 ? '9+' : String(a.pending_approvals);
+        btn.appendChild(b);
+      }
+      if (a.id === 'white' && state.whiteUnread) {
+        const u = document.createElement('span');
+        u.className = 'agent-unread';
+        btn.appendChild(u);
+      }
+      btn.addEventListener('click', () => switchAgent(a.id));
+      agentBar.appendChild(btn);
+    });
+  }
+
+  function switchAgent(id) {
+    if (id === 'white' && !agentInfo('white')) return;
+    state.activeAgent = id;
+    const white = id === 'white';
+    $('#messages').classList.toggle('hidden', white);
+    $('#jump-bottom').classList.add('hidden');
+    if (white) {
+      $('#mounted-bar').classList.add('hidden');
+    } else {
+      // 回到主视图：挂载条按实际文件恢复（不要无条件显示空条）
+      window.planner.getMounted().then(renderMountedBar).catch(() => {});
+    }
+    $('#input-bar').classList.toggle('hidden', white);
+    whiteView.classList.toggle('hidden', !white);
+    if (white) {
+      state.whiteUnread = false;
+      // DOM 已有实时内容就保留（含滚动位置）；只有首次进入/关闭后空态才拉 history
+      if (!whiteMessages.childElementCount) loadWhiteHistory();
+      // 隐藏时 clientHeight=0，jump 状态不可靠；显示后按真实滚动位置校正
+      setTimeout(updateWhiteJump, 0);
+    }
+    renderAgentBar();
+  }
+
+  // White 视图的渲染（与主对话同款气泡/工具行/思考行）
+  function whiteAddUser(text) {
+    const el = document.createElement('div');
+    el.className = 'msg user';
+    const body = document.createElement('div');
+    body.className = 'msg-body';
+    const bubble = document.createElement('div');
+    bubble.className = 'bubble user';
+    bubble.textContent = String(text || '');
+    body.appendChild(bubble);
+    el.appendChild(body);
+    whiteMessages.appendChild(el);
+    whiteScroll();
+  }
+
+  function whiteAddAssistant(text) {
+    const el = document.createElement('div');
+    el.className = 'msg assistant';
+    const body = document.createElement('div');
+    body.className = 'msg-body';
+    const bubble = document.createElement('div');
+    bubble.className = 'bubble assistant';
+    bubble.innerHTML = window.md.render(String(text || ''));
+    body.appendChild(bubble);
+    el.appendChild(body);
+    whiteMessages.appendChild(el);
+    whiteScroll();
+    return bubble;
+  }
+
+  function whiteStream(text) {
+    if (!whiteStreamEl) whiteStreamEl = whiteAddAssistant('');
+    whiteStreamEl.textContent += String(text || '');
+    whiteScroll();
+  }
+
+  function whiteFinishStream(full) {
+    if (whiteStreamEl) {
+      whiteStreamEl.innerHTML = window.md.render(String(full || whiteStreamEl.textContent));
+      whiteStreamEl = null;
+    } else if (full) {
+      whiteAddAssistant(full);
+    }
+    whiteScroll();
+  }
+
+  function whiteThinking(text) {
+    if (!whiteThinkEl) {
+      const d = document.createElement('details');
+      d.className = 'white-thinking';
+      const s = document.createElement('summary');
+      s.textContent = '思考过程';
+      const pre = document.createElement('pre');
+      d.appendChild(s);
+      d.appendChild(pre);
+      whiteMessages.appendChild(d);
+      whiteThinkEl = pre;
+    }
+    whiteThinkEl.textContent += String(text || '');
+    whiteScroll();
+  }
+
+  function whiteToolCall(id, name, args, done) {
+    if (whiteToolLines[id]) return;
+    const el = document.createElement('div');
+    el.className = 'tool-line' + (done ? ' done' : ' running');
+    el.dataset.tool = name || '?';
+    const argsText = args ? JSON.stringify(args, null, 1) : '';
+    el.innerHTML = '<div class="tl-line" title="点击展开参数与结果">'
+      + '<span class="tl-name">' + escapeHtml(name || '?') + '</span>'
+      + '<span class="tl-target"></span>'
+      + '<span class="tl-status">' + (done ? '✓' : '<span class="tl-spinner"></span>执行中…') + '</span>'
+      + '<span class="tl-preview"></span></div>'
+      + '<div class="tl-body hidden"></div>';
+    el.querySelector('.tl-line').addEventListener('click', () => {
+      el.querySelector('.tl-body').classList.toggle('hidden');
+    });
+    if (argsText) {
+      const pre = document.createElement('pre');
+      pre.className = 'tool-pre';
+      pre.textContent = argsText;
+      el.querySelector('.tl-body').appendChild(pre);
+    }
+    whiteMessages.appendChild(el);
+    whiteToolLines[id] = el;
+    whiteScroll();
+  }
+
+  function whiteToolResult(id, content, diff) {
+    let el = whiteToolLines[id];
+    if (!el) { whiteToolCall(id, 'tool', {}, false); el = whiteToolLines[id]; }
+    if (!el) return;
+    el.classList.remove('running');
+    el.classList.add('done');
+    const status = el.querySelector('.tl-status');
+    if (status) status.textContent = '✓';
+    const body = el.querySelector('.tl-body');
+    if (body && content) {
+      const pre = document.createElement('pre');
+      pre.className = 'tool-result';
+      pre.textContent = String(content).slice(0, 4000);
+      body.appendChild(pre);
+    }
+    if (body && diff) {
+      const pre = document.createElement('pre');
+      pre.className = 'tool-pre';
+      pre.textContent = String(diff).slice(0, 6000);
+      body.appendChild(pre);
+    }
+    const preview = el.querySelector('.tl-preview');
+    if (preview) preview.textContent = String(content || '').slice(0, 80).replace(/\s+/g, ' ');
+    whiteScroll();
+  }
+
+  function whiteResultCard(result) {
+    if (!result) return;
+    const el = document.createElement('div');
+    el.className = 'white-result';
+    const stateText = { done: '完成', blocked: '被阻塞', failed: '失败' }[result.status] || result.status;
+    el.innerHTML = '<div class="wr-head">White 任务结果'
+      + '<span class="wr-state ' + escapeHtml(result.status || '') + '">' + escapeHtml(stateText || '') + '</span>'
+      + '<span class="hint" style="font-weight:400">' + (result.elapsed_seconds || 0) + 's</span></div>'
+      + '<div class="wr-summary"></div>';
+    el.querySelector('.wr-summary').textContent = String(result.summary || '');
+    const extra = [];
+    if ((result.findings || []).length) extra.push('发现：' + result.findings.join('；'));
+    if ((result.assumptions || []).length) extra.push('假设：' + result.assumptions.join('；'));
+    if ((result.next_steps || []).length) extra.push('建议：' + result.next_steps.join('；'));
+    if (extra.length) {
+      const div = document.createElement('div');
+      div.className = 'wr-files';
+      div.textContent = extra.join('\n');
+      el.appendChild(div);
+    }
+    const files = result.files || [];
+    if (files.length) {
+      const div = document.createElement('div');
+      div.className = 'wr-files';
+      div.textContent = '改动文件：';
+      files.forEach((f) => {
+        const code = document.createElement('code');
+        code.textContent = f.rel || f.path || '';
+        code.title = f.path || '';
+        div.appendChild(code);
+      });
+      el.appendChild(div);
+    }
+    whiteMessages.appendChild(el);
+    whiteScroll();
+  }
+
+  function whiteNote(text) {
+    const el = document.createElement('div');
+    el.className = 'msg log';
+    el.textContent = '（White：' + text + '）';
+    whiteMessages.appendChild(el);
+    whiteScroll();
+  }
+
+  function updateWhiteHead(st) {
+    if (!st) return;
+    whiteTaskEl.textContent = st.task || '还没有任务——由小助派发独立任务后会显示执行过程';
+    const labels = { idle: '空闲', running: '运行中…', closed: '已关闭' };
+    whiteStateEl.textContent = labels[st.status] || st.status || '';
+    whiteStopBtn.classList.toggle('hidden', st.status !== 'running');
+  }
+
+  function applyWhiteStatus(ev) {
+    let a = agentInfo('white');
+    if (!a) {
+      a = { id: 'white', name: 'White' };
+      state.agents = [...(state.agents || []), a];
+    }
+    Object.assign(a, ev);
+    if (ev.status === 'closed') {
+      // 关闭后标签页保留（灰色呼吸灯），只是回到还没有任务
+      const placeholder = { id: 'white', name: 'White', status: 'idle',
+                            placeholder: true, task: '', started_at: 0,
+                            finished_at: 0, result: null, pending_approvals: 0 };
+      state.agents = (state.agents || []).map((x) => (x.id === 'white' ? placeholder : x));
+      if (!state.agents.some((x) => x.id === 'white')) state.agents.push(placeholder);
+      whiteMessages.textContent = '';
+      whiteToolLines = {};
+      whiteStreamEl = null;
+      whiteThinkEl = null;
+      whiteStick = true;
+      if (whiteJumpBtn) whiteJumpBtn.classList.add('hidden');
+      state.whiteTask = '';
+      updateWhiteHead(placeholder);
+      if (whiteIsActive()) loadWhiteHistory();
+      renderAgentBar();
+      return;
+    }
+    if (ev.status === 'running' && ev.task && ev.task !== state.whiteTask) {
+      state.whiteTask = ev.task;
+      // 新任务：把主助手交给 White 的说明也显示成一条消息
+      if (!whiteMessages.textContent.includes(ev.task)) whiteAddUser(ev.task);
+    }
+    updateWhiteHead(ev);
+    renderAgentBar();
+    if (ev.status === 'running') state.whiteUnread = false;
+  }
+
+  function handleWhiteEvent(ev) {
+    if (ev.type === 'white_status') { applyWhiteStatus(ev); return; }
+    if (ev.type === 'white_result') {
+      whiteResultCard(ev.result);
+      if (!whiteIsActive()) { state.whiteUnread = true; renderAgentBar(); }
+      return;
+    }
+    if (ev.type === 'white_note') {
+      whiteNote(ev.text);
+      return;
+    }
+    // 实时事件始终写进 White（隐藏时也累积）——用户中途点开就能看到完整流程，
+    // 不依赖 /history 晚到的响应。
+    whiteHistoryToken += 1;
+    if (ev.type === 'text_stream') whiteStream(ev.content);
+    else if (ev.type === 'text') whiteFinishStream(ev.content);
+    else if (ev.type === 'thinking_stream') whiteThinking(ev.content);
+    else if (ev.type === 'tool_call') whiteToolCall(ev.id, ev.name, ev.args, false);
+    else if (ev.type === 'tool_result') whiteToolResult(ev.id, ev.content, ev.diff);
+  }
+
+  async function loadWhiteHistory() {
+    const token = ++whiteHistoryToken;
+    const wasNear = whiteNearBottom();
+    const fromBottom = whiteMessages.scrollHeight - whiteMessages.scrollTop;
+    const hadContent = whiteMessages.childElementCount > 0;
+    try {
+      const d = await api('/history?agent=white');
+      if (token !== whiteHistoryToken) return;   // 期间来了实时事件，别用旧历史覆盖
+      whiteMessages.textContent = '';
+      whiteToolLines = {};
+      whiteStreamEl = null;
+      whiteThinkEl = null;
+      state.whiteTask = (d.status && d.status.task) || '';
+      (d.messages || []).forEach((m) => {
+        if (m.role === 'user') whiteAddUser(m.content);
+        else if (m.role === 'assistant') whiteAddAssistant(m.content);
+        else if (m.role === 'thinking') whiteThinking(m.content);
+        else if (m.role === 'tool_call') whiteToolCall(m.id, m.name, m.args, false);
+        else if (m.role === 'tool_result') whiteToolResult(m.id, m.content, m.diff);
+        else if (m.role === 'result') whiteResultCard(m.result);
+      });
+      if (d.status) updateWhiteHead(d.status);
+      if (!(d.messages || []).length) {
+        const hint = document.createElement('div');
+        hint.className = 'msg log';
+        hint.textContent = 'White 还没有任务——由小助派发独立任务后会显示执行过程。';
+        whiteMessages.appendChild(hint);
+      }
+      // 清空/重渲染会改变 scrollHeight：按加载前的阅读位置恢复，不能无条件拉底。
+      if (!hadContent || wasNear) {
+        whiteStick = true;
+        whiteMessages.scrollTop = whiteMessages.scrollHeight;
+      } else {
+        whiteMessages.scrollTop = Math.max(0, whiteMessages.scrollHeight - fromBottom);
+        whiteStick = whiteNearBottom();
+      }
+      updateWhiteJump();
+      whiteScroll(whiteStick);
+    } catch (e) { console.error("[white] load history failed", e); }
+  }
+
+  whiteStopBtn.addEventListener('click', async () => {
+    whiteStopBtn.disabled = true;
+    try {
+      await post('/white/stop', {});
+      whiteStateEl.textContent = '停止中…';
+    } catch { /* 忽略 */ }
+    setTimeout(() => { whiteStopBtn.disabled = false; }, 1500);
+  });
+
+  refreshAgents();
+
   window.planner.onEvents((events) => {
-    events.forEach(handleEvent);
+    events.forEach((ev) => {
+      // 审批弹窗仍是全局的（主助手/White 共用一张卡），其余 White 事件走子代理视图
+      const globalApproval = ev.type === 'approval_request' || ev.type === 'approval_resolved';
+      if (ev.agent === 'white' && !globalApproval) {
+        handleWhiteEvent(ev);
+        return;
+      }
+      handleEvent(ev);
+      if (globalApproval) refreshAgents();
+    });
   });
 
   window.planner.onState(applyState);
@@ -2003,6 +2581,7 @@
     // 思考状态：以推送的 state 为准兜底纠正（thinking 事件可能在面板隐藏时被悬浮球消费）
     const thinking = !!s.thinking;
     isGenerating = thinking;
+    syncMainAgentStatus(thinking);
     $('#thinking').classList.toggle('hidden', !thinking);
     $('.dot').classList.toggle('thinking', thinking);
     // 后台压缩指示（标题栏呼吸灯）：压缩记忆是分钟级任务，给个可见反馈
@@ -2064,6 +2643,102 @@
     }
   }
 
+  // ── 目录读取授权页 ─────────────────────────────────────
+  function dirPermSourceLabel(source) {
+    return ({ user: '手动添加', assistant: '助手申请', approval: '审批时记住' })[source]
+      || source || '未知';
+  }
+
+  function renderDirPermissions(data) {
+    const list = $('#perm-page-list');
+    const note = $('#perm-page-note');
+    if (!list || !note) return;
+    const ws = (data && data.workspace) || '';
+    note.textContent = ws
+      ? `当前工作区：${ws}（写权限仅限这里）`
+      : '尚未设置代码工作区；写权限不可用。';
+    list.innerHTML = '';
+    const grants = (data && data.grants) || [];
+    if (!grants.length) {
+      const hint = document.createElement('div');
+      hint.className = 'empty-tip';
+      hint.textContent = '还没有目录读授权——点「＋ 添加目录…」选择要允许小助读取的目录。';
+      list.appendChild(hint);
+      return;
+    }
+    grants.forEach((g) => {
+      const row = document.createElement('div');
+      row.className = 'perm-item';
+      const main = document.createElement('div');
+      main.className = 'perm-item-main';
+      const path = document.createElement('div');
+      path.className = 'perm-item-path';
+      path.textContent = g.path || '';
+      const meta = document.createElement('div');
+      meta.className = 'perm-item-meta';
+      let text = `只读 · 递归包含子目录 · 来源：${dirPermSourceLabel(g.source)}`;
+      if (Number(g.covered_count) > 0) {
+        text += ` · 已合并 ${g.covered_count} 个子目录授权`;
+      }
+      meta.textContent = text;
+      main.appendChild(path);
+      main.appendChild(meta);
+      const del = document.createElement('button');
+      del.type = 'button';
+      del.className = 'perm-item-del';
+      del.textContent = '移除';
+      del.title = '移除这条目录读授权（其子目录的显式授权会重新出现）';
+      del.addEventListener('click', async () => {
+        if (!(await uiConfirm(`移除只读授权？\n${g.path || ''}`, { title: '移除授权' }))) return;
+        try {
+          const r = await post('/dir-permissions/remove', { id: g.id });
+          if (!r.ok) addMessage(`（移除失败：${r.error || '未知错误'}）`, 'log');
+        } catch {
+          addMessage('（移除失败：后端不可用）', 'log');
+        }
+        await refreshDirPermissions();
+      });
+      row.appendChild(main);
+      row.appendChild(del);
+      list.appendChild(row);
+    });
+  }
+
+  async function refreshDirPermissions() {
+    const list = $('#perm-page-list');
+    try {
+      const d = await api('/dir-permissions');
+      renderDirPermissions(d);
+    } catch {
+      if (list) {
+        list.innerHTML = '<div class="empty-tip">后端未连接</div>';
+      }
+    }
+  }
+
+  if ($('#perm-page-add')) {
+    $('#perm-page-add').addEventListener('click', async () => {
+      try {
+        const p = await window.planner.pickDirectory();
+        if (!p) return;
+        const r = await post('/dir-permissions/add', { path: p });
+        if (!r.ok) {
+          addMessage(`（添加授权失败：${r.message || r.error || '未知错误'}）`, 'log');
+        } else if (r.merged) {
+          addMessage(`（该目录已被现有授权覆盖：${p}）`, 'log');
+        } else {
+          addMessage(`（已添加只读授权：${p}）`, 'log');
+        }
+      } catch {
+        addMessage('（添加授权失败：后端不可用）', 'log');
+      }
+      await refreshDirPermissions();
+    });
+  }
+  if ($('#perm-page-refresh')) {
+    $('#perm-page-refresh').addEventListener('click', refreshDirPermissions);
+  }
+
   // ── Tab 切换 ─────────────────────────────────────────
   document.querySelectorAll('.tab').forEach((btn) => {
     btn.addEventListener('click', () => {
@@ -2073,6 +2748,7 @@
       $('#' + btn.dataset.tab).classList.add('active');
       if (btn.dataset.tab === 'calendar') refreshCalendar();
       if (btn.dataset.tab === 'changes') refreshChanges();
+      if (btn.dataset.tab === 'permissions') refreshDirPermissions();
     });
   });
 
@@ -2288,7 +2964,11 @@
           addChangedFiles(m.files);
         } else {
           const cls = m.role === 'assistant' ? 'assistant' : m.role === 'memory' ? 'memory' : 'user';
-          addMessage(m.content, cls, m.id || null);
+          if (cls === 'user') {
+            addUserMessage(m.content, m.id || null, false, m.attachments || []);
+          } else {
+            addMessage(m.content, cls, m.id || null);
+          }
         }
       });
       // 渲染过程会把列表顺带滚到底（贴底跟随）；按用户原来的位置收尾：
@@ -2313,10 +2993,17 @@
     // "用了哪些工具、中间的 thinking"全没了）。隐藏期间事件现在也实时进 DOM
     // （main.js 投递），展开后 DOM 本身就是完整现场；空闲时再以 /history 全量对齐。
     if (!isGenerating) loadHistory(true);
+  refreshAgents();
+  // 首屏先渲染占位：不等 /agents 回来，打开面板就能看到「主助手 / White」
+  renderAgentBar();
+    if (whiteIsActive()) loadWhiteHistory();
     // 主动同步挂载文件（悬浮球形态挂载时本窗口未创建，收不到广播）
     window.planner.getMounted().then(renderMountedBar).catch(() => {});
     // 展开完成：聚焦输入框，可直接打字
-    setTimeout(() => { try { $('#input').focus(); } catch { /* 忽略 */ } }, 80);
+    // 展开完成：先按空值/草稿校准高度，再聚焦输入框
+    setTimeout(() => {
+      try { autoResizeInput(); $('#input').focus(); } catch { /* 忽略 */ }
+    }, 80);
   });
 
   // ── 语音播报 ─────────────────────────────────────────
@@ -2364,6 +3051,7 @@
     if (voiceRec === 'starting') return;
     if (voiceRec === 'recording') {
       voiceRec = 'idle';
+      window.planner.setPanelRecording(false);
       voiceBtn.classList.remove('recording');
       if (!(window.voiceMode && window.voiceMode.isEnabled())) voiceBtn.title = VOICE_BTN_TITLE;
       const stop = voiceRecStop;
@@ -2400,8 +3088,10 @@
     try {
       voiceRecStop = await window.mic.begin();
       voiceRec = 'recording';
+      window.planner.setPanelRecording(true);   // 悬浮球同步显示录音特效
     } catch {
       voiceRec = 'idle';
+      window.planner.setPanelRecording(false);
       voiceRecStop = null;
       voiceBtn.classList.remove('recording');
       voiceBtn.title = VOICE_BTN_TITLE;

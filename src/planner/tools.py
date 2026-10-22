@@ -10,13 +10,17 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 from typing import Annotated, Literal
 
 from langchain_core.tools import BaseTool, tool
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from . import config as _config
+from . import prompt_loader
+from .agent_context import current_agent
 from .store.calendar_db import CalendarDb
 
 _logger = logging.getLogger("planner.tools")
@@ -372,7 +376,7 @@ def build_tools(session) -> list[BaseTool]:
 
     @tool(parse_docstring=True)
     def explore_memory_tree(node_id: str = "") -> str:
-        """翻阅记忆树，逐层下钻找回过去对话的具体内容。回忆往事、确认约定/决策时用。
+        """翻阅记忆树，逐层下钻找回过去对话的具体内容。**回忆往事、确认约定/决策时优先用本工具**（不要用 grep/read_file/网页搜索去猜——它们查不到你们的对话历史）。
 
         记忆树是**自下而上生长的摘要树**：最底层 `node0_xxx` 最**具体**（展开是
         当时的**原始对话**），越往上越**抽象**（node1 是多个 node0 的合并、node2
@@ -544,7 +548,7 @@ def build_tools(session) -> list[BaseTool]:
             if url:
                 session._pending_screenshots.append({
                     "url": url,
-                    "text": "（这是屏幕截图，请查看画面内容后回答。）"})
+                    "text": prompt_loader.load("runtime/screenshot")})
                 return "（屏幕截图已截取，画面已注入本次对话，请查看截图后回答。）"
             _logger.warning("[screen] 截图转 data URL 失败，回退 OCR")
         # 回退：OCR 文字识别（无视觉模型 / 转换失败）
@@ -619,7 +623,8 @@ def build_tools(session) -> list[BaseTool]:
             if url:
                 session._pending_screenshots.append({
                     "url": url,
-                    "text": f"（这是小助读取的图片：{p.name}。请查看画面内容后继续。{note_text}）",
+                    "text": prompt_loader.render(
+                        "runtime/view_image", name=p.name, note=note_text),
                     "viewed": key})
                 return f"（图片已读入上下文（{p.name}，{size // 1024}KB），请查看画面后回答。）"
             _logger.warning("[view_image] 转 data URL 失败，回退 OCR")
@@ -782,16 +787,17 @@ def build_tools(session) -> list[BaseTool]:
         max_chars = max(1000, min(20000, int(max_chars or 6000)))
         # 优先 DeepSeek 官方 Fetch（直接返回 Markdown 正文，无需自己解析 HTML）
         base, key = _deepseek_search_config(session)
-        if key:
+        if key and _ds_web_available(session):
             try:
                 title, md = _deepseek_fetch(base, key, u)
                 if md.strip():
                     out = md[:max_chars] + ("\n…（内容已截断）" if len(md) > max_chars else "")
                     return (f"【{title}】\n" if title else "") + out
             except Exception as exc:
+                _mark_ds_web_failure(session, exc)
                 _logger.warning("[fetch_web] DeepSeek 官方抓取失败，回退内置抓取：%s", exc)
         try:
-            r = httpx.get(u, headers=_WEB_HEADERS, timeout=20, follow_redirects=True)
+            r = httpx.get(u, headers=_WEB_HEADERS, timeout=12, follow_redirects=True)
             r.raise_for_status()
             html = r.text
         except Exception as exc:
@@ -809,10 +815,117 @@ def build_tools(session) -> list[BaseTool]:
             out += "\n\n【页面链接】\n" + "\n".join(f"- {t}：{href}" for t, href in links)
         return out
 
+    # ── 子代理 White（后台、无长期记忆、无命令权限）────────────
+
+    @tool(parse_docstring=True)
+    def white_task(instruction: str, reuse: bool = True) -> str:
+        """把一项独立任务交给 White（后台子助手，无长期记忆、不能问用户、不能执行命令）。
+
+        只在任务**自包含、可独立完成、过程不需要用户频繁拍板、且中间会产生大量
+        不需要保留的上下文**时使用。instruction 必须写全：目标、已知事实/决定
+        （White 没有记忆）、输入（文件路径/URL）、约束、验收标准、输出要求。
+        reuse=True 沿用 White 现有上下文（相关的后续任务）；False 丢弃旧上下文，
+        开一个全新任务。White 在后台执行，完成后会通知你；你负责验收并告诉用户。
+
+        Args:
+            instruction: 完整任务说明（目标/背景/输入/约束/验收标准）
+            reuse: 是否沿用 White 现有上下文（相关后续任务 true；全新任务 false）
+        """
+        if session is None:
+            return "（子代理不可用）"
+        if not bool((getattr(session, "settings", {}) or {}).get("white_enabled", True)):
+            return "（White 未启用：在 设置 → 子代理 里打开。）"
+        w = session.get_white_agent()
+        r = w.dispatch(instruction, reuse=reuse)
+        if not r.get("ok"):
+            return f"（派发失败：{r.get('error')}）"
+        if r.get("queued"):
+            return "（White 正在忙，任务已排队；完成后会通知你。）"
+        return "（已派给 White，后台执行中；完成后会通知你，可用 white_control 查看进度。）"
+
+    @tool(parse_docstring=True)
+    def white_control(action: Literal["status", "stop", "close"]) -> str:
+        """管理 White 子代理。
+
+        Args:
+            action: status=查看状态/最近结果；stop=停止当前任务（保留上下文）；close=关闭 White（任务完成或无法继续时，上下文丢弃）
+        """
+        if session is None:
+            return "（子代理不可用）"
+        w = session.get_white_agent(create=False)
+        if w is None:
+            return "（还没有创建 White。）"
+        if action == "stop":
+            r = w.stop()
+            return f"（{r.get('note') or '已请求停止。'}）"
+        if action == "close":
+            r = w.close()
+            return f"（White：{r.get('status')}）"
+        r = w.status_dict()
+        text = (f"White 状态：{r['status']}；任务：{r['task'] or '（无）'}；"
+                f"等待审批：{r['pending_approvals']}")
+        if r.get("result"):
+            res = r["result"]
+            text += f"\n最近结果（{res.get('status')}）：{str(res.get('summary') or '')[:500]}"
+            files = res.get("files") or []
+            if files:
+                text += "\n改动文件：" + "；".join(
+                    str(f.get("rel") or f.get("path") or "") for f in files)
+        return text
+
+    @tool(parse_docstring=True)
+    def request_read_permission(path: str, reason: str = "") -> str:
+        """申请读取当前工作区外的一个目录（只读、递归包含子目录）。
+
+        当需要查看用户其他项目/资料，而工作区外读取被拒绝，或想提前获得
+        某个目录的长期只读权限时调用。用户同意并选择「记住」后，该目录
+        （含所有子目录）会写入授权表，「权限」页会立即出现；拒绝或超时则
+        本次不授权。写权限仍然只允许当前工作目录。
+
+        Args:
+            path: 要申请只读访问的目录绝对路径（或相对当前目录的路径）
+            reason: 一句话说明为什么需要读这个目录（会显示在审批卡上）
+        """
+        if session is None:
+            return "（权限申请不可用）"
+        from .workspace import is_blocked, resolve_target
+
+        cwd = session.effective_cwd()
+        p = resolve_target(cwd, path)
+        if not p.is_dir():
+            return f"（不是已存在的目录，无法申请读权限：{p}）"
+        if is_blocked(p):
+            return f"（该目录在保护名单内，不能授权：{p}）"
+        db = session.get_permission_db()
+        if db.has_read(p):
+            return f"（已有该目录或其父目录的只读授权，可直接读取：{p}）"
+        decision = session.request_approval(
+            "request_read_permission", [str(p)],
+            preview=(f"申请只读访问目录（递归包含子目录）：{p}\n"
+                     f"原因：{reason or '需要查看该目录下的内容'}"),
+            scopes=[{"kind": "dir", "label": f"此目录（{p}）", "glob": str(p)}],
+            cwd=str(cwd) if cwd is not None else "",
+        )
+        if decision.startswith("always"):
+            r = db.add_read(p, source="assistant")
+            if not r.get("ok"):
+                return f"（写入授权失败：{r.get('message') or r.get('error')}）"
+            session.push_event({"type": "permissions_update"})
+            return (f"（用户已授权只读目录：{p}（递归包含子目录）。"
+                    "现在可以直接读取该目录下的文件。）")
+        if decision == "allow_once":
+            return "（用户只允许本次操作，未写入长期授权；下次读取会重新申请。）"
+        if decision == "timeout":
+            return "（权限申请超时，未授权。）"
+        if decision == "stop":
+            return "（用户中断了生成，权限申请已取消。）"
+        return "（用户拒绝了该目录的只读授权。）"
+
     return [heartbeat, continue_speaking, ask_user,
             list_schedule, add_schedule, update_schedule, cancel_schedule,
             explore_memory_tree, list_dir, read_file, capture_screen, view_image,
-            render_page, web_search, fetch_web] + build_code_tools(session)
+            render_page, web_search, fetch_web, request_read_permission] + build_code_tools(session) + [
+            white_task, white_control]
 
 
 # ── 工具结果卸载（大输出落盘，上下文只留指针）──────────────────
@@ -1134,7 +1247,8 @@ def build_code_tools(session) -> list[BaseTool]:
                     before_missing=before_missing, after_missing=after_missing,
                     no_snapshot=no_snapshot)
                 try:
-                    session._pending_changes.append({"tool": tool_name, "id": int(cid)})
+                    session._pending_changes.append({"tool": tool_name, "id": int(cid),
+                                                 "agent": current_agent()})
                 except Exception:
                     pass
             except Exception:
@@ -1917,6 +2031,27 @@ _DS_SEARCH_PATH = "/v1/tools/search"
 _DS_FETCH_PATH = "/v1/tools/fetch"
 
 
+#: 官方 Search/Fetch 失败（401/402/403/404）后的冷却时间：期间直接走内置回退，
+#: 避免每次抓取都先撞一次官方（用户实测官方接口 404 时拖慢整条链路）。
+_DS_WEB_FAIL_COOLDOWN = 600
+
+
+def _ds_web_available(session) -> bool:
+    if session is None:
+        return True
+    return time.time() >= float(getattr(session, "_ds_web_fail_until", 0) or 0)
+
+
+def _mark_ds_web_failure(session, exc: Exception) -> None:
+    # 只对**账号级**失败（鉴权/余额/权限）冷却；Fetch 的 404 是**单个 URL**
+    # 抓取失败（如 raw.githubusercontent.com），不能因此把官方链路整体关掉。
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    if session is not None and status in (401, 402, 403):
+        session._ds_web_fail_until = time.time() + _DS_WEB_FAIL_COOLDOWN
+        _logger.warning("[web] DeepSeek Search/Fetch 不可用（HTTP %s），%d 分钟内走内置回退",
+                        status, _DS_WEB_FAIL_COOLDOWN // 60)
+
+
 def _deepseek_search_config(session) -> tuple[str, str]:
     """搜索/抓取用的 DeepSeek 官方配置 → (base_url, api_key)；无 Key 返回 ("", "")。
 
@@ -2073,12 +2208,13 @@ def _search_web(query: str, limit: int, session=None) -> tuple[list[dict], str, 
     """
     errors: list[str] = []
     base, key = _deepseek_search_config(session)
-    if key:
+    if key and _ds_web_available(session):
         try:
             items = _deepseek_search(base, key, query, limit)
             if items:
                 return items, "DeepSeek", ""
         except Exception as exc:                    # 官方失败不致命，回退爬虫链
+            _mark_ds_web_failure(session, exc)
             _logger.warning("[web_search] DeepSeek 官方搜索失败：%s", exc)
             errors.append(f"deepseek: {exc}")
     for name, fetcher in (("360", _fetch_so360), ("bing", _fetch_bing)):

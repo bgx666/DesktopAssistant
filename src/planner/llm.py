@@ -16,6 +16,8 @@ import random
 import uuid
 from typing import Any
 
+import httpx
+
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
@@ -254,6 +256,8 @@ def build_chat_model(api_key: str | None = None,
     """DeepSeek v4 适配的 ChatOpenAI（也兼容 OpenCode Go 等 OpenAI 兼容端点）。
 
     配置优先级：显式参数（用户设置）> PLANNER_LLM_MODEL > 默认 `deepseek-flash`。
+    每个实例传入独立 `httpx.Client`（`http_client=`）：langchain_openai 默认会
+    复用底层 client，停止时关闭旧模型会误关新模型，见 v0.1.292。
     `provider`（+`session_id`）用于附加服务商要求的请求头：OpenCode Go 需要
     `x-opencode-session`（会话稳定 ID，路由/缓存优化）与自定义 User-Agent。
 
@@ -278,6 +282,15 @@ def build_chat_model(api_key: str | None = None,
     headers = provider_headers(provider or "", session_id or "")
     if headers:
         kwargs["default_headers"] = headers
+    # 每个模型实例必须用**独立的 httpx.Client**：langchain_openai 在不传
+    # http_client 时会复用同一个底层 client；停止时关闭旧模型会把新模型
+    # （以及 White/压缩模型）的 client 一起关掉，之后所有请求都报
+    # “Cannot send a request, as the client has been closed.”。
+    timeout_s = float(os.getenv("LLM_TIMEOUT", "60"))
+    http_client = httpx.Client(
+        timeout=httpx.Timeout(timeout_s),
+        follow_redirects=True,
+    )
     return ChatOpenAI(
         model=model_name,
         api_key=api_key,
@@ -285,6 +298,7 @@ def build_chat_model(api_key: str | None = None,
         max_retries=int(os.getenv("LLM_MAX_RETRIES", "3")),
         timeout=int(os.getenv("LLM_TIMEOUT", "60")),
         stream_usage=True,   # 流式最终块带 usage（缓存命中/TPS 统计的数据源）
+        http_client=http_client,
         **kwargs,
     )
 
@@ -336,6 +350,16 @@ class MockChatModel(BaseChatModel):
                 "context": {"env": [], "commands": [], "artifacts": [], "constraints": []},
                 "user": ["喜欢晚上学习", "做事有计划"],
             }, ensure_ascii=False))
+        # White 子代理（dev/e2e）：按任务说明直接提交结构化结果
+        if any((getattr(m, "metadata", None) or {}).get("white_instruction")
+               for m in messages):
+            last = messages[-1] if messages else None
+            if getattr(last, "type", None) == "tool":
+                return self._make_result("（White 已提交结果）")
+            return self._make_result("", [self._tc("finish_task", {
+                "status": "done",
+                "summary": "White 测试任务完成：已检查当前工作区（e2e）。",
+                "findings": ["white e2e ok"]})])
         # 模拟 ask_user：上一轮工具结果就是用户的回答 → 收尾（只看**最后一条**，
         # 历史里的旧回答不能触发收尾，否则后续提问会被跳过）
         last = messages[-1] if messages else None
@@ -357,6 +381,15 @@ class MockChatModel(BaseChatModel):
         # （用所有 HumanMessage 判断：计划快照会注入"（当前计划）"Human 且以 [ 开头）
         user_texts = " ".join(
             str(m.content or "") for m in messages if isinstance(m, HumanMessage))
+        # 「白色任务」= White 子代理步骤的专属词（只认**最后一条真实用户消息**：
+        # 避免 White 完成后主助手收到通知、又因历史里的「白色任务」重复派活）
+        last_msg = messages[-1] if messages else None
+        if (getattr(last_msg, "type", None) == "human"
+                and "白色任务" in str(getattr(last_msg, "content", "") or "")):
+            return self._make_result("好，我让 White 去做。",
+                                     [self._tc("white_task", {
+                                         "instruction": "白色任务：检查当前工作区的文件结构并汇报。",
+                                         "reuse": False})])
         # 「气泡提问」= 悬浮球待处理提醒步骤（ask_user 气泡卡）的专属词；
         # 放在最前，避免被历史里的旧触发词劫持（见下方全历史扫描说明）。
         if "气泡提问" in user_texts:

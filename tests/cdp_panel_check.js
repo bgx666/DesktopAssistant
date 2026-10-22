@@ -139,6 +139,126 @@ function connect(wsUrl) {
     console.error('  异常:', d.text, '||', desc, '|| at', d.url, d.lineNumber);
   });
 
+  // 2.5) Agent 切换：首屏就要在标题栏里看到「主助手 / White」，不能等 /agents 或单独占一行
+  const initialAgents = await p.send('Runtime.evaluate', {
+    expression: `(() => {
+      const bar = document.getElementById('agent-bar');
+      if (!bar) return 'NO_BAR';
+      if (bar.classList.contains('hidden')) return 'BAR_HIDDEN';
+      if (!bar.closest('#titlebar')) return 'NOT_IN_TITLEBAR';
+      const tabs = [...bar.querySelectorAll('.agent-tab')];
+      const labels = tabs.map((t) => t.textContent.trim());
+      if (tabs.length < 2) return 'TABS ' + labels.join(',');
+      if (!labels.some((x) => x.includes('主助手'))
+          || !labels.some((x) => x.includes('White'))) {
+        return 'LABELS ' + labels.join(',');
+      }
+      return 'INITIAL_AGENTS_OK';
+    })()`,
+    returnByValue: true,
+  });
+  const initialAgentResult = initialAgents.result && initialAgents.result.result
+    && initialAgents.result.result.value;
+
+  // 2.55) 输入框随内容增高（不是固定一行；长内容到动态上限后再内部滚动）
+  const inputGrow = await p.send('Runtime.evaluate', {
+    expression: `(() => {
+      const i = document.getElementById('input');
+      const bar = document.getElementById('input-bar');
+      const h0 = i.getBoundingClientRect().height;
+      const bar0 = bar.getBoundingClientRect().height;
+      const set = (text) => {
+        i.value = text;
+        i.dispatchEvent(new Event('input', { bubbles: true }));
+        return i.getBoundingClientRect().height;
+      };
+      const h1 = set('a');
+      const h5 = set(Array(5).fill('a').join('\\n'));
+      const h10 = set(Array(10).fill('a').join('\\n'));
+      i.value = '';
+      i.dispatchEvent(new Event('input', { bubbles: true }));
+      const hClear = i.getBoundingClientRect().height;
+      if (h0 > 42) return 'INITIAL_TALL ' + h0;
+      if (bar0 > 150) return 'BAR_TALL ' + bar0;
+      if (!(h5 > h1 + 8)) return 'NO_GROW_5 ' + h1 + '/' + h5;
+      if (!(h10 > h5 + 8)) return 'NO_GROW_10 ' + h5 + '/' + h10;
+      if (hClear > 42) return 'CLEAR_TALL ' + hClear;
+      return 'INPUT_GROW_OK ' + Math.round(h0) + '/' + Math.round(h5)
+        + '/' + Math.round(h10) + '/' + Math.round(hClear);
+    })()`,
+    returnByValue: true,
+  });
+  const inputGrowResult = inputGrow.result && inputGrow.result.result
+    && inputGrow.result.result.value;
+
+  // 2.6) 用户消息附件：图片缩略图 + 文件 chip 在气泡上方，点图片可放大
+  let attachmentsResult = 'SKIP';
+  if (BACKEND_PORT) {
+    const attachDir = fs.mkdtempSync(path.join(os.tmpdir(), 'planner-attach-'));
+    const txtPath = path.join(attachDir, 'note.txt');
+    const imgPath = path.join(attachDir, 'pic.png');
+    try {
+      fs.writeFileSync(txtPath, 'attachment test', 'utf8');
+      fs.writeFileSync(imgPath, PNG_1PX);
+      await postJson(`http://127.0.0.1:${BACKEND_PORT}/chat`, {
+        message: '附件展示测试',
+        files: [
+          { name: 'note.txt', path: txtPath, kind: 'text', content: 'attachment test' },
+          { name: 'pic.png', path: imgPath, kind: 'image' },
+        ],
+      });
+      const ac = await p.send('Runtime.evaluate', {
+        expression: `(async () => {
+          const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+          let msg = null;
+          for (let i = 0; i < 60; i += 1) {
+            const list = [...document.querySelectorAll('.msg.user')];
+            msg = list.reverse().find((el) => el.textContent.includes('附件展示测试'));
+            if (msg) break;
+            await sleep(100);
+          }
+          if (!msg) return 'NO_MSG';
+          let att = null;
+          for (let i = 0; i < 40; i += 1) {
+            att = msg.querySelector('.user-attachments');
+            if (att) break;
+            await sleep(100);
+          }
+          if (!att) return 'NO_ATTACH';
+          const body = msg.querySelector('.msg-body');
+          if (!body) return 'NO_BODY';
+          if (att.nextElementSibling !== body) return 'ORDER_BAD';
+          if (!att.querySelector('.user-file-chip')) return 'NO_FILE_CHIP';
+          const thumb = att.querySelector('.user-image-thumb');
+          if (!thumb) return 'NO_THUMB';
+          thumb.click();
+          await sleep(350);
+          const lb = document.querySelector('.img-lightbox');
+          if (!lb) return 'NO_LIGHTBOX';
+          const close = lb.querySelector('.lb-close');
+          if (!close) return 'NO_LB_CLOSE';
+          close.click();
+          await sleep(80);
+          if (document.querySelector('.img-lightbox')) return 'LB_NOT_CLOSED';
+          return 'ATTACH_OK';
+        })()`,
+        returnByValue: true,
+        awaitPromise: true,
+      });
+      attachmentsResult = (ac.result && ac.result.result && ac.result.result.value) || 'NO_RESULT';
+      // 等附件消息触发的这轮生成结束，避免影响后面的步骤
+      for (let i = 0; i < 60; i += 1) {
+        const st = await backendGet(`http://127.0.0.1:${BACKEND_PORT}/state`);
+        if (!(st.state && st.state.thinking)) break;
+        await sleep(100);
+      }
+    } catch (e) {
+      attachmentsResult = 'SETUP_FAIL ' + e.message;
+    } finally {
+      try { fs.rmSync(attachDir, { recursive: true, force: true }); } catch { /* 忽略 */ }
+    }
+  }
+
   // 3) 交互验证：点日历 tab（app.js 绑定事件才会切 active）
   const click = await p.send('Runtime.evaluate', {
     expression: `(() => {
@@ -176,6 +296,11 @@ function connect(wsUrl) {
       if (!(mid > 800)) return 'RESIZE_BAD mid=' + mid;
       if (!(after > 600 && after !== mid)) return 'RESTORE_BAD ' + after;
       if (stage !== after + 'px') return 'STAGE_BAD ' + stage + ' vs ' + after;
+      // 收起按钮要铺满标题栏高度（回归：上下 padding 曾把可点区压成一条小横条）
+      const bar = document.getElementById('titlebar').getBoundingClientRect();
+      const fold = document.getElementById('btn-fold').getBoundingClientRect();
+      if (!(fold.height >= bar.height - 4)) return 'FOLD_H_BAD ' + fold.height + '/' + bar.height;
+      if (!(fold.width >= 40)) return 'FOLD_W_BAD ' + fold.width;
       return 'SIZE_OK';
     })()`,
     returnByValue: true,
@@ -1610,7 +1735,325 @@ function connect(wsUrl) {
     mdResult = 'SETUP_FAIL ' + e.message;
   }
 
+  // 30) 面板录音跨窗口特效：面板开始录音 → 收起面板后悬浮球也要显示
+  //     紫点 + 雷达环（麦克风无法在自动化里真录，直接走 IPC 状态通路）
+  let panelVoiceResult = 'SKIP';
+  try {
+    const bp = await waitPage('bubble.html', 10000);
+    const bb = await connect(bp.webSocketDebuggerUrl);
+    await bb.send('Runtime.enable');
+    const nudgePanel = async (on) => {
+      await p.send('Runtime.evaluate', {
+        expression: 'window.planner.setPanelRecording(' + (on ? 'true' : 'false') + ')',
+        returnByValue: true,
+      });
+      for (let i = 0; i < 40; i += 1) {
+        await sleep(150);
+        const r = await bb.send('Runtime.evaluate', {
+          expression: "(document.getElementById('core').classList.contains('recording'))"
+            + " === " + (on ? 'true' : 'false')
+            + " && (document.getElementById('sound-ring').classList.contains('active'))"
+            + " === " + (on ? 'true' : 'false'),
+          returnByValue: true,
+        });
+        if (r.result && r.result.result && r.result.result.value) return true;
+      }
+      return false;
+    };
+    const onOk = await nudgePanel(true);
+    const offOk = onOk ? await nudgePanel(false) : false;
+    panelVoiceResult = (!onOk) ? 'ON_FAIL' : (offOk ? 'PANELVOICE_OK' : 'OFF_FAIL');
+    bb.close();
+  } catch (e) {
+    panelVoiceResult = 'SETUP_FAIL ' + e.message;
+  }
+
+  // 31) 悬浮窗气泡：Markdown 表格/标题渲染 + 高度到上限后内部滑动（不显示滚动条）
+  let toastResult = 'SKIP';
+  try {
+    // 先收起面板（showToast 只在悬浮球形态工作）
+    await p.send('Runtime.evaluate', {
+      expression: 'window.planner.hidePanel()', returnByValue: true,
+    });
+    for (let i = 0; i < 40; i += 1) {
+      await sleep(150);
+      const st = await p.send('Runtime.evaluate', {
+        expression: 'window.planner.getPanelState()', returnByValue: true, awaitPromise: true,
+      });
+      if ((st.result && st.result.result && st.result.result.value) === 'hidden') break;
+    }
+    const bp2 = await waitPage('bubble.html', 10000);
+    const bb2 = await connect(bp2.webSocketDebuggerUrl);
+    await bb2.send('Runtime.enable');
+    await bb2.send('Runtime.evaluate', {
+      expression: `(() => {
+        const NL = String.fromCharCode(10);
+        const lines = ['## 长内容标题', '', '| 列A | 列B |', '|---|---|',
+          '| 1 | 2 |', '| 3 | 4 |', ''];
+        for (let i = 0; i < 30; i++) lines.push('- 第 ' + i + ' 条内容，用来把气泡撑高');
+        window.planner.showToast(lines.join(NL), 0, false);
+        return 'SENT';
+      })()`,
+      returnByValue: true,
+    });
+    const tp = await waitPage('toast.html', 12000);
+    const tw = await connect(tp.webSocketDebuggerUrl);
+    await tw.send('Runtime.enable');
+    let info = null;
+    for (let i = 0; i < 40; i += 1) {
+      await sleep(200);
+      const r = await tw.send('Runtime.evaluate', {
+        expression: `(() => {
+          const el = document.getElementById('toast-text');
+          if (!el) return null;
+          const cs = getComputedStyle(el);
+          const before = el.scrollTop;
+          el.scrollTop = 200;
+          return {
+            hasHeading: !!el.querySelector('h2'),
+            hasTable: !!el.querySelector('.md-table'),
+            overflow: cs.overflowY,
+            scrollable: el.scrollHeight > el.clientHeight + 20,
+            scrolled: el.scrollTop > before,
+            sbWidth: cs.scrollbarWidth,
+            winH: window.innerHeight,
+            textH: el.clientHeight,
+          };
+        })()`,
+        returnByValue: true,
+      });
+      info = r.result && r.result.result ? r.result.result.value : null;
+      if (info && info.hasTable && info.scrollable) break;
+    }
+    if (!info) {
+      toastResult = 'NO_TOAST';
+    } else if (!info.hasHeading || !info.hasTable) {
+      toastResult = 'MD_MISSING ' + JSON.stringify(info);
+    } else if (info.overflow !== 'auto' || !info.scrollable || !info.scrolled) {
+      toastResult = 'NOT_SCROLLABLE ' + JSON.stringify(info);
+    } else if (info.winH > 500) {
+      toastResult = 'TOO_TALL ' + info.winH;
+    } else if (info.sbWidth && info.sbWidth !== 'none') {
+      toastResult = 'SCROLLBAR_VISIBLE ' + info.sbWidth;
+    } else {
+      toastResult = 'TOAST_OK';
+    }
+    tw.close();
+    bb2.close();
+    // 恢复展开态（morphIn 会清掉气泡）
+    await p.send('Runtime.evaluate', {
+      expression: 'window.planner.getPanelState().then((s) => { if (s === "hidden") window.planner.togglePanel(); })',
+      returnByValue: true, awaitPromise: true,
+    });
+  } catch (e) {
+    toastResult = 'SETUP_FAIL ' + e.message;
+  }
+
+  // 32) 设置页服务商回显：保存的是 opencode 就必须显示 opencode
+  //     （回归：选择框不回显 → 任何一次保存都悄悄把 provider 改回 deepseek）
+  let settingsProviderResult = 'SKIP';
+  if (BACKEND_PORT) {
+    try {
+      await postJson(`http://127.0.0.1:${BACKEND_PORT}/settings`,
+                     { updates: { llm_provider: 'opencode' } });
+      // 设置窗口可能在第 23 步就已打开（主进程单例，openSettings 只 focus 不重载）
+      // → 直接刷新页面，让它重新从 /settings 回显
+      let sp = null;
+      try { sp = await waitPage('settings.html', 1200); } catch { /* 没有就开一个 */ }
+      if (!sp) {
+        await p.send('Runtime.evaluate', {
+          expression: 'window.planner.openSettings()', returnByValue: true,
+        });
+        sp = await waitPage('settings.html', 15000);
+      }
+      const sw = await connect(sp.webSocketDebuggerUrl);
+      await sw.send('Runtime.enable');
+      await sw.send('Runtime.evaluate', { expression: 'location.reload()' });
+      let loaded = false;
+      for (let i = 0; i < 60; i += 1) {
+        await sleep(200);
+        const r = await sw.send('Runtime.evaluate', {
+          expression: "document.body.dataset.settingsLoaded === '1'",
+          returnByValue: true,
+        });
+        if (r.result && r.result.result && r.result.result.value) { loaded = true; break; }
+      }
+      const vr = await sw.send('Runtime.evaluate', {
+        expression: "JSON.stringify({ p: document.getElementById('llm_provider').value })",
+        returnByValue: true,
+      });
+      const vals = JSON.parse((vr.result && vr.result.result && vr.result.result.value) || '{}');
+      settingsProviderResult = !loaded ? 'NOT_LOADED'
+        : (vals.p === 'opencode' ? 'SETTINGS_PROVIDER_OK'
+          : 'PROVIDER_RESET ' + JSON.stringify(vals));
+      await sw.send('Runtime.evaluate', { expression: 'window.close()', returnByValue: true });
+      sw.close();
+      await postJson(`http://127.0.0.1:${BACKEND_PORT}/settings`,
+                     { updates: { llm_provider: 'deepseek' } });
+    } catch (e) {
+      settingsProviderResult = 'SETUP_FAIL ' + e.message;
+    }
+  }
+
+  // 33) White 子代理：主助手派活 → 后台运行 → Agent 标签页 + 统一消息视图 + 结果卡
+  let whiteResult = 'SKIP';
+  if (BACKEND_PORT) {
+    try {
+      await postJson(`http://127.0.0.1:${BACKEND_PORT}/chat`, { message: '白色任务' });
+      let alive = false;
+      for (let i = 0; i < 60; i += 1) {
+        const a = await backendGet(`http://127.0.0.1:${BACKEND_PORT}/agents`);
+        if ((a.agents || []).some((x) => x.id === 'white')) { alive = true; break; }
+        await sleep(200);
+      }
+      if (!alive) {
+        whiteResult = 'NO_WHITE';
+      } else {
+        const wr = await p.send('Runtime.evaluate', {
+          expression: `(async () => {
+            const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+            let tab = null;
+            for (let i = 0; i < 60; i += 1) {
+              tab = document.querySelector('#agent-bar .agent-tab.white');
+              if (tab) break;
+              await sleep(200);
+            }
+            if (!tab) return 'NO_TAB';
+            tab.click();
+            for (let i = 0; i < 60; i += 1) {
+              if (!document.getElementById('white-view').classList.contains('hidden')) break;
+              await sleep(100);
+            }
+            if (document.getElementById('white-view').classList.contains('hidden')) return 'VIEW_HIDDEN';
+            let card = null;
+            for (let i = 0; i < 80; i += 1) {
+              card = document.querySelector('#white-messages .white-result');
+              if (card) break;
+              await sleep(200);
+            }
+            if (!card) return 'NO_RESULT_CARD';
+            const text = card.textContent || '';
+            if (!text.includes('White 测试任务完成')) return 'RESULT_TEXT ' + text.slice(0, 80);
+            let state = '';
+            for (let i = 0; i < 60; i += 1) {
+              state = (document.getElementById('white-state').textContent || '').trim();
+              if (state === '空闲') break;
+              await sleep(100);
+            }
+            if (state !== '空闲') return 'STATE_BAD ' + state;
+            // White 滚动策略：用户滚上去后，切走再切回不能重置；回到底部按钮可用
+            const wm = document.getElementById('white-messages');
+            const jump = document.getElementById('white-jump');
+            if (!jump) return 'NO_JUMP_BTN';
+            for (let i = 0; i < 30; i += 1) {
+              const filler = document.createElement('div');
+              filler.className = 'msg log';
+              filler.textContent = 'white scroll filler ' + i;
+              wm.appendChild(filler);
+            }
+            wm.scrollTop = 0;
+            wm.dispatchEvent(new Event('scroll'));
+            await sleep(100);
+            if (jump.classList.contains('hidden')) return 'JUMP_HIDDEN';
+            const mainTab = document.querySelector('#agent-bar .agent-tab:not(.white)');
+            const whiteTab = document.querySelector('#agent-bar .agent-tab.white');
+            if (mainTab) mainTab.click();
+            await sleep(120);
+            if (whiteTab) whiteTab.click();
+            await sleep(300);
+            if (wm.scrollTop > 8) return 'SCROLL_RESET';
+            if (jump.classList.contains('hidden')) return 'JUMP_HIDDEN_AFTER_SWITCH';
+            jump.click();
+            await sleep(700);
+            if (wm.scrollHeight - wm.scrollTop - wm.clientHeight > 20) return 'JUMP_FAIL';
+            // 回到主助手视图（后续 bubble 检查要点输入框/单击球）
+            if (mainTab) mainTab.click();
+            return 'WHITE_OK';
+          })()`,
+          returnByValue: true,
+          awaitPromise: true,
+        });
+        whiteResult = (wr.result && wr.result.result && wr.result.result.value) || 'NO_RESULT';
+      }
+    } catch (e) {
+      whiteResult = 'SETUP_FAIL ' + e.message;
+    }
+  }
+
+  // 34) 目录读授权页：添加父子目录 → 合并显示 → 移除父目录
+  let dirPermResult = 'SKIP';
+  if (BACKEND_PORT) {
+    const permRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'planner-perm-'));
+    const permParent = path.join(permRoot, 'projects');
+    const permChild = path.join(permParent, 'alpha');
+    try {
+      fs.mkdirSync(permChild, { recursive: true });
+      await postJson(`http://127.0.0.1:${BACKEND_PORT}/dir-permissions/add`,
+                     { path: permChild });
+      await postJson(`http://127.0.0.1:${BACKEND_PORT}/dir-permissions/add`,
+                     { path: permParent });
+      await p.send('Runtime.evaluate', {
+        expression: `document.querySelector('#tabs .tab[data-tab="permissions"]').click()`,
+        returnByValue: true,
+      });
+      await sleep(700);
+      const dp = await p.send('Runtime.evaluate', {
+        expression: `(() => {
+          const rows = [...document.querySelectorAll('#perm-page-list .perm-item')];
+          const texts = rows.map((r) => r.textContent || '');
+          const row = texts.find((x) => x.includes(${JSON.stringify(permParent)}));
+          if (!row) return 'NO_PARENT ' + texts.join(' | ');
+          if (!row.includes('已合并 1')) return 'NO_MERGE ' + row;
+          if (!document.getElementById('perm-page-note').textContent.includes('当前工作区')) {
+            return 'NO_NOTE';
+          }
+          return 'PERM_PAGE_OK';
+        })()`,
+        returnByValue: true,
+      });
+      dirPermResult = (dp.result && dp.result.result && dp.result.result.value) || 'NO_RESULT';
+      if (dirPermResult === 'PERM_PAGE_OK') {
+        const list = await backendGet(`http://127.0.0.1:${BACKEND_PORT}/dir-permissions`);
+        const parentGrant = (list.grants || []).find(
+          (g) => (g.path || '').toLowerCase() === permParent.toLowerCase());
+        if (!parentGrant) {
+          dirPermResult = 'NO_PARENT_ID';
+        } else {
+          await postJson(`http://127.0.0.1:${BACKEND_PORT}/dir-permissions/remove`,
+                         { id: parentGrant.id });
+          await p.send('Runtime.evaluate', {
+            expression: `document.querySelector('#tabs .tab[data-tab="permissions"]').click()`,
+            returnByValue: true,
+          });
+          await sleep(500);
+          const after = await p.send('Runtime.evaluate', {
+            expression: `([...document.querySelectorAll('#perm-page-list .perm-item')]
+              .map((r) => r.textContent || '').join(' | '))`,
+            returnByValue: true,
+          });
+          const afterText = (after.result && after.result.result
+            && after.result.result.value) || '';
+          if (!afterText.includes(permChild)) {
+            dirPermResult = 'CHILD_LOST ' + afterText;
+          }
+        }
+      }
+      await postJson(`http://127.0.0.1:${BACKEND_PORT}/dir-permissions/clear`, {});
+      await p.send('Runtime.evaluate', {
+        expression: `document.querySelector('#tabs .tab[data-tab="chat"]').click()`,
+        returnByValue: true,
+      });
+    } catch (e) {
+      dirPermResult = 'SETUP_FAIL ' + e.message;
+    } finally {
+      try { fs.rmSync(permRoot, { recursive: true, force: true }); } catch { /* 忽略 */ }
+    }
+  }
+
   console.log('  面板异常数:', errs.length, '| 日历 tab 点击:', clickResult,
+              '| 首屏 Agent 标签:', initialAgentResult,
+              '| 输入框增高:', inputGrowResult,
+              '| 用户附件展示:', attachmentsResult,
               '| 目录徽标:', badgeResult, '| 尺寸/拖拽:', sizeResult,
               '| 工具行:', groupResult, '| 状态条:', chipsResult,
               '| 变更 tab:', changesResult, '| 思考流:', thinkResult,
@@ -1623,10 +2066,25 @@ function connect(wsUrl) {
               '| tts同步:', ttsSyncResult, '| 截屏:', shotResult,
               '| 输入框粘贴:', pasteResult, '| 改动文件:', cfResult,
               '| 快速输入:', quickResult, '| 待处理提醒:', pendingResult,
-              '| Markdown:', mdResult);
+              '| Markdown:', mdResult, '| 面板录音特效:', panelVoiceResult,
+              '| 气泡长内容:', toastResult, '| 设置页服务商回显:', settingsProviderResult,
+              '| White 子代理:', whiteResult,
+              '| 目录读授权页:', dirPermResult);
   p.close();
 
   if (errs.length > 0) { console.error('面板加载有 JS 异常'); process.exit(1); }
+  if (initialAgentResult !== 'INITIAL_AGENTS_OK') {
+    console.error('首屏 Agent 标签（标题栏内主助手/White）检查失败: ' + initialAgentResult);
+    process.exit(1);
+  }
+  if (!String(inputGrowResult).startsWith('INPUT_GROW_OK')) {
+    console.error('输入框随内容增高检查失败: ' + inputGrowResult);
+    process.exit(1);
+  }
+  if (attachmentsResult !== 'SKIP' && attachmentsResult !== 'ATTACH_OK') {
+    console.error('用户消息附件展示（缩略图/文件 chip/放大）检查失败: ' + attachmentsResult);
+    process.exit(1);
+  }
   if (clickResult !== 'CLICK_OK') { console.error('面板交互未生效（事件未绑定）'); process.exit(1); }
   if (badgeResult !== 'BADGE_OK') { console.error('标题栏目录徽标缺失'); process.exit(1); }
   if (sizeResult !== 'SIZE_OK') { console.error('面板尺寸/拖拽把手检查失败: ' + sizeResult); process.exit(1); }
@@ -1723,6 +2181,26 @@ function connect(wsUrl) {
   }
   if (mdResult !== 'SKIP' && mdResult !== 'MD_OK') {
     console.error('Markdown 表格/链接渲染检查失败: ' + mdResult);
+    process.exit(1);
+  }
+  if (panelVoiceResult !== 'SKIP' && panelVoiceResult !== 'PANELVOICE_OK') {
+    console.error('面板录音跨窗口特效检查失败: ' + panelVoiceResult);
+    process.exit(1);
+  }
+  if (toastResult !== 'SKIP' && toastResult !== 'TOAST_OK') {
+    console.error('悬浮窗气泡长内容（表格/标题/滑动）检查失败: ' + toastResult);
+    process.exit(1);
+  }
+  if (settingsProviderResult !== 'SKIP' && settingsProviderResult !== 'SETTINGS_PROVIDER_OK') {
+    console.error('设置页服务商回显检查失败: ' + settingsProviderResult);
+    process.exit(1);
+  }
+  if (whiteResult !== 'SKIP' && whiteResult !== 'WHITE_OK') {
+    console.error('White 子代理（派活/标签页/结果卡）检查失败: ' + whiteResult);
+    process.exit(1);
+  }
+  if (dirPermResult !== 'SKIP' && dirPermResult !== 'PERM_PAGE_OK') {
+    console.error('目录读授权页检查失败: ' + dirPermResult);
     process.exit(1);
   }
   process.exit(0);

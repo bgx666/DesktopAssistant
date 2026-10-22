@@ -459,6 +459,18 @@ class SQLiteMemoryTree:
         )
         return cur.fetchone()["cnt"]
 
+    def get_max_level(self) -> int:
+        """当前活跃节点的最大层级（没有节点返回 -1）。
+
+        供压缩循环判断是否还能继续向上合并；不再用硬编码层数上限。
+        """
+        cur = self._execute_with_retry(
+            "SELECT MAX(level) AS m FROM nodes WHERE character_id = ? AND is_active = 1",
+            (self._character_id,),
+        )
+        row = cur.fetchone()
+        return int(row["m"]) if row and row["m"] is not None else -1
+
     def get_node_status(self, ids: list[str]) -> dict[str, dict[str, Any]]:
         """批量查询节点状态：{id: {"is_active": bool, "parent_id": str | None}}。
 

@@ -198,6 +198,28 @@ SO_HTML = """
 """
 
 
+def test_web_cooldown_only_for_account_errors():
+    """官方 Fetch 的 404 是单 URL 失败（如 raw.githubusercontent），不能整体冷却；
+    402/403 这类账号级错误才进入冷却。"""
+    class S:
+        pass
+
+    s = S()
+    class Resp404:
+        status_code = 404
+    class Exc404(Exception):
+        response = Resp404()
+    tools_mod._mark_ds_web_failure(s, Exc404(404))
+    assert not getattr(s, "_ds_web_fail_until", None)
+
+    class Resp402:
+        status_code = 402
+    class Exc402(Exception):
+        response = Resp402()
+    tools_mod._mark_ds_web_failure(s, Exc402(402))
+    assert getattr(s, "_ds_web_fail_until", 0) > 0
+
+
 def test_parse_so_results():
     items = tools_mod._parse_so_results(SO_HTML, 5)
     assert len(items) == 2, "360 自家导航链接应被过滤掉"
